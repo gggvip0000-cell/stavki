@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-48"
+VERSION = "2026.11.21-49"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3035,7 +3035,7 @@ class Collector:
         for pid, fam, outcome, line, odds, mid, start_ts in self.con.execute(
                 "SELECT id, fam, outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
                 " AND (fam LIKE 'h1!_%' ESCAPE '!' OR fam LIKE 'c!_%' ESCAPE '!') AND start_ts < ?",
-                (time.time() - 3 * 3600,)).fetchall():
+                (time.time() - 50 * 60,)).fetchall():      # с -49: не ждать 3 ч — каждый источник сам знает, окончателен ли счёт
             pre, base = split_fam(fam)
             h = a = None
             for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid)):
@@ -3168,7 +3168,7 @@ class Collector:
             "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
             " LEFT JOIN ext_scores x ON x.match_id = p.match_id WHERE p.status='open' AND p.start_ts < ?"
             " AND m.home_en IS NOT NULL AND (x.match_id IS NULL OR (x.done=0 AND x.tries < 5 AND x.last_try < ?))"
-            " ORDER BY p.start_ts LIMIT 1", (now - 150 * 60, now - 1800)).fetchone()
+            " ORDER BY p.start_ts LIMIT 1", (now - 115 * 60, now - 1800)).fetchone()
         if not row:
             return
         mid, start_ts, home_en, away_en = row
