@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-15"
+VERSION = "2026.11.21-16"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1562,11 +1562,11 @@ class Collector:
                 mm = STATE.matches.get(mid)
                 if mm:
                     mm['last_update'] = 0
-        for mid in urgent:
-            self.pin.hurry(mid)
             STATE.direct_cover[f.name] = cover
             STATE.status['feeds'][f.name] = {'last_ok': f.last_ok, 'events': len(evs), 'matched': matched,
                                              'host': f.host, 'error': '', 'fails': 0}
+        for mid in set(urgent):
+            self.pin.hurry(mid)
 
     def match_url(self, mid, market):
         return (f'/next-api/coefficients/rates/ru/?sport=football&matchId={mid}'
