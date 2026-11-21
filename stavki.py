@@ -25,7 +25,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-39"
+VERSION = "2026.11.21-40"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1406,6 +1406,14 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+.ptab td.clk{cursor:pointer;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab td.clk:hover{background:#2d3a4a!important}
+#pop{display:none;position:fixed;inset:0;background:#000a;z-index:50;align-items:flex-start;justify-content:center;padding:40px 16px}
+.mbox{background:#131a22;border:1px solid #2e3744;border-radius:12px;max-width:1100px;width:100%;max-height:85vh;display:flex;flex-direction:column}
+.mhd{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #2a3542;font-size:16px}
+.mx{cursor:pointer;font-size:20px;color:#8b98a5;padding:0 6px}.mx:hover{color:#fff}.mbody{overflow:auto;padding:6px 12px 12px}
+.mt{width:100%;border-collapse:collapse;font-size:14px}.mt th{font-size:12px;color:#8b98a5;text-align:left;padding:6px 8px;border-bottom:1px solid #2a3542}
+.mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
+.bt{font-weight:700}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}.bad2{color:#ffb454;font-weight:700}
 .newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
@@ -1436,7 +1444,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <label>перевес от, % <input id="thr" type="number" step="0.5" value="5"></label>
 <label>кф до <input id="mx" type="number" step="0.5" value="4"></label>
 <span class="st" id="st">загрузка…</span></header>
-<main><div id="paper"></div><div id="cols"></div>
+<div id="pop"></div><main><div id="paper"></div><div id="cols"></div>
 <details><summary>Подробнее: работа программы, маржа контор, разведка, Telegram</summary>
 <p><a class="rbtn" href="/api/report" download>Скачать отчёт для разработки</a> <span class="st">— файл otchet_….zip появится в «Загрузках»; пришлите его в чат Claude</span></p>
 <p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
@@ -1554,11 +1562,27 @@ function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
+const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча'};
+function popBets(sel){
+ const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
+ const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
+ const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Начало</th><th>Итог</th></tr>';
+ for(const b of L){const tm=(b.title||'').split(' — ');
+  const res=b.status==='open'?'<span class="mu">ждём матч</span>':(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  h+='<tr><td><span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span><div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</td><td>'+res+'</td></tr>'}
+ if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
+ document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
+function closePop(){document.getElementById('pop').style.display='none'}
+document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
+ if(ev.target.id==='pop')closePop()});
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 function renderPaper(p){
  LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
  const z=x=>x?x:'·';
- const cells=g=>'<td>'+g.n+'</td><td class="w">'+z(g.w)+'</td><td class="l">'+z(g.l)+'</td><td class="p">'+z(g.push)+'</td><td>'+z(g.n-g.done)+'</td><td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
+ const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+'"'+(v?' data-pop="'+sel+'|'+k+'"':'')+'>'+(cl==='n'?v:z(v))+'</td>';
+ const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
@@ -1566,10 +1590,10 @@ function renderPaper(p){
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
   const closed=!!PCOL[G.part];
-  h+='<tr class="grp" onclick="pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s)+'</tr>';
-  if(!closed)for(const r of G.rows)h+='<tr class="sub"><td>'+(r.name||r.val)+'</td>'+cells(r)+'</tr>';
+  h+='<tr class="grp" onclick="pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
+  if(!closed)for(const r of G.rows)h+='<tr class="sub"><td>'+(r.name||r.val)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>';
  }
- h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total)+'</tr></table>';
+ h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
 }
@@ -2626,6 +2650,12 @@ class Collector:
                         add_error('перезапуск браузера: ' + str(e2).splitlines()[0][:150])
 
 
+def paper_kind_name(fam):
+    pre, base = split_fam(fam or '')
+    return {'1x2': 'Исход', 'ah': 'Фора', 'total': 'Тотал' if pre == 'c_' else 'Тотал голов',
+            'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}.get(base, market_label(fam or '—'))
+
+
 def paper_stats(con, stake_rub):
     def agg(where, args=()):
         r = con.execute('SELECT COUNT(*), SUM(status!="open"), SUM(status="выигрыш"), SUM(status="проигрыш"),'
@@ -2646,8 +2676,7 @@ def paper_stats(con, stake_rub):
         a = agg("strategy='Б' AND src='сайт' AND COALESCE(fam, event) = ?", (fam,))
         if a['n']:
             pre, base = split_fam(fam or '')
-            name = {'1x2': 'Исход', 'ah': 'Фора', 'total': 'Тотал' if pre == 'c_' else 'Тотал голов',
-                    'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}.get(base, market_label(fam or '—'))
+            name = paper_kind_name(fam)
             out['simple'].append(dict(a, val=market_label(fam) if fam else '—', name=name,
                                       part={'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
                                       kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm'),
@@ -2657,6 +2686,18 @@ def paper_stats(con, stake_rub):
     # группы как на сайте Фонбета: МАТЧ, 1-Й ТАЙМ, УГЛОВЫЕ; внутри — Исход, Тотал, Фора, Инд. тоталы
     out['simple'].sort(key=lambda r: r['order'])
     out['simple_total'] = agg("strategy='Б' AND src='сайт'")
+    # сами ставки — для окна «что там было» по нажатию на цифру в таблице (владелец 21.11)
+    out['bets'] = []
+    for pid, title, lg, st, bk, fam, oc, odds, ev, status, profit in con.execute(
+            "SELECT id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status, profit"
+            " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
+        pre = split_fam(fam or '')[0]
+        out['bets'].append({'id': pid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
+                            'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
+                            'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
+                            'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
+                            'odds': odds, 'ev': ev, 'status': status,
+                            'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
     # для расчётов программы (владельцу не показываются): разрезы способа Б
