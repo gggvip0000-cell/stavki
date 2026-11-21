@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-23"
+VERSION = "2026.11.21-24"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -787,6 +787,7 @@ class DirectFeed:
         self.match_tried = {}
         self.page_url = ''
         self.last_error = ''
+        self.miscs = {}            # id события -> счёт из лайва (score1, score2, comment)
 
     def start(self, browser):
         self.page = browser.new_page(locale='ru-RU')
@@ -839,6 +840,9 @@ class DirectFeed:
         for b in (j.get('eventBlocks') or []):
             if isinstance(b, dict) and b.get('eventId') in self.events:
                 self.events[b['eventId']]['_blocked'] = b.get('state') == 'blocked'
+        for m in (j.get('eventMiscs') or []):
+            if isinstance(m, dict) and 'id' in m:
+                self.miscs[m['id']] = dict(self.miscs.get(m['id'], {}), **m)
         if j.get('packetVersion'):
             self.version = j['packetVersion']
         kids = {}
@@ -875,7 +879,7 @@ class DirectFeed:
                 j2 = self.fetch(f'/events/list?lang=ru&scopeMarket={sc}')
                 if len(j2.get('events') or []) > n:
                     j = j2
-            self.events, self.factors = {}, {}
+            self.events, self.factors, self.miscs = {}, {}, {}
             self.merge(j)
             self.last_full = time.time()
             log(f'{self.name}: полная линия — событий {len(self.events)}, футбол до матча: {len(self.football())}')
@@ -1082,6 +1086,10 @@ def db_open():
             con.execute(f'ALTER TABLE {t} ADD COLUMN fam TEXT')
         except sqlite3.OperationalError:
             pass                               # столбец уже есть
+    # счёт из лайва Фонбета/PARI (eventMiscs): матч, первый тайм, угловые — расчёт ставок любой лиги
+    con.execute('CREATE TABLE IF NOT EXISTS bk_events (event_id INT PRIMARY KEY, match_id INT)')
+    con.execute('CREATE TABLE IF NOT EXISTS bk_scores (match_id INT, part TEXT, s1 INT, s2 INT, comment TEXT,'
+                ' ts REAL, PRIMARY KEY (match_id, part))')
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -1094,8 +1102,8 @@ def pick_for_strategies(rows):
     groups = {}
     for v in rows:
         pre, base = split_fam(event_of(v))
-        if base not in SETTLEABLE or (pre and not v.get('stats_ok')):
-            continue                           # первый тайм и угловые — на бумагу, только если лига есть в статистике
+        if base not in SETTLEABLE:
+            continue                           # первый тайм и угловые рассчитываются по лайву конторы или football-data
         groups.setdefault((v['match_id'], event_group(event_of(v)), v['src']), []).append(v)
     out = []
     for vs in groups.values():
@@ -1277,27 +1285,16 @@ async function tick(){
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 function renderPaper(p){
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
- const wasOpen=!!(el.querySelector('details')&&el.querySelector('details').open);
- const main=p.strategies.find(x=>x.code==='Б'&&x.src==='сайт');const c0=p.cand.find(x=>x.src==='сайт');
- let h='<div class="pp"><h2>Ставки на бумаге (понарошку, по '+p.stake_rub+' ₽, одна ставка на событие)</h2><div class="big">Основной способ Б (цены с сайта конторы): ставок '+main.n+', рассчитано '+main.done
-  +(main.done?' · выиграло '+main.w+' из '+(main.w+main.l)+' ('+main.winpct+'%), возвратов '+main.push+' · итог '+sg(main.profit_rub,' ₽')+' ('+sg(main.roi,'%')+' на ставку)':'')
-  +' · CLV '+(main.nclv?sg(main.clv,'%'):'—')+'</div>'
-  +'<div class="st">Проверка перевеса (CLV по всем подходящим ставкам с сайта конторы): матчей '+c0.matches+', ставок '+c0.done+(c0.done?' · средний CLV '+sg(c0.clv,'%')+', лучше закрытия в '+c0.pos+'%':'')+'</div>'
-  +'<details'+(wasOpen?' open':'')+'><summary class="st">все способы отбора и последние ставки</summary><table><tr><th>Способ</th><th>Цены</th><th>Ставок</th><th>Рассчитано</th><th>Выиграло</th><th>Возвр.</th><th>Итог, ₽</th><th>На ставку</th><th>Ср. кф</th><th>Ожидали</th><th>CLV</th></tr>';
- for(const g of p.strategies){if(!g.n)continue;h+='<tr><td><b>'+g.code+'</b> '+g.desc+'</td><td>'+(g.src==='сайт'?'с сайта конторы':'с odds.ru (не сверено)')+'</td><td>'+g.n+'</td><td>'+g.done+'</td><td>'+(g.w+g.l?g.w+' из '+(g.w+g.l)+' ('+g.winpct+'%)':'—')+'</td><td>'+g.push+'</td><td>'+sg(g.profit_rub)+'</td><td>'+sg(g.roi,'%')+'</td><td>'+(g.odds||'—')+'</td><td>'+sg(g.ev,'%')+'</td><td>'+sg(g.clv,'%')+'</td></tr>'}
- h+='</table>';
- for(const c of (p.cuts||[])){if(!c.rows.length)continue;h+='<table><tr><th>Способ Б по: '+c.title+'</th><th>Ставок</th><th>Рассчитано</th><th>Выиграло</th><th>Возвр.</th><th>Итог, ₽</th><th>На ставку</th><th>Ср. кф</th><th>Ожидали</th><th>CLV</th></tr>';
-  for(const g of c.rows)h+='<tr><td>'+g.val+'</td><td>'+g.n+'</td><td>'+g.done+'</td><td>'+(g.w+g.l?g.w+' из '+(g.w+g.l)+' ('+g.winpct+'%)':'—')+'</td><td>'+g.push+'</td><td>'+sg(g.profit_rub)+'</td><td>'+sg(g.roi,'%')+'</td><td>'+(g.odds||'—')+'</td><td>'+sg(g.ev,'%')+'</td><td>'+sg(g.clv,'%')+'</td></tr>';
-  h+='</table>'}
- if((p.cand_fam||[]).length){h+='<table><tr><th>Проверка перевеса по видам ставок</th><th>Ставок</th><th>Рассчитано</th><th>Средний CLV</th><th>Лучше закрытия</th></tr>';
-  for(const x of p.cand_fam)h+='<tr><td>'+x.val+'</td><td>'+x.n+'</td><td>'+x.done+'</td><td>'+sg(x.clv,'%')+'</td><td>'+(x.pos==null?'—':x.pos+'%')+'</td></tr>';h+='</table>'}
- h+='<table><tr><th>Проверка перевеса (все подходящие ставки)</th><th>Ставок</th><th>Матчей</th><th>Средний CLV</th><th>Лучше закрытия</th></tr>';
- for(const x of p.cand)h+='<tr><td>'+(x.src==='сайт'?'цены с сайта конторы':'цены с odds.ru (не сверено)')+'</td><td>'+x.done+' <span class="st">(ждут матча: '+x.wait+')</span></td><td>'+x.matches+'</td><td>'+sg(x.clv,'%')+'</td><td>'+(x.pos==null?'—':x.pos+'%')+'</td></tr>';
- h+='</table><table><tr><th>Когда</th><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Способы</th><th>Итог</th><th>CLV</th></tr>';
- for(const r of p.last){const t=new Date(r.created*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-  h+='<tr><td>'+t+'</td><td>'+r.title+'</td><td>'+r.market_name+': '+r.outcome+'</td><td>'+r.bookmaker+(r.src==='сайт'?'':' <span class="st">(odds.ru)</span>')+'</td><td>'+r.odds+'</td><td>+'+(r.ev*100).toFixed(1)+'%</td><td>'+r.strategies+'</td><td>'+(r.status==='open'?'<span class="st">ждём матч</span>':r.status+' '+sg(Math.round(r.profit*p.stake_rub),' ₽'))+'</td><td>'+(r.clv==null?'—':sg(Math.round(r.clv*1000)/10,'%'))+'</td></tr>'}
- el.innerHTML=h+'</table></details></div>';
+ const row=(name,g,b)=>{const o=b?'<b>':'',c=b?'</b>':'';return '<tr><td>'+o+name+c+'</td><td>'+o+g.n+c+'</td><td>'+g.w+'</td><td>'+g.l+'</td><td>'+g.push+'</td><td>'+(g.n-g.done)+'</td><td>'+o+sg(g.profit_rub,' ₽')+c+'</td></tr>'};
+ let h='<div class="pp"><h2>Ставки на бумаге (понарошку, по '+p.stake_rub+' ₽, одна ставка на событие)</h2>';
+ if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
+ h+='<table><tr><th>Вид ставки</th><th>Сделано</th><th>Выиграно</th><th>Проиграно</th><th>Возврат</th><th>Ждут матча</th><th>Итог</th></tr>';
+ for(const g of p.simple)h+=row(g.val,g,false);
+ h+=row('Всего',p.simple_total,true)+'</table>';
+ if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: контора не показала счёт — в итог не входят</div>';
+ el.innerHTML=h+'</div>';
 }
+
 async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
  try{await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:k})})}catch(e){}}
 async function post(u){try{await fetch(u,{method:'POST'})}catch(e){}}
@@ -1410,6 +1407,7 @@ class Collector:
         self.pin = PinnacleFeed()
         self.pin_start_try = 0
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
+        self.bk_known = dict(con.execute('SELECT event_id, match_id FROM bk_events').fetchall())
         self.covered_cache = {}
         # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
         self.batch_cur = cfg['batch_matches']
@@ -1805,11 +1803,13 @@ class Collector:
                 "SELECT id, fam, outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
                 " AND (fam LIKE 'h1!_%' ESCAPE '!' OR fam LIKE 'c!_%' ESCAPE '!') AND start_ts < ?",
                 (time.time() - 3 * 3600,)).fetchall():
-            d = self.stats_result(mid, start_ts)
-            if not d:
-                continue
             pre, base = split_fam(fam)
-            h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
+            h = a = None
+            for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts)):
+                if d:
+                    h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
+                    if h is not None and a is not None:
+                        break
             if h is None or a is None:
                 continue
             rows.append((pid, base, outcome, line, odds, mid, start_ts, h, a))
@@ -1822,6 +1822,8 @@ class Collector:
             self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=? WHERE id=?',
                              (st, pr, cf, clv, time.time(), pid))
             n += 1
+        self.con.execute("UPDATE paper2 SET status='нет данных', settled=? WHERE status='open' AND start_ts < ?",
+                         (time.time(), time.time() - 2 * 86400))
         # журнал CLV: после начала матча последняя цена Pinnacle до старта уже известна
         for mid, bk, mname, outcome, line, start_ts, odds, fam in self.con.execute(
                 'SELECT match_id, bookmaker, market_name, outcome, line, start_ts, odds, fam FROM cand'
@@ -1855,7 +1857,60 @@ class Collector:
                 if f.fails % 10 == 0:
                     f.version = None          # начать заново с полного снимка
                 continue
+            try:
+                self.save_scores(f)
+            except Exception as e:
+                add_error(f'{f.name}: счёт из лайва — {str(e)[:100]}')
             self.direct_values_for(f)
+
+    def save_scores(self, f):
+        """счёт идущих матчей с сайта конторы → bk_scores (раз в 30 с); ts — когда матч последний раз был в лайве"""
+        now = time.time()
+        if now - getattr(f, 'scores_ts', 0) < 30:
+            return
+        f.scores_ts = now
+        for eid, mid in list(f.match_map.items()):
+            if mid and self.bk_known.get(eid) != mid:
+                self.con.execute('INSERT OR REPLACE INTO bk_events VALUES (?,?)', (eid, mid))
+                self.bk_known[eid] = mid
+        corners = {e['parentId']: e['id'] for e in f.events.values()
+                   if e.get('parentId') and e.get('name') == 'угловые'}
+
+        def two(m):
+            return m and isinstance(m.get('score1'), int) and isinstance(m.get('score2'), int)
+        for e in list(f.events.values()):
+            if e.get('level') != 1 or e.get('place') != 'live':
+                continue
+            mid = self.bk_known.get(e['id'])
+            m = f.miscs.get(e['id'])
+            if not mid or not two(m):
+                continue
+            rows = [('ft', m['score1'], m['score2'], m.get('comment'))]
+            hm = re.match(r'\s*\((\d+)-(\d+)\)', m.get('comment') or '')
+            if hm:                             # «(1-0)» появляется после перерыва — счёт первого тайма
+                rows.append(('h1', int(hm.group(1)), int(hm.group(2)), None))
+            c = f.miscs.get(corners.get(e['id']))
+            if two(c):
+                rows.append(('c', c['score1'], c['score2'], c.get('comment')))
+            for part, s1, s2, cm in rows:
+                self.con.execute('INSERT INTO bk_scores (match_id, part, s1, s2, comment, ts) VALUES (?,?,?,?,?,?)'
+                                 ' ON CONFLICT (match_id, part) DO UPDATE SET s1=excluded.s1, s2=excluded.s2,'
+                                 ' comment=excluded.comment, ts=excluded.ts', (mid, part, s1, s2, cm, now))
+        self.con.commit()
+
+    def bk_result(self, mid, start_ts):
+        """тайм и угловые из лайва конторы; угловые — только если матч видели в лайве до ~90-й минуты
+        и голы там совпали с итоговым счётом odds.ru"""
+        sc = {p: (a, b, ts) for p, a, b, ts in
+              self.con.execute('SELECT part, s1, s2, ts FROM bk_scores WHERE match_id=?', (mid,))}
+        res = self.con.execute('SELECT home, away FROM results WHERE match_id=?', (mid,)).fetchone()
+        d = {'hthg': None, 'htag': None, 'hc': None, 'ac': None}
+        if 'h1' in sc and (not res or (sc['h1'][0] <= res[0] and sc['h1'][1] <= res[1])):
+            d['hthg'], d['htag'] = sc['h1'][:2]
+        if res and 'c' in sc and 'ft' in sc and tuple(sc['ft'][:2]) == tuple(res) \
+                and sc['c'][2] >= start_ts + 105 * 60:
+            d['hc'], d['ac'] = sc['c'][:2]
+        return d
 
     def direct_values_for(self, f):
         now = time.time()
@@ -2205,7 +2260,7 @@ def paper_stats(con, stake_rub):
     def agg(where, args=()):
         r = con.execute('SELECT COUNT(*), SUM(status!="open"), SUM(status="выигрыш"), SUM(status="проигрыш"),'
                         ' SUM(status="возврат"), SUM(COALESCE(profit,0)), AVG(ev), AVG(clv), COUNT(clv), AVG(odds)'
-                        ' FROM paper2 WHERE ' + where, args).fetchone()
+                        ' FROM paper2 WHERE status != "нет данных" AND ' + where, args).fetchone()
         n, done, w, l, push, prof, ev, clv, nclv, odds = r
         done, w, l = done or 0, w or 0, l or 0
         return {'n': n or 0, 'done': done, 'w': w, 'l': l, 'push': push or 0,
@@ -2215,9 +2270,24 @@ def paper_stats(con, stake_rub):
                 'ev': round(100 * ev, 1) if ev is not None else None,
                 'odds': round(odds, 2) if odds else None,
                 'clv': round(100 * clv, 1) if clv is not None else None, 'nclv': nclv or 0}
-    out = {'stake_rub': stake_rub, 'strategies': [], 'cand': [], 'last': [], 'cuts': []}
+    out = {'stake_rub': stake_rub, 'strategies': [], 'cand': [], 'last': [], 'cuts': [], 'simple': []}
+    # то, что видит владелец: способ Б, цены с сайта конторы — по видам ставок
+    for (fam,) in con.execute("SELECT DISTINCT COALESCE(fam, event) FROM paper2 WHERE strategy='Б' AND src='сайт'"):
+        a = agg("strategy='Б' AND src='сайт' AND COALESCE(fam, event) = ?", (fam,))
+        if a['n']:
+            out['simple'].append(dict(a, val=market_label(fam) if fam else '—'))
+    out['simple'].sort(key=lambda r: -r['n'])
+    out['simple_total'] = agg("strategy='Б' AND src='сайт'")
+    out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
+                                " AND status='нет данных'").fetchone()[0]
+    # для расчётов программы (владельцу не показываются): разрезы способа Б
     # разрезы основного способа Б (цены с сайта конторы): вид ставки, кф, перевес, за сколько до матча найдена
     cuts = [('Вид ставки', "COALESCE(fam, event)"),
+            ('Контора', "bookmaker"),
+            ('Лига', "league"),
+            ('Свежесть цены Pinnacle', "CASE WHEN pin_age IS NULL THEN '—' WHEN pin_age < 120 THEN 'до 2 мин'"
+                                       " WHEN pin_age < 600 THEN '2–10 мин' ELSE 'старше 10 мин' END"),
+            ('День недели', "strftime('%w', start_ts + 3 * 3600, 'unixepoch')"),
             ('Коэффициент', "CASE WHEN odds < 1.5 THEN 'до 1.5' WHEN odds < 2 THEN '1.5–2' WHEN odds < 3 THEN '2–3'"
                             " ELSE '3–4' END"),
             ('Перевес', "CASE WHEN ev < 0.07 THEN '5–7%' WHEN ev < 0.10 THEN '7–10%' ELSE 'от 10%' END"),
