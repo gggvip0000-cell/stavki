@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-34"
+VERSION = "2026.11.21-35"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1498,7 +1498,7 @@ async function tick(){
      const old=age>180||(pin!=null&&pin>180);
      const tm=(v0.match||'').split(' — ');const url=v0.bk_url||(v0.url+'bet/');
      const lg=(v0.league||'').split(': ');
-     const mo=v0.mo||[];const o=(k,lab,cl)=>mo[k]?'<span class="'+cl+'">'+lab+' <b>'+mo[k]+'</b></span>':'<span class="'+cl+'">'+lab+' <b>—</b></span>';
+     const mo=v0.mo||[];const o=(k,lab,cl)=>mo[k]?'<span class="'+cl+'">'+lab+' <b>'+Number(mo[k]).toFixed(2)+'</b></span>':'<span class="'+cl+'">'+lab+' <b>—</b></span>';
      h+='<div class="card'+(old?' stale':'')+'"><div class="top"><div class="tl"><div class="mh"><a href="'+url+'" target="_blank"><span class="th">'+esc(tm[0])+'</span> <span class="td">—</span> <span class="ta">'+esc(tm[tm.length-1])+'</span></a></div>'
       +'<div class="lgl"><span class="cty">'+esc(lg.length>1?lg[0]:'')+'</span>'+(lg.length>1?'<span class="lgn">'+esc(lg.slice(1).join(': '))+'</span>':'<span class="lgn">'+esc(lg[0])+'</span>')+'</div>'
       +'<div class="sm">'+when(v0.start_ts)+'</div></div>'
@@ -1506,7 +1506,7 @@ async function tick(){
      for(const v of vs){
       const [,side,title]=vw(v);const star=best.has(v);
       h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
-       +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+v.odds+'</span></a>'
+       +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
        +'<div class="info"><span>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span></div>'
        +(v.where?'<div class="wh">где на сайте: '+esc(v.where)+'</div>':'')+'</div>'}
      h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
