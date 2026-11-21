@@ -11,6 +11,7 @@ import difflib
 import json
 import math
 import re
+import urllib.parse
 import urllib.request
 import sqlite3
 import subprocess
@@ -23,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-24"
+VERSION = "2026.11.21-25"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -948,6 +949,161 @@ class DirectFeed:
         return res
 
 
+SOFA_API = 'https://www.sofascore.com/api/v1'
+PAGE_FETCH_JS = """async (u) => { try { const r = await fetch(u, {credentials: 'include'});
+    return {s: r.status, t: await r.text()} } catch (e) { return {s: 0, t: String(e)} } }"""
+
+
+class ExtStats:
+    """Sofascore, затем FotMob (разведка 21.11: оба открываются у владельца, запросы — изнутри страницы сайта):
+    счёт основного времени (без доп. времени), первого тайма и угловые сыгранного матча."""
+
+    def __init__(self):
+        self.pages = {}
+        self.page_try = {}
+        self.fm_days = {}           # дата -> (когда получено, матчи FotMob)
+        self.last_error = ''
+
+    def page(self, browser, key, url):
+        p = self.pages.get(key)
+        if p is not None or browser is None:
+            return p
+        if time.time() - self.page_try.get(key, 0) < 1800:
+            return None
+        self.page_try[key] = time.time()
+        try:
+            p = browser.new_page(locale='ru-RU')
+            p.goto(url, wait_until='domcontentloaded', timeout=60000)
+            p.wait_for_timeout(4000)
+            self.pages[key] = p
+            return p
+        except Exception as e:
+            self.last_error = f'{key}: {str(e).splitlines()[0][:100]}'
+            log(f'статистика матчей: {key} не открылся — попробую через 30 мин')
+            try:
+                p.close()
+            except Exception:
+                pass
+            return None
+
+    def get(self, key, url):
+        try:
+            r = self.pages[key].evaluate(PAGE_FETCH_JS, url)
+        except Exception as e:
+            self.last_error = f'{key}: {str(e).splitlines()[0][:100]}'
+            self.pages.pop(key, None)          # страница сломалась — откроется заново
+            return None
+        if r.get('s') != 200:
+            return None
+        try:
+            return json.loads(r['t'])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def pair(h, a, home_en, away_en):
+        """True — та же ориентация, False — хозяева и гости наоборот, None — не тот матч"""
+        if min(en_sim(home_en, h), en_sim(away_en, a)) >= 0.6:
+            return True
+        if min(en_sim(home_en, a), en_sim(away_en, h)) >= 0.6:
+            return False
+        return None
+
+    def sofa(self, home_en, away_en, start_ts):
+        q_home, q_away = home_en.replace('-', ' '), away_en.replace('-', ' ')
+        ev, same = None, None
+        for q in (f'{q_home} {q_away}', q_home, q_away):
+            j = self.get('sofascore', f'{SOFA_API}/search/events?q={urllib.parse.quote(q)}&page=0') or {}
+            for r in j.get('results') or []:
+                e = r.get('entity') or {}
+                if abs((e.get('startTimestamp') or 0) - start_ts) > 20 * 60:
+                    continue
+                same = self.pair((e.get('homeTeam') or {}).get('name', ''), (e.get('awayTeam') or {}).get('name', ''),
+                                 home_en, away_en)
+                if same is not None:
+                    ev = e
+                    break
+            if ev:
+                break
+        if not ev:
+            return None
+        d = {'src': 'sofascore', 'ext_id': str(ev['id'])}
+        j = (self.get('sofascore', f"{SOFA_API}/event/{ev['id']}") or {}).get('event') or {}
+        if (j.get('status') or {}).get('type') != 'finished':
+            return dict(d, finished=False)
+        hs, as_ = j.get('homeScore') or {}, j.get('awayScore') or {}
+        d.update(finished=True, ft=(hs.get('normaltime'), as_.get('normaltime')),
+                 ht=(hs.get('period1'), as_.get('period1')))
+        st = self.get('sofascore', f"{SOFA_API}/event/{ev['id']}/statistics") or {}
+        for per in st.get('statistics') or []:
+            if per.get('period') != 'ALL':
+                continue
+            for g in per.get('groups') or []:
+                for it in g.get('statisticsItems') or []:
+                    if it.get('key') == 'cornerKicks' or it.get('name') == 'Corner kicks':
+                        d['c'] = (it.get('homeValue'), it.get('awayValue'))
+        if not same:
+            d = {k: (v[1], v[0]) if isinstance(v, tuple) else v for k, v in d.items()}
+        return d
+
+    def fotmob(self, home_en, away_en, start_ts):
+        day = datetime.datetime.fromtimestamp(start_ts, MSK).strftime('%Y%m%d')
+        got = self.fm_days.get(day)
+        if not got or time.time() - got[0] > 1800:
+            j = self.get('fotmob', f'https://www.fotmob.com/api/data/matches?date={day}') or {}
+            got = (time.time(), [m for lg in j.get('leagues') or [] for m in lg.get('matches') or []])
+            self.fm_days[day] = got
+        m, same = None, None
+        for x in got[1]:
+            if abs((x.get('timeTS') or 0) / 1000 - start_ts) > 20 * 60:
+                continue
+            same = self.pair((x.get('home') or {}).get('name', ''), (x.get('away') or {}).get('name', ''),
+                             home_en, away_en)
+            if same is not None:
+                m = x
+                break
+        if not m:
+            return None
+        d = {'src': 'fotmob', 'ext_id': str(m['id'])}
+        if not (m.get('status') or {}).get('finished'):
+            return dict(d, finished=False)
+        j = self.get('fotmob', f"https://www.fotmob.com/api/data/matchDetails?matchId={m['id']}") or {}
+        d['finished'] = True
+        content = j.get('content') or {}
+        for e in ((content.get('matchFacts') or {}).get('events') or {}).get('events') or []:
+            if e.get('type') == 'Half' and e.get('halfStrShort') == 'HT':
+                d['ht'] = (e.get('homeScore'), e.get('awayScore'))
+            if e.get('type') == 'Half' and e.get('halfStrShort') == 'FT':
+                d['ft'] = (e.get('homeScore'), e.get('awayScore'))     # конец основного времени
+        for g in (((content.get('stats') or {}).get('Periods') or {}).get('All') or {}).get('stats') or []:
+            for it in g.get('stats') or []:
+                if it.get('key') == 'corners' and isinstance(it.get('stats'), list) and len(it['stats']) == 2:
+                    d['c'] = tuple(it['stats'])
+        if not same:
+            d = {k: (v[1], v[0]) if isinstance(v, tuple) else v for k, v in d.items()}
+        return d
+
+    def lookup(self, browser, home_en, away_en, start_ts):
+        """объединяет Sofascore и FotMob: недостающее у первого берётся у второго"""
+        out = {}
+        for key, url, fn in (('sofascore', 'https://www.sofascore.com/ru/football', self.sofa),
+                             ('fotmob', 'https://www.fotmob.com/', self.fotmob)):
+            if all(isinstance(out.get(k), tuple) and None not in out[k] for k in ('ft', 'ht', 'c')):
+                break
+            if self.page(browser, key, url) is None:
+                continue
+            d = fn(home_en, away_en, start_ts)
+            if not d or not d.get('finished'):
+                continue
+            for k, v in d.items():
+                if k in ('ft', 'ht', 'c'):
+                    if isinstance(v, tuple) and None not in v and not (isinstance(out.get(k), tuple) and None not in out[k]):
+                        out[k] = tuple(int(x) for x in v)
+                elif k not in out:
+                    out[k] = v
+        return out
+
+
 def settle_ah(margin, hcap, odds):
     """азиатская фора: margin — разница мячей своей команды, hcap — её фора; четверти делятся пополам"""
     frac = round((abs(hcap) * 4) % 2)
@@ -1090,6 +1246,9 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS bk_events (event_id INT PRIMARY KEY, match_id INT)')
     con.execute('CREATE TABLE IF NOT EXISTS bk_scores (match_id INT, part TEXT, s1 INT, s2 INT, comment TEXT,'
                 ' ts REAL, PRIMARY KEY (match_id, part))')
+    # Sofascore / FotMob: счёт основного времени, тайм, угловые — запасной источник для расчёта
+    con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
+                ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -1408,6 +1567,8 @@ class Collector:
         self.pin_start_try = 0
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
         self.bk_known = dict(con.execute('SELECT event_id, match_id FROM bk_events').fetchall())
+        self.ext = ExtStats()
+        self.ext_last = 0
         self.covered_cache = {}
         # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
         self.batch_cur = cfg['batch_matches']
@@ -1796,16 +1957,20 @@ class Collector:
 
     def settle_paper(self):
         rows = self.con.execute("SELECT p.id, COALESCE(p.fam, p.event), p.outcome, p.line, p.odds, p.match_id, p.start_ts,"
-                                " r.home, r.away FROM paper2 p JOIN results r ON r.match_id = p.match_id"
+                                " COALESCE(x.ft1, r.home), COALESCE(x.ft2, r.away) FROM paper2 p"
+                                " LEFT JOIN results r ON r.match_id = p.match_id"
+                                " LEFT JOIN ext_scores x ON x.match_id = p.match_id AND x.done = 1"
                                 " WHERE p.status='open' AND COALESCE(p.fam, p.event) NOT LIKE 'h1!_%' ESCAPE '!'"
-                                " AND COALESCE(p.fam, p.event) NOT LIKE 'c!_%' ESCAPE '!'").fetchall()
+                                " AND COALESCE(p.fam, p.event) NOT LIKE 'c!_%' ESCAPE '!'"
+                                " AND (x.ft1 IS NOT NULL OR (r.home IS NOT NULL AND p.start_ts < ?))",
+                                (time.time() - 6 * 3600,)).fetchall()
         for pid, fam, outcome, line, odds, mid, start_ts in self.con.execute(
                 "SELECT id, fam, outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
                 " AND (fam LIKE 'h1!_%' ESCAPE '!' OR fam LIKE 'c!_%' ESCAPE '!') AND start_ts < ?",
                 (time.time() - 3 * 3600,)).fetchall():
             pre, base = split_fam(fam)
             h = a = None
-            for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts)):
+            for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid)):
                 if d:
                     h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
                     if h is not None and a is not None:
@@ -1897,6 +2062,37 @@ class Collector:
                                  ' ON CONFLICT (match_id, part) DO UPDATE SET s1=excluded.s1, s2=excluded.s2,'
                                  ' comment=excluded.comment, ts=excluded.ts', (mid, part, s1, s2, cm, now))
         self.con.commit()
+
+    def ext_step(self):
+        """один сыгранный матч с открытой бумажной ставкой → Sofascore/FotMob (раз в 10 с, до 5 попыток раз в 30 мин)"""
+        now = time.time()
+        if now - self.ext_last < 10 or self.browser is None:
+            return
+        self.ext_last = now
+        row = self.con.execute(
+            "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
+            " LEFT JOIN ext_scores x ON x.match_id = p.match_id WHERE p.status='open' AND p.start_ts < ?"
+            " AND m.home_en IS NOT NULL AND (x.match_id IS NULL OR (x.done=0 AND x.tries < 5 AND x.last_try < ?))"
+            " ORDER BY p.start_ts LIMIT 1", (now - 150 * 60, now - 1800)).fetchone()
+        if not row:
+            return
+        mid, start_ts, home_en, away_en = row
+        d = self.ext.lookup(self.browser, home_en, away_en, start_ts)
+        ft, ht, c = d.get('ft'), d.get('ht'), d.get('c')
+        self.con.execute('INSERT INTO ext_scores (match_id, src, ext_id, ft1, ft2, ht1, ht2, c1, c2, done, tries, last_try)'
+                         ' VALUES (?,?,?,?,?,?,?,?,?,?,1,?) ON CONFLICT (match_id) DO UPDATE SET src=excluded.src,'
+                         ' ext_id=excluded.ext_id, ft1=excluded.ft1, ft2=excluded.ft2, ht1=excluded.ht1, ht2=excluded.ht2,'
+                         ' c1=excluded.c1, c2=excluded.c2, done=excluded.done, tries=tries+1, last_try=excluded.last_try',
+                         (mid, d.get('src'), d.get('ext_id'), *(ft or (None, None)), *(ht or (None, None)),
+                          *(c or (None, None)), 1 if ft else 0, now))
+        self.con.commit()
+
+    def ext_result(self, mid):
+        r = self.con.execute('SELECT ft1, ft2, ht1, ht2, c1, c2 FROM ext_scores WHERE match_id=? AND done=1',
+                             (mid,)).fetchone()
+        if not r:
+            return None
+        return {'fthg': r[0], 'ftag': r[1], 'hthg': r[2], 'htag': r[3], 'hc': r[4], 'ac': r[5]}
 
     def bk_result(self, mid, start_ts):
         """тайм и угловые из лайва конторы; угловые — только если матч видели в лайве до ~90-й минуты
@@ -2214,6 +2410,10 @@ class Collector:
                     self.ever_ok = True
                 self.poll_feeds()
                 self.record_paper()
+                try:
+                    self.ext_step()
+                except Exception as e:
+                    add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120])
                 ms = self.pick_batch(self.batch_cur)
                 if not ms:
                     time.sleep(1)
