@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-46"
+VERSION = "2026.11.21-47"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2061,6 +2061,10 @@ def db_open():
             con.execute(f'ALTER TABLE bk_scores ADD COLUMN {col} REAL')
         except sqlite3.OperationalError:
             pass
+    try:                                       # страница матча у конторы — кнопка «к конторе» у идущего матча
+        con.execute('ALTER TABLE paper2 ADD COLUMN bk_url TEXT')
+    except sqlite3.OperationalError:
+        pass
     for col in ('res_h', 'res_a'):             # фактический счёт, по которому рассчитана ставка (голы/тайм/угловые)
         try:
             con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} INT')
@@ -2203,7 +2207,8 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .mt{width:100%;border-collapse:collapse;font-size:14px}.mt th{font-size:12px;color:#8b98a5;text-align:left;padding:6px 8px;border-bottom:1px solid #2a3542}
 .mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
 .mt tr.mg td{background:#1b2430;padding:6px 8px;border-bottom:none}.lft{color:#ffd400;font-weight:700;font-size:13px}
-.bt{font-weight:700}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
+.bt{font-weight:700}.mlink{text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}
+a.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:#fff;background:var(--c);border-radius:5px;padding:1px 7px;text-decoration:none;vertical-align:1px}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
 .info .loch{background:#e5484d;color:#fff;border-radius:5px;padding:0 6px;font-weight:700}.info .loch b{color:#fff}
@@ -2386,7 +2391,10 @@ function popBets(sel){
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
-  h+='<tr><td><span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span><div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
+  const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
+  const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
+  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="страница матча на odds.ru">'+nm+'</a>':nm)
+   +(isLive&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
@@ -2916,12 +2924,12 @@ class Collector:
         try:
             for code, v in pick_for_strategies(rows):
                 cur.execute('INSERT OR IGNORE INTO paper2 (created, match_id, title, league, start_ts, strategy, event,'
-                            ' src, bookmaker, market_name, outcome, line, odds, fair, ev, rel, pin_age, fam) VALUES'
-                            ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                            ' src, bookmaker, market_name, outcome, line, odds, fair, ev, rel, pin_age, fam, bk_url) VALUES'
+                            ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                             (now, v['match_id'], v['match'], v['league'], v['start_ts'], code,
                              event_group(event_of(v)), v['src'],
                              v['bookmaker'], v['market_name'], v['outcome'], v['line'], v['odds'], v['fair'],
-                             v['ev'], v['rel'], v.get('pin_age'), event_of(v)))
+                             v['ev'], v['rel'], v.get('pin_age'), event_of(v), v.get('bk_url')))
                 added += cur.rowcount
                 if cur.rowcount and code == 'Б' and v['src'] == 'сайт' and TG:
                     TG.send(tg_text(v, code))
@@ -3548,9 +3556,10 @@ def paper_stats(con, stake_rub):
         live.setdefault(lmid, {})[part] = [a1, a2]
         if part == 'ft':
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
-    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra in con.execute(
+    murl = dict(con.execute('SELECT match_id, url FROM matches'))
+    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku in con.execute(
             "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-            " profit, res_h, res_a"
+            " profit, res_h, res_a, bk_url"
             " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
         pre = split_fam(fam or '')[0]
         out['bets'].append({'id': pid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
@@ -3559,6 +3568,7 @@ def paper_stats(con, stake_rub):
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
                             'odds': odds, 'ev': ev, 'status': status, 'res': [rh, ra] if rh is not None else None,
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
+                            'url': murl.get(mid) or '', 'bk_url': bku or '',
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
