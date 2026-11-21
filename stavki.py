@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-14"
+VERSION = "2026.11.21-15"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -766,9 +766,11 @@ class State:
     def snapshot(self):
         with self.lock:
             now = time.time()
-            covered = {(n, mid) for n, f in self.status['feeds'].items() if f.get('last_ok') and now - f['last_ok'] < 90
-                       for mid in self.direct_cover.get(n, ())}
-            vals = [v for v in self.values.values() if (v['bookmaker'], v['match_id']) not in covered]
+            # пока прямая линия конторы жива, её цены с odds.ru не показываются вовсе: они отстают
+            # (21.11: odds.ru 2.85 при 2.50 на сайте PARI), а матчи, которые не удалось сопоставить, всё равно не сверены
+            alive = {n for n, f in self.status['feeds'].items() if n != 'Pinnacle' and f.get('last_ok')
+                     and now - f['last_ok'] < 90}
+            vals = [v for v in self.values.values() if v['bookmaker'] not in alive]
             vals += list(self.direct_values.values())
             vals.sort(key=lambda v: -v['ev'])
             rows = []
