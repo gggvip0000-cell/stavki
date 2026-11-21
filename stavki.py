@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 import sqlite3
 import subprocess
+import io
 import zipfile
 import sys
 import threading
@@ -24,7 +25,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-38"
+VERSION = "2026.11.21-39"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1405,6 +1406,7 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}.bad2{color:#ffb454;font-weight:700}
 .newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
 @keyframes blink{50%{opacity:.45}}
@@ -1436,6 +1438,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <span class="st" id="st">загрузка…</span></header>
 <main><div id="paper"></div><div id="cols"></div>
 <details><summary>Подробнее: работа программы, маржа контор, разведка, Telegram</summary>
+<p><a class="rbtn" href="/api/report" download>Скачать отчёт для разработки</a> <span class="st">— файл otchet_….zip появится в «Загрузках»; пришлите его в чат Claude</span></p>
 <p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
 <button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p><div id="more"></div></details></main>
 <script>
@@ -1582,6 +1585,24 @@ tick();setInterval(tick,3000);
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/api/report'):
+            try:
+                body = build_report(STATS_DB)
+            except Exception as e:
+                body = ('отчёт не собрался: ' + str(e)[:300]).encode('utf-8')
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            name = 'otchet_' + datetime.datetime.now(MSK).strftime('%Y%m%d_%H%M') + '.zip'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('Content-Disposition', f'attachment; filename="{name}"')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith('/api/state'):
             snap = STATE.snapshot()
             try:
@@ -2683,6 +2704,40 @@ def paper_stats(con, stake_rub):
         out['last'].append(dict(zip(['created', 'title', 'start_ts', 'bookmaker', 'src', 'market_name', 'outcome',
                                      'odds', 'ev', 'status', 'profit', 'clv', 'strategies'], r)))
     return out
+
+
+def _no_secrets(x):
+    """в отчёт не попадают ключи, токены, номера чатов"""
+    if isinstance(x, dict):
+        return {k: _no_secrets(v) for k, v in x.items()
+                if not any(w in str(k).lower() for w in ('key', 'token', 'chat', 'secret', 'password', 'cookie'))}
+    if isinstance(x, list):
+        return [_no_secrets(v) for v in x]
+    return x
+
+
+def build_report(con):
+    """«Отчёт для разработки» (владелец 21.11): всё, что программа считает для себя, — одним файлом .zip с report.json.
+    Владелец присылает его в чат, разработка смотрит, держится ли перевес вживую."""
+    def rows(sql, args=()):
+        cur = con.execute(sql, args)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    snap = STATE.snapshot()
+    rep = {'version': VERSION, 'made': now_str(), 'made_ts': time.time(),
+           'status': _no_secrets(snap.get('status')),
+           'values_now': _no_secrets(snap.get('values')),
+           'paper_stats': paper_stats(con, STATS_STAKE),
+           'paper2': rows('SELECT * FROM paper2 ORDER BY id'),
+           'cand': rows('SELECT * FROM cand ORDER BY first_seen'),
+           'ext_scores': rows('SELECT * FROM ext_scores'),
+           'bk_scores_parts': rows('SELECT part, COUNT(*) AS n FROM bk_scores GROUP BY part'),
+           'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+                      for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')}}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
+    return buf.getvalue()
 
 
 def remote_version():
