@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-19"
+VERSION = "2026.11.21-20"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1155,8 +1155,9 @@ function betText(v){const t=(v.match||'').split(' — ');const mn=v.market_name|
  if(base==='1Х2'){if(v.outcome==='П1')return pre+'Победа: '+(t[0]||'хозяева');if(v.outcome==='П2')return pre+'Победа: '+(t[1]||'гости');return pre+'Ничья'}
  const f=v.outcome.match(/Ф([12]) \(([-+\d.]+)\)/);if(f)return pre+'Фора '+(f[1]==='1'?(t[0]||'хозяев'):(t[1]||'гостей'))+' '+f[2];
  const m=v.outcome.match(/(Больше|Меньше) \(([\d.]+)\)/);
- if(m){const bm=m[1]==='Больше'?'больше ':'меньше ';if(base==='Инд. тотал хозяев')return pre+'Голы '+(t[0]||'хозяев')+' '+bm+m[2];
-  if(base==='Инд. тотал гостей')return pre+'Голы '+(t[1]||'гостей')+' '+bm+m[2];return pre+'Тотал '+bm+m[2]}
+ if(m){const bm=m[1]==='Больше'?'больше ':'меньше ';const what=pre==='Угловые: '?'Угловые ':'Голы ';const p2=pre==='Угловые: '?'':pre;
+  if(base==='Инд. тотал хозяев')return p2+what+(t[0]||'хозяев')+' '+bm+m[2];
+  if(base==='Инд. тотал гостей')return p2+what+(t[1]||'гостей')+' '+bm+m[2];return pre+'Тотал '+bm+m[2]}
  return mn+': '+v.outcome}
 async function tick(){
  try{
