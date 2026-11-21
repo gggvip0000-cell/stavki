@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-44"
+VERSION = "2026.11.21-45"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2193,6 +2193,7 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+.bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
 .fact{font-size:12px;color:#aab4be;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
 #pop{display:none;position:fixed;inset:0;background:#000a;z-index:50;align-items:flex-start;justify-content:center;padding:40px 16px}
@@ -2292,7 +2293,9 @@ async function tick(){
   for(const [sk,sn] of SECS){
    const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
    const keys=srows.map(v=>v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome);
-   if(!closed){SEEN[sk]=keys}                       // раздел открыт — всё, что в нём сейчас, увидено
+   if(!closed){                                     // раздел открыт: чего не было среди увиденных — «НОВАЯ» на 10 мин
+    if(SEEN[sk])for(const k of keys)if(!SEEN[sk].includes(k)&&!NEWK[k])NEWK[k]=Date.now();
+    SEEN[sk]=keys}
    const fresh=closed&&keys.some(k=>!(SEEN[sk]||[]).includes(k));
    h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+(fresh?'<span class="newb">НОВОЕ</span>':'')+'</div>';
    if(closed)continue;
@@ -2300,7 +2303,7 @@ async function tick(){
    for(const b of bkCols){
     const c=COLORS[b]||'#7fb6ff';const rs=srows.filter(v=>v.bookmaker===b);
     const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
-    const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel)));
+    const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(isNew(y)-isNew(x))||(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>(y.some(isNew)-x.some(isNew))||(Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel))));
     const f=s.feeds[b];let feed;
     const pins=rs.map(v=>v.pin_age).filter(x=>x!=null),ages=rs.map(v=>v.age);
     const chk=(ages.length?' · проверены '+fmt(Math.max(...ages))+' назад':'')+(pins.length?' · Pinnacle до '+fmt(Math.max(...pins))+' назад':'');
@@ -2321,13 +2324,15 @@ async function tick(){
       +(mo.some(x=>x)?'<div class="mo">'+o(0,'П1','h')+o(1,'Х','')+o(2,'П2','a')+(mo[3]||mo[4]||mo[5]?o(3,'1Х','h')+o(4,'12','')+o(5,'Х2','a'):'')+'</div>':'')+'</div>';
      for(const v of vs){
       const [,side,title]=vw(v);const star=best.has(v);
-      h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
+      const nw=isNew(v);
+      h+='<div class="bet'+(nw?' nbet':'')+'"><div class="mkt">'+(nw?'<span class="newb2">НОВАЯ</span> ':'')+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
        +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
        +'<div class="info"><span class="'+(v.chance>=0.55?'hich':(v.chance<0.40?'loch':'midch'))+'" title="шанс: до 40% — красная, 40–55% — спокойная, от 55% — жёлтая">шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
      h+='</div>'}
     h+='</div>'}
    h+='</div>'}
-  try{localStorage.setItem('seen',JSON.stringify(SEEN))}catch(e){}
+  for(const k in NEWK)if(Date.now()-NEWK[k]>600000)delete NEWK[k];
+  try{localStorage.setItem('seen',JSON.stringify(SEEN));localStorage.setItem('newk',JSON.stringify(NEWK))}catch(e){}
   document.getElementById('cols').innerHTML=h;
   // ставка — одной строкой: длинная уменьшается, пока не поместится
   for(const b of document.querySelectorAll('.bl,.btn .nm')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
@@ -2348,6 +2353,8 @@ async function tick(){
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
+let NEWK={};try{NEWK=JSON.parse(localStorage.getItem('newk')||'{}')}catch(e){}
+const isNew=v=>!!NEWK[v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome];
 let SCOL={};try{SCOL=JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
 function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
