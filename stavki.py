@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-28"
+VERSION = "2026.11.21-29"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -209,7 +209,7 @@ def bet_info(v):
     out = v.get('outcome', '')
     ln = line_of(out)
     lns = '%g' % ln if ln is not None else ''
-    bm = 'Больше' if out.startswith('Больше') else 'Меньше'
+    bm = 'Б' if out.startswith('Больше') else 'М'       # владелец 21.11: «просто Б или М»
     if base == '1x2':
         bet, sec = {'П1': 'П1 · ' + home, 'Х': 'Х · ничья', 'П2': 'П2 · ' + away}.get(out, out), 'Исходы'
     elif base == 'ah':
@@ -218,7 +218,7 @@ def bet_info(v):
     elif base in ('tt1', 'tt2'):
         bet, sec = f"{home if base == 'tt1' else away} · {bm} {lns}", 'Инд. тоталы'   # «ИНД. ТОТАЛ» — в пометке
     else:
-        bet, sec = f'Тотал {lns} {bm}', 'Тоталы'
+        bet, sec = f'{bm} {lns}', 'Тоталы'
     where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → '}[pre] + sec
     return bet, where
 
@@ -1355,7 +1355,7 @@ main{padding:16px 20px}
 .var .need{grid-column:1/4;margin-top:0;font-size:12px}
 .var:not(.best){opacity:.85}
 .bet{font-size:18px;font-weight:700}
-.odd{font-size:18px;font-weight:800;color:#fff;margin-left:6px}
+.odd{font-size:18px;font-weight:800;color:#fff;margin-left:10px}.kf{font-size:.7em;font-weight:600;color:#8b98a5;margin-right:3px}
 .ev{font-size:20px;font-weight:800;color:#5fd38d;white-space:nowrap}
 .m{font-size:14px;margin-top:4px}
 .m a{color:#cfe1ff;text-decoration:none}
@@ -1435,7 +1435,7 @@ async function tick(){
      +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
     vs.forEach((v,i)=>{
      const star=i===0&&vs.length>1&&main(v);
-     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><div class="bl"><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span></div>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
+     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><div class="bl"><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd"><span class="kf">кф</span>'+v.odds+'</span></div>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
       +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
       +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
