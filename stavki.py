@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-36"
+VERSION = "2026.11.21-37"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1403,7 +1403,8 @@ a.btn:hover{background:#3d4553}a.btn.h{border-left-color:#9be15d}a.btn.a{border-
 a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-decoration:underline;text-decoration-color:#ffffff33;text-underline-offset:3px}
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
-.okm{color:#5fd38d;font-weight:800;font-size:14px}.bad2{color:#ffb454;font-weight:700}
+.okm{color:#5fd38d;font-weight:800;font-size:14px}
+.info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}.bad2{color:#ffb454;font-weight:700}
 .newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
 @keyframes blink{50%{opacity:.45}}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
@@ -1519,7 +1520,7 @@ async function tick(){
       const [,side,title]=vw(v);const star=best.has(v);
       h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
        +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
-       +'<div class="info"><span>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
+       +'<div class="info"><span'+(v.chance>=0.55?' class="hich" title="шанс от 55% — как у способа В"':'')+'>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
      h+='</div>'}
     h+='</div>'}
    h+='</div>'}
@@ -2134,7 +2135,7 @@ class Collector:
                 with STATE.lock:
                     STATE.status['feeds'].setdefault(f.name, {}).update(error=f.last_error, fails=f.fails,
                                                                         page_url=f.page_url, host=f.host)
-                if f.fails in (1, 5) or f.fails % 20 == 0:
+                if f.fails in (3, 10) or f.fails % 20 == 0:     # единичный обрыв связи — не ошибка, следующий опрос через 5 с
                     add_error(f'{f.name} (прямая линия): {str(e).splitlines()[0][:150]}')
                 if f.fails % 10 == 0:
                     f.version = None          # начать заново с полного снимка
