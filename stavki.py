@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-43"
+VERSION = "2026.11.21-44"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2385,10 +2385,10 @@ function popBets(sel){
 // timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
 function matchClock(t,mins){
  if(!t||t.tsec==null)return 'идёт · '+mins+' мин от начала';
- if(!t.tdir){if(t.tsec>=5400)return 'матч окончен';if(t.tsec>=2700&&t.ht)return 'перерыв';return 'таймер стоит · '+(Math.floor(t.tsec/60)+1)+'-я минута'}
- const sec=t.tsec+(Date.now()-(t.tupd||Date.now()))/1000,m=Math.floor(sec/60)+1;
+ if(!t.tdir){if(t.tsec>=5400)return 'матч окончен';if(t.tsec>=2700&&t.ht)return 'перерыв';return 'таймер стоит · '+Math.floor(t.tsec/60)+'-я минута'}
+ const sec=t.tsec+(Date.now()-(t.tupd||Date.now()))/1000,m=Math.floor(sec/60);   // как часы на сайте конторы: 30:56 → 30
  const half=(t.ht||m>45)?'2-й тайм':'1-й тайм';
- return half+' · '+(half==='1-й тайм'&&m>45?'45+'+(m-45):(m>90?'90+'+(m-90):m))+'-я минута'}
+ return half+' · '+(half==='1-й тайм'&&m>=45?'45+'+(m-45):(m>=90?'90+'+(m-90):m))+'-я минута'}
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){document.getElementById('pop').style.display='none'}
