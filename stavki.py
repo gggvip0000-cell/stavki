@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-4"
+VERSION = "2026.11.21-5"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -213,6 +213,8 @@ class DirectFeed:
         self.fails = 0
         self.match_map = {}        # id события -> id матча odds.ru или None
         self.match_tried = {}
+        self.page_url = ''
+        self.last_error = ''
 
     def start(self, browser):
         self.page = browser.new_page(locale='ru-RU')
@@ -224,6 +226,7 @@ class DirectFeed:
         self.page.on('request', on_req)
         self.page.goto(self.book['site'], wait_until='domcontentloaded', timeout=90000)
         self.page.wait_for_timeout(6000)
+        self.page_url = self.page.url
         if seen:
             m = re.match(r'(https://[^/]+(?:/ma)?)/events/', seen[0])
             if m:
@@ -231,10 +234,19 @@ class DirectFeed:
         log(f'{self.name}: сайт открыт, адрес линии {self.host}')
 
     def fetch(self, path):
-        res = self.page.evaluate(FETCH_JS, self.host + path)
-        if res['status'] != 200:
-            raise RuntimeError(f'{self.name}: ответ {res["status"]}')
-        return json.loads(res['text'])
+        url = self.host + path
+        site = self.book['site'].rstrip('/')
+        try:
+            r = self.page.context.request.get(url, headers={'Referer': site + '/', 'Origin': site}, timeout=30000)
+            status, text = r.status, r.text()
+        except Exception as e:
+            res = self.page.evaluate(FETCH_JS, url)      # запасной путь — как это делает сам сайт
+            status, text = res['status'], res['text']
+            if status != 200:
+                raise RuntimeError(f'нет ответа ({str(e).splitlines()[0][:80]}; {text[:80]})')
+        if status != 200:
+            raise RuntimeError(f'ответ {status} с {url.split("/events")[0]}: {text[:80]}')
+        return json.loads(text)
 
     def merge(self, j):
         for sp in (j.get('sports') or []):
@@ -440,6 +452,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <main><div class="cols" id="cols"></div>
 <details><summary>Подробнее: работа программы, маржа контор, разведка</summary><div id="more"></div></details></main>
 <script>
+const PAGE_VERSION='__VERSION__';
 const COLORS={'Фонбет':'#e8392f','PARI':'#f2c230','Винлайн':'#ff7a1a'};
 function fmt(s){if(s==null)return '—';if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
 function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
@@ -452,6 +465,7 @@ function betText(v){const t=(v.match||'').split(' — ');
 async function tick(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
+  if(s.version!==PAGE_VERSION){location.reload();return}
   const u=document.getElementById('upd');
   if(s.restarting)u.innerHTML='<span class="st">Обновляюсь… окно вернётся само примерно через минуту</span>';
   else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="post(\'/api/update\')">Обновить до версии '+s.update_available+'</button>';
@@ -466,7 +480,7 @@ async function tick(){
    const c=COLORS[b]||'#7fb6ff';const rs=rows.filter(v=>v.bookmaker===b);
    const f=s.feeds[b];let feed;
    if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы · матчей '+f.events+', сопоставлено '+f.matched+'</div>';
-   else feed='<div class="feed warn">цены с odds.ru, могут отставать — перед ставкой сверить на сайте конторы</div>';
+   else feed='<div class="feed warn">цены с odds.ru, могут отставать — перед ставкой сверить на сайте конторы'+(f&&f.error?'<br>прямая линия не работает: '+f.error:'')+'</div>';
    h+='<div class="col" style="--c:'+c+'"><div class="colh"><span class="bk">'+b+'</span><span class="cnt">'+(rs.length?rs.length+' шт.':'')+'</span></div>'+feed;
    if(!rs.length)h+='<div class="empty">Сейчас подходящих ставок нет</div>';
    for(const v of rs){
@@ -500,7 +514,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(STATE.snapshot(), ensure_ascii=False).encode('utf-8')
             ctype = 'application/json; charset=utf-8'
         else:
-            body = PAGE.encode('utf-8')
+            body = PAGE.replace('__VERSION__', VERSION).encode('utf-8')
             ctype = 'text/html; charset=utf-8'
         self.send_response(200)
         self.send_header('Content-Type', ctype)
@@ -754,6 +768,10 @@ class Collector:
             except Exception as e:
                 f.fails += 1
                 f.last_poll = time.time()
+                f.last_error = str(e).splitlines()[0][:160]
+                with STATE.lock:
+                    STATE.status['feeds'].setdefault(f.name, {}).update(error=f.last_error, fails=f.fails,
+                                                                        page_url=f.page_url, host=f.host)
                 if f.fails in (1, 5) or f.fails % 20 == 0:
                     add_error(f'{f.name} (прямая линия): {str(e).splitlines()[0][:150]}')
                 if f.fails % 10 == 0:
@@ -812,7 +830,7 @@ class Collector:
                     mm['last_update'] = 0
             STATE.direct_cover[f.name] = cover
             STATE.status['feeds'][f.name] = {'last_ok': f.last_ok, 'events': len(evs), 'matched': matched,
-                                             'host': f.host}
+                                             'host': f.host, 'error': '', 'fails': 0}
 
     def match_url(self, mid, market):
         return (f'/next-api/coefficients/rates/ru/?sport=football&matchId={mid}'
