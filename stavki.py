@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-13"
+VERSION = "2026.11.21-14"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -330,6 +330,45 @@ class PinnacleFeed:
         self.last_error = ''
         self.page_url = ''
         self.host = PIN_API
+        self.lock = threading.Lock()
+        self.mode = None            # 'thread' — свой поток напрямую; 'browser' — через окно браузера
+        self.pending = set()        # id odds.ru с новой ценой — забирает основной цикл
+        self.thread = None
+
+    def http_get(self, path):
+        import gzip
+        req = urllib.request.Request(PIN_API + path, headers=dict(
+            self.headers, **{'Accept-Encoding': 'gzip', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                             'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0 Safari/537.36'}))
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read()
+            if r.headers.get('Content-Encoding') == 'gzip':
+                body = gzip.decompress(body)
+        j = json.loads(body.decode('utf-8'))
+        if not isinstance(j, list):
+            raise RuntimeError(f'Pinnacle прислал не то на {path[:60]}')
+        return j
+
+    def run_thread(self):
+        """свой поток: лиги по очереди, не задерживая Фонбет и PARI"""
+        while self.mode == 'thread':
+            with STATE.lock:
+                matches = dict(STATE.matches)
+            try:
+                changed = self.poll(matches)
+                with self.lock:
+                    self.pending |= set(changed)
+                time.sleep(0.5)
+            except Exception as e:
+                self.fails += 1
+                self.last_error = str(e).splitlines()[0][:160]
+                if self.fails in (1, 5) or self.fails % 20 == 0:
+                    add_error('Pinnacle: ' + self.last_error)
+                if self.fails >= 10:                 # напрямую не выходит — дальше через окно браузера
+                    log('Pinnacle: напрямую не отвечает, перехожу на загрузку через браузер')
+                    self.mode = 'browser'
+                    break
+                time.sleep(min(30, 2 * self.fails))
 
     def start(self, browser):
         self.page = browser.new_page(locale='en-US')
@@ -351,12 +390,25 @@ class PinnacleFeed:
             hdr['x-api-key'] = load_config().get('pinnacle_key') or PIN_PUBLIC_KEY
         self.headers = dict(hdr, Referer='https://www.pinnacle.com/', Accept='application/json')
         try:
-            self.get('/sports/29/leagues?all=false')
+            self.http_get('/sports/29/leagues?all=false')
+            self.mode = 'thread'
         except Exception as e:
-            raise RuntimeError('Pinnacle не отвечает — включён ли VPN? (' + str(e).splitlines()[0][:80] + ')')
-        log('Pinnacle: цены берутся напрямую с сайта')
+            log('Pinnacle напрямую (без браузера) не ответил: ' + str(e).splitlines()[0][:100])
+            self.mode = 'browser'
+        if self.mode == 'browser':
+            try:
+                self.get('/sports/29/leagues?all=false')
+            except Exception as e:
+                raise RuntimeError('Pinnacle не отвечает — включён ли VPN? (' + str(e).splitlines()[0][:80] + ')')
+        else:
+            if not (self.thread and self.thread.is_alive()):
+                self.thread = threading.Thread(target=self.run_thread, daemon=True)
+                self.thread.start()
+        log('Pinnacle: цены берутся напрямую с сайта' + (' (свой поток)' if self.mode == 'thread' else ' (через браузер)'))
 
     def get(self, path):
+        if self.mode == 'thread':
+            return self.http_get(path)
         r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=15000)
         if r.status != 200:
             raise RuntimeError(f'Pinnacle ответил {r.status} на {path[:60]}')
@@ -407,7 +459,8 @@ class PinnacleFeed:
                 lg['errors'] = lg.get('errors', 0) + 1
                 errors.append(str(e).splitlines()[0][:120])
                 continue
-            changed += self.ingest(lid, mu, mk, matches)
+            with self.lock:
+                changed += self.ingest(lid, mu, mk, matches)
         if tried and len(errors) == tried:
             raise RuntimeError(errors[-1])
         self.last_ok = time.time()
@@ -910,6 +963,7 @@ async function tick(){
   let st='обновлено '+s.now+' · матчей в работе '+s.tracked;
   const pf=s.feeds&&s.feeds['Pinnacle'];
   if(pf&&pf.last_ok&&(Date.now()/1000-pf.last_ok)<120)st+=' · <span class="pos">честная цена: Pinnacle с его сайта, сопоставлено матчей '+pf.matched+'</span>';
+  else if(!pf||(!pf.last_ok&&!pf.error))st+=' · Pinnacle: подключаюсь…';
   else st+=' · <span class="bad">Pinnacle не отвечает'+(pf&&pf.error?': '+pf.error:'')+' — проверьте, включён ли VPN</span>';
   if(s.errors.length)st+=' · <span class="bad">ошибка: '+s.errors[s.errors.length-1]+'</span>';
   document.getElementById('st').innerHTML=st;
@@ -1123,17 +1177,28 @@ class Collector:
                 except Exception:
                     pass
                 self.pin.page = None
+            self.pin.fails = 0
             self.pin.start(self.browser)
             with STATE.lock:
                 STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'events': 0, 'matched': 0, 'error': ''}
         except Exception as e:
             self.pin.page = None
+            self.pin.mode = None
             self.pin.last_error = str(e).splitlines()[0][:160]
             with STATE.lock:
                 STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error}
             add_error('Pinnacle: ' + self.pin.last_error)
 
     def poll_pin(self):
+        if self.pin.mode is None:
+            if time.time() - self.pin_start_try > 300:
+                self.start_pin()
+            return
+        if self.pin.mode == 'thread':
+            with self.pin.lock:
+                changed, self.pin.pending = list(self.pin.pending), set()
+            self.pin_apply(changed)
+            return
         if self.pin.page is None:
             if time.time() - self.pin_start_try > 300:
                 self.start_pin()
@@ -1141,7 +1206,7 @@ class Collector:
         with STATE.lock:
             matches = dict(STATE.matches)
         try:
-            changed = self.pin.poll(matches)
+            changed = self.pin.poll(matches, k=1)
         except Exception as e:
             self.pin.fails += 1
             self.pin.last_error = str(e).splitlines()[0][:160]
@@ -1152,8 +1217,11 @@ class Collector:
             if self.pin.fails % 10 == 0:
                 self.start_pin()
             return
+        self.pin_apply(changed)
+
+    def pin_apply(self, changed):
         now = time.time()
-        with STATE.lock:
+        with self.pin.lock, STATE.lock:
             for mid in changed:
                 if mid in self.pin.fair:
                     STATE.pin_fair[mid] = self.pin.fair[mid]
@@ -1166,15 +1234,17 @@ class Collector:
             near = [m for m in STATE.matches.values() if m['id'] in STATE.pin_fair]
             STATE.status['feeds']['Pinnacle'] = {
                 'last_ok': self.pin.last_ok, 'events': len(self.pin.regular), 'matched': len(STATE.pin_fair),
-                'leagues': len(self.pin.leagues), 'error': ''}
-        for mid in changed:                       # цена закрытия для CLV — не чаще раза в минуту на матч
+                'leagues': len(self.pin.leagues), 'mode': self.pin.mode,
+                'error': self.pin.last_error if self.pin.fails else ''}
+            rows = {mid: self.pin.compact(mid) for mid in changed if mid in self.pin.fair}
+        for mid, comp in rows.items():            # цена закрытия для CLV — не чаще раза в минуту на матч
             if now - self.pin.pin_written.get(mid, 0) < 60:
                 continue
             self.pin.pin_written[mid] = now
-            for market, rows in self.pin.compact(mid).items():
-                if rows:
+            for market, rr in comp.items():
+                if rr:
                     self.con.execute('INSERT INTO pin VALUES (?,?,?,?)',
-                                     (now, mid, market, json.dumps(rows, ensure_ascii=False)))
+                                     (now, mid, market, json.dumps(rr, ensure_ascii=False)))
         if changed:
             self.con.commit()
 
@@ -1824,7 +1894,7 @@ def vkey(v):
 
 
 def update_checker():
-    """Раз в 10 минут смотрит, есть ли на GitHub версия новее. Если есть — в окне появляется кнопка «Обновить»."""
+    """Раз в минуту смотрит, есть ли на GitHub версия новее. Если есть — в окне появляется кнопка «Обновить»."""
     while True:
         try:
             rv = remote_version()
@@ -1835,7 +1905,7 @@ def update_checker():
                     STATE.status['update_available'] = rv
         except Exception as e:
             log(f'проверка обновлений не удалась: {str(e).splitlines()[0][:120]}')
-        for _ in range(180):              # раз в 3 минуты или сразу по кнопке
+        for _ in range(60):               # раз в минуту или сразу по кнопке
             if STATE.status.get('check_now'):
                 STATE.status['check_now'] = False
                 break
