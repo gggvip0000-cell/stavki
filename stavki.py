@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-5"
+VERSION = "2026.11.21-6"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -38,7 +38,11 @@ DEFAULT_CONFIG = {
     "my_bookmakers": [],          # пусто = все российские конторы на odds.ru; иначе названия как на сайте
     "pause_between_requests": 0.5,
     "batch_matches": 6,           # сколько матчей запрашивать одновременно
-    "direct_poll_sec": 5,         # как часто брать изменения линии прямо с сайтов Фонбета и PARI
+    "direct_poll_sec": 5,
+    "paper_threshold": 0.05,      # бумажная ставка — при перевесе от 5% и кф до 4 (из проверки на 6 сезонах)
+    "paper_control_from": 0.02,   # 2–5% — контрольная группа, считается отдельно
+    "paper_max_odds": 4.0,
+    "paper_stake_rub": 100,         # как часто брать изменения линии прямо с сайтов Фонбета и PARI
     "my_bookmakers_list": ["Фонбет", "Винлайн", "PARI"],   # конторы, где есть счёт (выбор владельца 21.11)
     "refresh_events_sec": 120,
     "headless": True,
@@ -339,6 +343,28 @@ class DirectFeed:
         return res
 
 
+def settle_one(market, outcome, line, odds, home, away):
+    """Прибыль ставки в долях ставки (1 = ставка). Учитывает возврат и «азиатские» линии x.25/x.75."""
+    if market == '1x2':
+        res = 'П1' if home > away else ('П2' if away > home else 'Х')
+        return odds - 1 if outcome == res else -1.0
+    goals = home + away
+    over = outcome.startswith('Больше')
+    frac = round((line * 4) % 4)
+    lines = [line - 0.25, line + 0.25] if frac in (1, 3) else [line]
+    total = 0.0
+    for ln in lines:
+        part = 1 / len(lines)
+        if goals == ln:
+            r = 0.0
+        elif (goals > ln) == over:
+            r = odds - 1
+        else:
+            r = -1.0
+        total += part * r
+    return total
+
+
 # ---------------------------------------------------------------- состояние
 
 class State:
@@ -389,6 +415,8 @@ def now_str():
 
 STATE = State()
 MY_BOOKMAKERS = []
+STATS_DB = None
+STATS_STAKE = 100
 
 # ---------------------------------------------------------------- база для учёта (CLV потом)
 
@@ -400,6 +428,12 @@ def db_open():
                 ' PRIMARY KEY (match_id, market, outcome, bookmaker))')
     con.execute('CREATE TABLE IF NOT EXISTS matches (match_id INT PRIMARY KEY, title TEXT, league TEXT,'
                 ' start_ts REAL, url TEXT)')
+    con.execute('CREATE TABLE IF NOT EXISTS results (match_id INT PRIMARY KEY, home INT, away INT, ts REAL)')
+    con.execute('CREATE TABLE IF NOT EXISTS paper (id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL, match_id INT,'
+                ' title TEXT, league TEXT, start_ts REAL, bookmaker TEXT, source TEXT, grp TEXT, market TEXT,'
+                ' market_name TEXT, outcome TEXT, line REAL, odds REAL, fair REAL, ev REAL, stake REAL,'
+                ' status TEXT DEFAULT "open", profit REAL, closing_fair REAL, clv REAL, settled REAL,'
+                ' UNIQUE (match_id, bookmaker, market_name, outcome, grp))')
     con.commit()
     return con
 
@@ -440,6 +474,11 @@ main{padding:16px 20px}
 .src{font-size:12px;margin-top:3px}
 .src.ok{color:#5fd38d}.src.warn{color:#d8a657}
 .empty{padding:6px 14px 16px;color:#7d8b99;font-size:13px}
+.pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px}
+.pp h2{font-size:16px;margin:0 0 6px}
+.big{font-size:15px}
+.pos{color:#5fd38d}.neg{color:#ff6b6b}
+.pp table td,.pp table th{font-size:12px;padding:3px 14px 3px 6px}
 details{margin-top:26px;color:#9fb0c0}
 summary{cursor:pointer;font-size:14px}
 table{border-collapse:collapse;margin-top:8px}
@@ -449,7 +488,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <label>перевес от, % <input id="thr" type="number" step="0.5" value="5"></label>
 <label>кф до <input id="mx" type="number" step="0.5" value="4"></label>
 <span class="st" id="st">загрузка…</span></header>
-<main><div class="cols" id="cols"></div>
+<main><div id="paper"></div><div class="cols" id="cols"></div>
 <details><summary>Подробнее: работа программы, маржа контор, разведка</summary><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
@@ -493,6 +532,7 @@ async function tick(){
      +'<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, '+fmt(v.age)+' назад':'кф с odds.ru, '+fmt(v.age)+' назад — сверить')+(v.pin_age!=null?' · Pinnacle '+fmt(v.pin_age)+' назад':'')+'</div></div>'}
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
+  renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
   m+=s.razvedka?'<p class="st">Разведка контор: '+s.razvedka+'</p>':'<p><button class="lbtn" onclick="post(\'/api/razvedka\')">Разведка контор (≈4 мин)</button></p>';
@@ -503,6 +543,23 @@ async function tick(){
   document.getElementById('more').innerHTML=m;
  }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
+function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
+function renderPaper(p){
+ const el=document.getElementById('paper');if(!p||p.error){el.innerHTML='';return}
+ const wasOpen=!!(el.querySelector('details')&&el.querySelector('details').open);
+ const m=p.main;
+ let h='<div class="pp"><h2>Ставки на бумаге (понарошку, по '+p.stake_rub+' ₽)</h2><div class="big">Основная группа (перевес от 5%): ставок '+m.n+', рассчитано '+m.done
+  +(m.done?' · выигрышей '+m.w+', проигрышей '+m.l+', возвратов '+m.push+' · итог '+sg(m.profit_rub,' ₽')+' ('+sg(m.roi,'%')+' на ставку)':'')
+  +' · ожидали '+sg(m.ev,'%')+' · CLV '+(m.nclv?sg(m.clv,'%')+' <span class="st">('+m.nclv+')</span>':'—')+'</div>'
+  +'<details'+(wasOpen?' open':'')+'><summary class="st">по конторам, группам и последние ставки</summary><table><tr><th>Группа</th><th>Цена</th><th>Ставок</th><th>Рассчитано</th><th>В+ / В− / возврат</th><th>Итог, ₽</th><th>На ставку</th><th>Ожидали</th><th>CLV</th></tr>';
+ for(const g of p.groups){if(!g.n)continue;h+='<tr><td>'+g.grp+'</td><td>'+(g.src==='сайт'?'с сайта конторы':'с odds.ru (не сверено)')+'</td><td>'+g.n+'</td><td>'+g.done+'</td><td>'+g.w+' / '+g.l+' / '+g.push+'</td><td>'+sg(g.profit_rub)+'</td><td>'+sg(g.roi,'%')+'</td><td>'+sg(g.ev,'%')+'</td><td>'+sg(g.clv,'%')+'</td></tr>'}
+ h+='</table><table><tr><th>Контора (основная группа)</th><th>Ставок</th><th>Рассчитано</th><th>Итог, ₽</th><th>На ставку</th><th>CLV</th></tr>';
+ for(const b of p.books)h+='<tr><td>'+b.bk+'</td><td>'+b.n+'</td><td>'+b.done+'</td><td>'+sg(b.profit_rub)+'</td><td>'+sg(b.roi,'%')+'</td><td>'+sg(b.clv,'%')+'</td></tr>';
+ h+='</table><table><tr><th>Когда</th><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Группа</th><th>Итог</th><th>CLV</th></tr>';
+ for(const r of p.last){const t=new Date(r.created*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  h+='<tr><td>'+t+'</td><td>'+r.title+'</td><td>'+r.market_name+': '+r.outcome+'</td><td>'+r.bookmaker+'</td><td>'+r.odds+'</td><td>+'+(r.ev*100).toFixed(1)+'%</td><td>'+r.grp+'</td><td>'+(r.status==='open'?'<span class="st">ждём матч</span>':r.status+' '+sg(Math.round(r.profit*p.stake_rub),' ₽'))+'</td><td>'+(r.clv==null?'—':sg(Math.round(r.clv*1000)/10,'%'))+'</td></tr>'}
+ el.innerHTML=h+'</table></details></div>';
+}
 async function post(u){try{await fetch(u,{method:'POST'})}catch(e){}}
 tick();setInterval(tick,3000);
 </script></body></html>"""
@@ -511,7 +568,12 @@ tick();setInterval(tick,3000);
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/api/state'):
-            body = json.dumps(STATE.snapshot(), ensure_ascii=False).encode('utf-8')
+            snap = STATE.snapshot()
+            try:
+                snap['paper'] = paper_stats(STATS_DB, STATS_STAKE)
+            except Exception as e:
+                snap['paper'] = {'error': str(e)[:120]}
+            body = json.dumps(snap, ensure_ascii=False).encode('utf-8')
             ctype = 'application/json; charset=utf-8'
         else:
             body = PAGE.replace('__VERSION__', VERSION).encode('utf-8')
@@ -684,10 +746,24 @@ class Collector:
         now = datetime.datetime.now(MSK)
         horizon = now + datetime.timedelta(hours=self.cfg['hours_ahead'])
         dates = sorted({now.date(), horizon.date()} | {(now + datetime.timedelta(days=1)).date()})
+        if self.con.execute("SELECT 1 FROM paper WHERE status='open' AND start_ts < ? LIMIT 1",
+                            (now.timestamp() - 3 * 3600,)).fetchone():
+            dates = [(now - datetime.timedelta(days=1)).date()] + dates   # дорасчёт вчерашних матчей
         found = {}
         ok_dates = 0
         for d in dates:
             if d > horizon.date():
+                continue
+            if d < now.date():
+                try:
+                    data = self.get_json(f'/next-api/sports/events/ru/?sport=football&status=all&date={d.isoformat()}&source=default')
+                    for lg in data.get('leagues', []):
+                        for ev in lg.get('events', []):
+                            if (ev.get('status') or {}).get('name') == 'completed':
+                                self.con.execute('INSERT OR REPLACE INTO results VALUES (?,?,?,?)',
+                                                 (ev['id'], int(ev['home']['score']), int(ev['away']['score']), time.time()))
+                except Exception as e:
+                    add_error(f'результаты за {d.isoformat()}: {str(e).splitlines()[0][:100]}')
                 continue
             try:
                 data = self.get_json(f'/next-api/sports/events/ru/?sport=football&status=all&date={d.isoformat()}&source=default')
@@ -699,6 +775,13 @@ class Collector:
                 if self.cfg['leagues_only'] and lg.get('id') not in self.cfg['leagues_only']:
                     continue
                 for ev in lg.get('events', []):
+                    if (ev.get('status') or {}).get('name') == 'completed':
+                        try:
+                            self.con.execute('INSERT OR REPLACE INTO results VALUES (?,?,?,?)',
+                                             (ev['id'], int(ev['home']['score']), int(ev['away']['score']), time.time()))
+                        except Exception:
+                            pass
+                        continue
                     if (ev.get('status') or {}).get('name') != 'upcoming':
                         continue
                     try:
@@ -717,6 +800,8 @@ class Collector:
             time.sleep(self.cfg['pause_between_requests'])
         if ok_dates == 0:
             raise RuntimeError('список матчей не получен ни за один день')
+        self.con.commit()
+        self.settle_paper()
         with STATE.lock:
             for mid in list(STATE.matches):
                 if mid not in found:
@@ -757,6 +842,69 @@ class Collector:
                 if over > best_over:
                     best, best_over = m, over
         return best, best_over
+
+    def record_paper(self):
+        thr = self.cfg['paper_threshold']
+        ctrl = self.cfg['paper_control_from']
+        now = time.time()
+        rows = STATE.snapshot()['values']
+        cur = self.con.cursor()
+        added = 0
+        for v in rows:
+            if v['bookmaker'] not in MY_BOOKMAKERS or v['ev'] < ctrl or v['odds'] > self.cfg['paper_max_odds']:
+                continue
+            if not v.get('start_ts') or v['start_ts'] < now + 60:
+                continue
+            market = '1x2' if v['market_name'] == '1Х2' else 'total'
+            line = line_of(v['outcome']) if market == 'total' else None
+            if market == 'total' and line is None:
+                continue
+            grp = 'основная' if v['ev'] >= thr else 'контрольная'
+            try:
+                cur.execute('INSERT OR IGNORE INTO paper (created, match_id, title, league, start_ts, bookmaker, source,'
+                            ' grp, market, market_name, outcome, line, odds, fair, ev, stake) VALUES'
+                            ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                            (now, v['match_id'], v['match'], v['league'], v['start_ts'], v['bookmaker'],
+                             v.get('source', 'odds.ru'), grp, market, v['market_name'], v['outcome'], line,
+                             v['odds'], v['fair'], v['ev'], 1.0))
+                added += cur.rowcount
+            except Exception as e:
+                add_error('бумажная ставка: ' + str(e)[:100])
+        if added:
+            self.con.commit()
+            log(f'бумажных ставок записано: {added}')
+
+    def closing_fair(self, match_id, market, outcome, line, start_ts):
+        mk = 'match_winner' if market == '1x2' else 'total_points'
+        row = self.con.execute('SELECT raw FROM pin WHERE match_id=? AND market=? AND ts<=? ORDER BY ts DESC LIMIT 1',
+                               (match_id, mk, start_ts)).fetchone()
+        if not row:
+            return None
+        try:
+            for names, odds in json.loads(row[0]):
+                if outcome in names:
+                    po = [float(x) for x in odds]
+                    p = fair_power(po)
+                    return round(1 / p[names.index(outcome)], 3)
+        except Exception:
+            return None
+        return None
+
+    def settle_paper(self):
+        rows = self.con.execute("SELECT p.id, p.market, p.outcome, p.line, p.odds, p.match_id, p.start_ts, r.home, r.away"
+                                " FROM paper p JOIN results r ON r.match_id = p.match_id WHERE p.status='open'").fetchall()
+        n = 0
+        for pid, market, outcome, line, odds, mid, start_ts, home, away in rows:
+            pr = settle_one(market, outcome, line, odds, home, away)
+            st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
+            cf = self.closing_fair(mid, market, outcome, line, start_ts)
+            clv = (odds / cf - 1) if cf else None
+            self.con.execute('UPDATE paper SET status=?, profit=?, closing_fair=?, clv=?, settled=? WHERE id=?',
+                             (st, pr, cf, clv, time.time(), pid))
+            n += 1
+        if n:
+            self.con.commit()
+            log(f'рассчитано бумажных ставок: {n}')
 
     def poll_feeds(self):
         now = time.time()
@@ -1041,6 +1189,7 @@ class Collector:
                     self.refresh_events()
                     self.ever_ok = True
                 self.poll_feeds()
+                self.record_paper()
                 ms = self.pick_batch(self.cfg['batch_matches'])
                 if not ms:
                     time.sleep(1)
@@ -1080,6 +1229,32 @@ class Collector:
                         self.restart_browser()
                     except Exception as e2:
                         add_error('перезапуск браузера: ' + str(e2).splitlines()[0][:150])
+
+
+def paper_stats(con, stake_rub):
+    def agg(where, args=()):
+        r = con.execute('SELECT COUNT(*), SUM(status!="open"), SUM(status="выигрыш"), SUM(status="проигрыш"),'
+                        ' SUM(status="возврат"), SUM(COALESCE(profit,0)), AVG(ev), AVG(clv), COUNT(clv)'
+                        ' FROM paper WHERE ' + where, args).fetchone()
+        n, done, w, l, push, prof, ev, clv, nclv = r
+        done = done or 0
+        return {'n': n or 0, 'done': done, 'w': w or 0, 'l': l or 0, 'push': push or 0,
+                'profit': round(prof or 0, 2), 'profit_rub': round((prof or 0) * stake_rub),
+                'roi': round(100 * (prof or 0) / done, 1) if done else None,
+                'ev': round(100 * ev, 1) if ev is not None else None,
+                'clv': round(100 * clv, 1) if clv is not None else None, 'nclv': nclv or 0}
+    out = {'stake_rub': stake_rub, 'groups': [], 'books': [], 'last': []}
+    for grp in ('основная', 'контрольная'):
+        for src in ('сайт', 'odds.ru'):
+            out['groups'].append(dict(agg('grp=? AND source=?', (grp, src)), grp=grp, src=src))
+    for bk in MY_BOOKMAKERS:
+        out['books'].append(dict(agg("grp='основная' AND bookmaker=?", (bk,)), bk=bk))
+    out['main'] = agg("grp='основная'")
+    for r in con.execute('SELECT created, title, start_ts, bookmaker, source, grp, market_name, outcome, odds, fair, ev,'
+                         ' status, profit, clv FROM paper ORDER BY id DESC LIMIT 30').fetchall():
+        out['last'].append(dict(zip(['created', 'title', 'start_ts', 'bookmaker', 'source', 'grp', 'market_name',
+                                     'outcome', 'odds', 'fair', 'ev', 'status', 'profit', 'clv'], r)))
+    return out
 
 
 def remote_version():
@@ -1128,10 +1303,12 @@ def load_config():
 
 
 def main():
-    global MY_BOOKMAKERS
+    global MY_BOOKMAKERS, STATS_DB, STATS_STAKE
     cfg = load_config()
     MY_BOOKMAKERS = list(cfg.get('my_bookmakers_list') or [])
     con = db_open()
+    STATS_DB = sqlite3.connect(str(HERE / 'stavki.sqlite3'), check_same_thread=False)
+    STATS_STAKE = cfg.get('paper_stake_rub', 100)
     srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f'http://localhost:{cfg["port"]}'
