@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-9"
+VERSION = "2026.11.21-10"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
     "my_bookmakers_list": ["Фонбет", "Винлайн", "PARI"],   # конторы, где есть счёт (выбор владельца 21.11)
     "refresh_events_sec": 120,
     "headless": True,
+    "telegram_token": "",         # заполняется кнопкой «Подключить Telegram» в окне
+    "telegram_chat_id": "",
 }
 
 # ---------------------------------------------------------------- расчёт
@@ -580,7 +582,9 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <label>кф до <input id="mx" type="number" step="0.5" value="4"></label>
 <span class="st" id="st">загрузка…</span></header>
 <main><div id="paper"></div><div class="cols" id="cols"></div>
-<details><summary>Подробнее: работа программы, маржа контор, разведка</summary><div id="more"></div></details></main>
+<details><summary>Подробнее: работа программы, маржа контор, разведка, Telegram</summary>
+<p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
+<button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
 const COLORS={'Фонбет':'#e8392f','PARI':'#f2c230','Винлайн':'#ff7a1a'};
@@ -631,6 +635,9 @@ async function tick(){
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
+  const tg=s.telegram||{};const te=document.getElementById('tgst');
+  te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
+  document.getElementById('tgform').style.display=(tg.ok===true||(tg.text||'').startsWith('проверяю')||(tg.text||'').startsWith('ключ подходит'))?'none':'';
   m+=s.razvedka?'<p class="st">Разведка контор: '+s.razvedka+'</p>':'<p><button class="lbtn" onclick="post(\'/api/razvedka\')">Разведка контор (≈4 мин)</button></p>';
   const bks=Object.keys(d.margins||{}).sort((a,b)=>(d.mine.includes(b)-d.mine.includes(a))||a.localeCompare(b));
   if(bks.length){m+='<table><tr><th>Маржа контор (с запуска программы)</th><th>1Х2</th><th>Тоталы</th></tr>';
@@ -657,6 +664,8 @@ function renderPaper(p){
   h+='<tr><td>'+t+'</td><td>'+r.title+'</td><td>'+r.market_name+': '+r.outcome+'</td><td>'+r.bookmaker+(r.src==='сайт'?'':' <span class="st">(odds.ru)</span>')+'</td><td>'+r.odds+'</td><td>+'+(r.ev*100).toFixed(1)+'%</td><td>'+r.strategies+'</td><td>'+(r.status==='open'?'<span class="st">ждём матч</span>':r.status+' '+sg(Math.round(r.profit*p.stake_rub),' ₽'))+'</td><td>'+(r.clv==null?'—':sg(Math.round(r.clv*1000)/10,'%'))+'</td></tr>'}
  el.innerHTML=h+'</table></details></div>';
 }
+async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
+ try{await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:k})})}catch(e){}}
 async function post(u){try{await fetch(u,{method:'POST'})}catch(e){}}
 tick();setInterval(tick,3000);
 </script></body></html>"""
@@ -685,6 +694,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/check_update'):
             with STATE.lock:
                 STATE.status['check_now'] = True
+            body = b'{"ok": true}'
+        elif self.path.startswith('/api/telegram'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                token = json.loads(self.rfile.read(n).decode('utf-8') or '{}').get('token', '')
+            except Exception:
+                token = ''
+            if token and TG:
+                threading.Thread(target=TG.connect, args=(token,), daemon=True).start()
             body = b'{"ok": true}'
         elif self.path.startswith('/api/razvedka'):
             with STATE.lock:
@@ -971,6 +989,8 @@ class Collector:
                              v['bookmaker'], v['market_name'], v['outcome'], v['line'], v['odds'], v['fair'],
                              v['ev'], v['rel'], v.get('pin_age')))
                 added += cur.rowcount
+                if cur.rowcount and code == 'Б' and v['src'] == 'сайт' and TG:
+                    TG.send(tg_text(v, code))
             for v in rows:
                 if v['ev'] >= CAND_MIN_EV and v['odds'] <= 4.0:
                     cur.execute('INSERT OR IGNORE INTO cand (match_id, bookmaker, src, market_name, outcome, line,'
@@ -1440,6 +1460,116 @@ def update_checker():
             time.sleep(1)
 
 
+# ---------------------------------------------------------------- Telegram (просьба владельца 21.11)
+
+class Telegram:
+    """Уведомления о новых ставках основного способа (Б, цена с сайта конторы). Ключ бота и номер чата —
+    в config.json; подключение — кнопкой в окне программы."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.q = []
+        self.lock = threading.Lock()
+        self.connecting = False
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def api(self, method, params, timeout=20):
+        token = self.cfg.get('telegram_token', '')
+        req = urllib.request.Request(f'https://api.telegram.org/bot{token}/{method}',
+                                     data=json.dumps(params).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode('utf-8'))
+
+    def ready(self):
+        return bool(self.cfg.get('telegram_token') and self.cfg.get('telegram_chat_id'))
+
+    def send(self, text):
+        if self.ready():
+            with self.lock:
+                self.q.append(text)
+
+    def loop(self):
+        while True:
+            time.sleep(1)
+            with self.lock:
+                batch, self.q = self.q[:5], self.q[5:]
+            for text in batch:
+                try:
+                    self.api('sendMessage', {'chat_id': self.cfg['telegram_chat_id'], 'text': text,
+                                             'disable_web_page_preview': True})
+                    set_tg('подключён', ok=True)
+                except Exception as e:
+                    set_tg('не отправилось: ' + str(e).splitlines()[0][:120], ok=False)
+                time.sleep(1)
+
+    def connect(self, token):
+        """владелец вставил ключ бота и написал боту что угодно — находим чат и запоминаем"""
+        if self.connecting:
+            return
+        self.connecting = True
+        self.cfg['telegram_token'] = token.strip()
+        self.cfg['telegram_chat_id'] = ''
+        set_tg('проверяю ключ…', ok=None)
+        try:
+            me = self.api('getMe', {})
+            name = (me.get('result') or {}).get('username', '?')
+            set_tg(f'ключ подходит (бот @{name}). Откройте этого бота в Telegram и напишите ему «старт» — жду 3 минуты', ok=None)
+            t_end = time.time() + 180
+            offset = 0
+            while time.time() < t_end:
+                upd = self.api('getUpdates', {'offset': offset, 'timeout': 20}, timeout=30)
+                for u in upd.get('result') or []:
+                    offset = u['update_id'] + 1
+                    msg = u.get('message') or {}
+                    chat = (msg.get('chat') or {}).get('id')
+                    if chat:
+                        self.cfg['telegram_chat_id'] = chat
+                        save_config_keys({'telegram_token': self.cfg['telegram_token'], 'telegram_chat_id': chat})
+                        self.api('sendMessage', {'chat_id': chat, 'text': 'Программа «Ставки» подключена. Сюда будут '
+                                                 'приходить ставки основного способа, как только они появятся.'})
+                        set_tg('подключён', ok=True)
+                        log('Telegram подключён')
+                        return
+            set_tg('боту так и не написали — нажмите «Подключить» ещё раз', ok=False)
+        except Exception as e:
+            set_tg('ключ не подошёл или Telegram недоступен: ' + str(e).splitlines()[0][:120], ok=False)
+        finally:
+            self.connecting = False
+
+
+def set_tg(text, ok):
+    with STATE.lock:
+        STATE.status['telegram'] = {'text': text, 'ok': ok}
+
+
+def tg_text(v, code):
+    t = (v.get('match') or '').split(' — ')
+    if v['market_name'] == '1Х2':
+        bet = {'П1': 'Победа ' + (t[0] if t else 'хозяев'), 'П2': 'Победа ' + (t[1] if len(t) > 1 else 'гостей'),
+               'Х': 'Ничья'}.get(v['outcome'], v['outcome'])
+    else:
+        m = re.match(r'(Больше|Меньше) \(([\d.]+)\)', v['outcome'])
+        bet = (('Тотал больше ' if m.group(1) == 'Больше' else 'Тотал меньше ') + m.group(2)) if m else v['outcome']
+    start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
+    return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\n{v.get('match', '')}, {start} МСК\n"
+            f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
+            f"брать, если кф не ниже {v['fair'] * 1.05:.2f}")
+
+
+def save_config_keys(upd):
+    p = HERE / 'config.json'
+    try:
+        cur = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+    except Exception:
+        cur = {}
+    cur.update(upd)
+    p.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+TG = None
+
+
 def load_config():
     p = HERE / 'config.json'
     cfg = dict(DEFAULT_CONFIG)
@@ -1460,6 +1590,9 @@ def main():
     con = db_open()
     STATS_DB = sqlite3.connect(str(HERE / 'stavki.sqlite3'), check_same_thread=False)
     STATS_STAKE = cfg.get('paper_stake_rub', 100)
+    global TG
+    TG = Telegram(cfg)
+    set_tg('подключён' if TG.ready() else 'не подключён', ok=True if TG.ready() else None)
     srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f'http://localhost:{cfg["port"]}'
