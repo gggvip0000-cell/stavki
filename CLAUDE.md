@@ -16,3 +16,14 @@
 - Пороги и способ расчёта не менять «по здравому смыслу» — только новой проверкой на данных.
 - Деньги владельца — только после проверки, что коэффициенты odds.ru совпадают с конторами
   вживую, и после учёта ставок на бумаге (CLV).
+
+## Источники цен (разведка 21.11.2026)
+- odds.ru: `/next-api/sports/events/ru/?sport=football&status=all&date=ГГГГ-ММ-ДД&source=default` — матчи дня;
+  `/next-api/coefficients/rates/ru/?sport=football&matchId=…&metricId=full_time&periodId=full_time&marketId=match_winner|total_points&source=default`
+  — 15 контор, Pinnacle = id 18. Цены обычных контор на odds.ru ОТСТАЮТ (сверка 21.11: Олимп 1.76 на odds.ru
+  при 1.62/1.67 на сайте) — для них только подсказка. Pinnacle на odds.ru совпал с OddsPapi.
+- Фонбет и PARI — одна платформа: `<host>/events/list?lang=ru&version=…&scopeMarket=1600|2300`, изменения каждые
+  ~3 с. Коды: 921/922/923 = П1/Х/П2; тоталы — пары (930,931),(940,941),(1848,1849),(1696,1697),(1727,1728),
+  (1730,1731),(1733,1734),(1736,1737),(1739,1791),(1793,1794),(1796,1797),(1799,1800),(1802,1803),(1805,1806),
+  линия = p/100. Футбол: segment.parentId == 1; только level 1, place 'line'.
+- Винлайн: свой двоичный протокол по websocket wss://wss.winline.ru/data_ng (gzip) — пока не разобран.

@@ -7,6 +7,7 @@
 Ничего не ставит и никуда не входит.
 """
 import datetime
+import difflib
 import json
 import math
 import re
@@ -22,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-3"
+VERSION = "2026.11.21-4"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -37,6 +38,7 @@ DEFAULT_CONFIG = {
     "my_bookmakers": [],          # пусто = все российские конторы на odds.ru; иначе названия как на сайте
     "pause_between_requests": 0.5,
     "batch_matches": 6,           # сколько матчей запрашивать одновременно
+    "direct_poll_sec": 5,         # как часто брать изменения линии прямо с сайтов Фонбета и PARI
     "my_bookmakers_list": ["Фонбет", "Винлайн", "PARI"],   # конторы, где есть счёт (выбор владельца 21.11)
     "refresh_events_sec": 120,
     "headless": True,
@@ -124,6 +126,207 @@ def margins_from_rates(data):
                     out.append((names.get(b.get('id'), str(b.get('id'))), m))
     return out
 
+# ---------------------------------------------------------------- прямые цены с сайтов контор
+
+# Фонбет и PARI работают на одной платформе: одинаковые коды ставок (проверено разведкой 21.11).
+F_1X2 = (921, 922, 923)
+F_TOTALS = [(930, 931), (940, 941), (1848, 1849), (1696, 1697), (1727, 1728), (1730, 1731), (1733, 1734),
+            (1736, 1737), (1739, 1791), (1793, 1794), (1796, 1797), (1799, 1800), (1802, 1803), (1805, 1806)]
+DIRECT_BOOKS = [
+    # название как на odds.ru, сайт, адрес линии по умолчанию, scopeMarket
+    {'name': 'Фонбет', 'site': 'https://fon.bet/', 'host': 'https://line-vk01-w.bk6bba-resources.ru',
+     'host_mark': 'bk6bba-resources', 'scope': 1600},
+    {'name': 'PARI', 'site': 'https://pari.ru/', 'host': 'https://line-vk01-w.pb06e2-resources.ru',
+     'host_mark': 'pb06e2-resources', 'scope': 2300},
+]
+
+
+def norm_team(t):
+    t = (t or '').lower().replace('ё', 'е')
+    t = re.sub(r'[^a-zа-я0-9 ]+', ' ', t)
+    words = [w for w in t.split() if w not in ('фк', 'fc', 'пфк', 'футбольный', 'клуб', 'ск', 'фс')]
+    return ' '.join(words)
+
+
+def team_sim(a, b):
+    a, b = norm_team(a), norm_team(b)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if (a in b or b in a) and min(len(a), len(b)) >= 4:
+        return 0.9
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def line_of(name):
+    m = re.search(r'\(([-+]?\d+(?:\.\d+)?)\)', name or '')
+    return float(m.group(1)) if m else None
+
+
+def pinnacle_fair(odds_data):
+    """Из сохранённых ответов odds.ru по матчу: честные цены Pinnacle.
+    Возвращает {('1x2', None): [p1,px,p2], ('total', 2.5): [p_over, p_under]} и цены Pinnacle."""
+    out = {}
+    for market, (data, ts) in odds_data.items():
+        for r in (data.get('rates') or []):
+            if not isinstance(r, dict):
+                continue
+            names = [(o or {}).get('name', '') for o in (r.get('outcomes') or [])]
+            pin = next((b for b in (r.get('bookmakers') or []) if isinstance(b, dict) and b.get('id') == PINNACLE_ID), None)
+            if not pin:
+                continue
+            try:
+                po = [None] * len(names)
+                for o in (pin.get('odds') or []):
+                    po[o['outcome']] = float(o['value'])
+                if any(v is None or v <= 1 for v in po):
+                    continue
+            except (ValueError, KeyError, IndexError, TypeError):
+                continue
+            p = fair_power(po)
+            if market == 'match_winner' and len(po) == 3:
+                out[('1x2', None)] = (p, po, ts)
+            elif market == 'total_points' and len(po) == 2:
+                ln = line_of(names[0])
+                if ln is not None:
+                    out[('total', ln)] = (p, po, ts)
+    return out
+
+
+class DirectFeed:
+    """Линия конторы напрямую с её сайта: полный снимок + изменения каждые несколько секунд."""
+
+    def __init__(self, book):
+        self.book = book
+        self.name = book['name']
+        self.page = None
+        self.host = book['host']
+        self.version = None
+        self.sports = {}
+        self.events = {}
+        self.factors = {}          # id события -> {код: ставка}
+        self.touched = {}          # id события -> когда последний раз пришло изменение
+        self.last_poll = 0
+        self.last_full = 0
+        self.last_ok = None
+        self.fails = 0
+        self.match_map = {}        # id события -> id матча odds.ru или None
+        self.match_tried = {}
+
+    def start(self, browser):
+        self.page = browser.new_page(locale='ru-RU')
+        seen = []
+
+        def on_req(r):
+            if self.book['host_mark'] in r.url and '/events/' in r.url:
+                seen.append(r.url)
+        self.page.on('request', on_req)
+        self.page.goto(self.book['site'], wait_until='domcontentloaded', timeout=90000)
+        self.page.wait_for_timeout(6000)
+        if seen:
+            m = re.match(r'(https://[^/]+(?:/ma)?)/events/', seen[0])
+            if m:
+                self.host = m.group(1)
+        log(f'{self.name}: сайт открыт, адрес линии {self.host}')
+
+    def fetch(self, path):
+        res = self.page.evaluate(FETCH_JS, self.host + path)
+        if res['status'] != 200:
+            raise RuntimeError(f'{self.name}: ответ {res["status"]}')
+        return json.loads(res['text'])
+
+    def merge(self, j):
+        for sp in (j.get('sports') or []):
+            if isinstance(sp, dict) and 'id' in sp:
+                self.sports[sp['id']] = sp
+        now = time.time()
+        for e in (j.get('events') or []):
+            if isinstance(e, dict) and 'id' in e:
+                self.events[e['id']] = dict(self.events.get(e['id'], {}), **e)
+        for c in (j.get('customFactors') or []):
+            if not isinstance(c, dict) or 'e' not in c:
+                continue
+            d = self.factors.setdefault(c['e'], {})
+            for f in (c.get('factors') or []):
+                if isinstance(f, dict) and 'f' in f:
+                    d[f['f']] = f
+            self.touched[c['e']] = now
+        for b in (j.get('eventBlocks') or []):
+            if isinstance(b, dict) and b.get('eventId') in self.events:
+                self.events[b['eventId']]['_blocked'] = b.get('state') == 'blocked'
+        if j.get('packetVersion'):
+            self.version = j['packetVersion']
+
+    def poll(self):
+        sc = self.book['scope']
+        if self.version is None or time.time() - self.last_full > 900:
+            j = self.fetch(f'/events/list?lang=ru&version=0&scopeMarket={sc}')
+            n = len(j.get('events') or [])
+            if n < 300:
+                j2 = self.fetch(f'/events/list?lang=ru&scopeMarket={sc}')
+                if len(j2.get('events') or []) > n:
+                    j = j2
+            self.events, self.factors = {}, {}
+            self.merge(j)
+            self.last_full = time.time()
+            log(f'{self.name}: полная линия — событий {len(self.events)}, футбол до матча: {len(self.football())}')
+        else:
+            self.merge(self.fetch(f'/events/list?lang=ru&version={self.version}&scopeMarket={sc}'))
+        self.last_poll = time.time()
+        self.last_ok = time.time()
+        self.fails = 0
+
+    def is_football(self, sport_id):
+        s, hops = self.sports.get(sport_id), 0
+        while s and hops < 6:
+            if s.get('id') == 1 or s.get('parentId') == 1:
+                return True
+            s = self.sports.get(s.get('parentId'))
+            hops += 1
+        return False
+
+    def football(self):
+        now = time.time()
+        return [e for e in self.events.values()
+                if e.get('level') == 1 and e.get('place') == 'line' and not e.get('_blocked')
+                and e.get('startTime', 0) > now + 60 and self.is_football(e.get('sportId'))]
+
+    def odds_of(self, eid):
+        fs = self.factors.get(eid, {})
+        out = {}
+        v = [fs.get(k, {}).get('v') for k in F_1X2]
+        if all(isinstance(x, (int, float)) and x > 1 for x in v):
+            out[('1x2', None)] = v
+        for a, b in F_TOTALS:
+            fa, fb = fs.get(a), fs.get(b)
+            if fa and fb and isinstance(fa.get('v'), (int, float)) and isinstance(fb.get('v'), (int, float)):
+                try:
+                    ln = fa.get('p', 0) / 100
+                except TypeError:
+                    continue
+                out[('total', ln)] = [fa['v'], fb['v']]
+        return out
+
+    def match_to_oddsru(self, ev, matches):
+        eid = ev['id']
+        if eid in self.match_map and (self.match_map[eid] or time.time() - self.match_tried.get(eid, 0) < 600):
+            return self.match_map[eid]
+        best, best_s = None, 0
+        for m in matches.values():
+            if abs(m['start'] - ev.get('startTime', 0)) > 20 * 60:
+                continue
+            s1 = team_sim(ev.get('team1'), m.get('home'))
+            s2 = team_sim(ev.get('team2'), m.get('away'))
+            sc = (s1 + s2) / 2
+            if min(s1, s2) >= 0.55 and sc > best_s:
+                best, best_s = m['id'], sc
+        res = best if best_s >= 0.72 else None
+        self.match_map[eid] = res
+        self.match_tried[eid] = time.time()
+        return res
+
+
 # ---------------------------------------------------------------- состояние
 
 class State:
@@ -133,21 +336,32 @@ class State:
         self.values = {}         # key -> value row
         self.status = {'started': now_str(), 'events_updated': None, 'errors': [], 'requests': 0,
                        'cycle_info': '', 'last_ok': None, 'version': VERSION, 'update_available': None,
-                       'restarting': False, 'avg_request': None, 'razvedka': None}
+                       'restarting': False, 'avg_request': None, 'razvedka': None, 'feeds': {}}
+        self.odds_data = {}      # id матча odds.ru -> {рынок: (ответ, когда)}
+        self.direct_values = {}  # прямые цены контор: ключ -> строка
+        self.direct_cover = {}   # контора -> матчи odds.ru, по которым есть прямые цены
         self.restart_requested = False
         self.razvedka_requested = False
         self.margins = {}        # (контора, рынок) -> [сумма, число строк]
 
     def snapshot(self):
         with self.lock:
-            vals = sorted(self.values.values(), key=lambda v: -v['ev'])
             now = time.time()
+            covered = {(n, mid) for n, f in self.status['feeds'].items() if f.get('last_ok') and now - f['last_ok'] < 90
+                       for mid in self.direct_cover.get(n, ())}
+            vals = [v for v in self.values.values() if (v['bookmaker'], v['match_id']) not in covered]
+            vals += list(self.direct_values.values())
+            vals.sort(key=lambda v: -v['ev'])
             rows = []
             for v in vals:
                 m = self.matches.get(v['match_id'], {})
+                if m and m.get('start', 0) < now + 60:
+                    continue
                 rows.append(dict(v, age=int(now - v['updated']), held=int(now - v['first_seen']),
                                  match=m.get('title', ''), league=m.get('league', ''),
-                                 start=m.get('start_str', ''), url=m.get('url', '')))
+                                 start=m.get('start_str', ''), start_ts=m.get('start', 0), url=m.get('url', ''),
+                                 source=v.get('source', 'odds.ru'),
+                                 pin_age=int(now - v['pin_ts']) if v.get('pin_ts') else None))
             tracked = len(self.matches)
             fresh = sum(1 for m in self.matches.values() if m.get('last_update') and now - m['last_update'] < 300)
             st = dict(self.status, tracked=tracked, fresh=fresh, now=now_str())
@@ -181,85 +395,101 @@ def db_open():
 
 PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Ставки — можно ставить сейчас</title>
 <style>
+*{box-sizing:border-box}
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#0f1419;color:#e6e6e6}
-header{padding:14px 20px;background:#151c24;border-bottom:1px solid #253040;display:flex;gap:24px;align-items:center;flex-wrap:wrap}
-h1{font-size:20px;margin:0 16px 0 0}
-.st{font-size:13px;color:#9fb0c0}
-.ok{color:#5fd38d}.bad{color:#ff6b6b}
-main{padding:16px 20px}
-table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{padding:7px 9px;border-bottom:1px solid #222c38;text-align:left;white-space:nowrap}
-th{color:#9fb0c0;font-weight:600;position:sticky;top:0;background:#0f1419}
-tr.big td{background:#132a1d}
-.ev{font-weight:700;color:#5fd38d}
-.dim{color:#7d8b99}
-input{width:60px;background:#0f1419;color:#e6e6e6;border:1px solid #33414f;padding:3px 5px}
-label{font-size:13px;color:#9fb0c0;margin-right:12px}
-a{color:#7fb6ff}
-.empty{padding:30px;color:#9fb0c0}
+header{padding:12px 20px;background:#151c24;border-bottom:1px solid #253040;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+h1{font-size:20px;margin:0}
+.st{font-size:12px;color:#8696a6}
+.bad{color:#ff6b6b}
+input{width:56px;background:#0f1419;color:#e6e6e6;border:1px solid #33414f;padding:3px 5px;border-radius:4px}
+label{font-size:13px;color:#9fb0c0}
 .ubtn{background:#2f7d4f;color:#fff;border:0;padding:7px 14px;border-radius:6px;font-size:14px;cursor:pointer}
-.ubtn:hover{background:#3a9a62}
+.lbtn{background:#24313f;color:#cfd8e3;border:1px solid #33414f;padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer}
 .ver{font-size:12px;color:#5f6e7c}
-.rbtn{background:#24313f;color:#cfd8e3;border:1px solid #33414f;padding:5px 10px;border-radius:6px;font-size:13px;cursor:pointer}
-.src{font-size:12px;color:#d8a657}
-h2{font-size:15px;color:#9fb0c0;margin:28px 0 8px}
-.mt{width:auto}
-.mt td,.mt th{font-size:13px;padding:5px 18px 5px 9px}
+main{padding:16px 20px}
+.cols{display:grid;grid-template-columns:repeat(3,minmax(300px,1fr));gap:16px;align-items:start}
+@media(max-width:1000px){.cols{grid-template-columns:1fr}}
+.col{background:#131a22;border-radius:10px;border-top:6px solid var(--c);min-height:120px}
+.colh{display:flex;justify-content:space-between;align-items:baseline;padding:12px 14px 8px}
+.bk{font-size:22px;font-weight:800;color:var(--c)}
+.cnt{font-size:13px;color:#9fb0c0}
+.feed{font-size:12px;padding:0 14px 10px;color:#8696a6}
+.feed.ok{color:#5fd38d}.feed.warn{color:#d8a657}
+.card{margin:0 10px 10px;background:#1a232d;border-radius:8px;padding:10px 12px;border-left:4px solid var(--c)}
+.card.stale{opacity:.55}
+.r1{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.bet{font-size:18px;font-weight:700}
+.odd{font-size:18px;font-weight:800;color:#fff;margin-left:6px}
+.ev{font-size:20px;font-weight:800;color:#5fd38d;white-space:nowrap}
+.m{font-size:14px;margin-top:4px}
+.m a{color:#cfe1ff;text-decoration:none}
+.sm{font-size:12px;color:#8696a6;margin-top:3px}
+.need{font-size:13px;margin-top:6px;color:#cfd8e3}
+.src{font-size:12px;margin-top:3px}
+.src.ok{color:#5fd38d}.src.warn{color:#d8a657}
+.empty{padding:6px 14px 16px;color:#7d8b99;font-size:13px}
+details{margin-top:26px;color:#9fb0c0}
+summary{cursor:pointer;font-size:14px}
+table{border-collapse:collapse;margin-top:8px}
+td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;text-align:left}
 </style></head><body>
-<header><h1>Можно ставить сейчас</h1>
-<span id="upd"></span>
-<span class="st" id="st">загрузка…</span>
-<span><label>перевес от, % <input id="thr" type="number" step="0.5" value="5"></label>
+<header><h1>Можно ставить сейчас</h1><span id="upd"></span>
+<label>перевес от, % <input id="thr" type="number" step="0.5" value="5"></label>
 <label>кф до <input id="mx" type="number" step="0.5" value="4"></label>
-<label>контора <input id="bk" type="text" style="width:110px" placeholder="все"></label>
-<label><input id="mine" type="checkbox" checked style="width:auto"> только мои конторы</label></span>
-<span id="rz"></span>
-</header><main><div id="tb"></div><div id="mg"></div></main>
+<span class="st" id="st">загрузка…</span></header>
+<main><div class="cols" id="cols"></div>
+<details><summary>Подробнее: работа программы, маржа контор, разведка</summary><div id="more"></div></details></main>
 <script>
-function fmt(s){if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
+const COLORS={'Фонбет':'#e8392f','PARI':'#f2c230','Винлайн':'#ff7a1a'};
+function fmt(s){if(s==null)return '—';if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
+function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
+ const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
+ const left=Math.round((ts*1000-n)/60000);const l=left<60?('через '+left+' мин'):('через '+Math.floor(left/60)+' ч '+left%60+' мин');
+ return (dd===nd?'сегодня ':dd.slice(0,5)+' ')+hm+' · '+l}
+function betText(v){const t=(v.match||'').split(' — ');
+ if(v.market_name==='1Х2'){if(v.outcome==='П1')return 'Победа: '+(t[0]||'хозяева');if(v.outcome==='П2')return 'Победа: '+(t[1]||'гости');return 'Ничья'}
+ const m=v.outcome.match(/(Больше|Меньше) \(([\d.]+)\)/);if(m)return (m[1]==='Больше'?'Тотал больше ':'Тотал меньше ')+m[2];return v.market_name+': '+v.outcome}
 async function tick(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
-  const parts=['сейчас '+s.now,'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—')];
-  if(s.cycle_info)parts.push(s.cycle_info);
-  if(s.avg_request)parts.push('ответ odds.ru в среднем '+s.avg_request+' с');
-  let html=parts.join(' · ');
-  if(s.errors.length)html+='<br><span class="bad">последняя ошибка: '+s.errors[s.errors.length-1]+'</span>';
-  document.getElementById('st').innerHTML=html;
   const u=document.getElementById('upd');
-  if(s.restarting){u.innerHTML='<span class="st">Обновляюсь… окно вернётся само примерно через минуту</span>'}
-  else if(s.update_available){u.innerHTML='<button class="ubtn" onclick="doUpdate()">Обновить до версии '+s.update_available+'</button>'}
-  else{u.innerHTML='<span class="ver">версия '+s.version+'</span>'}
-  const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99), bk=document.getElementById('bk').value.trim().toLowerCase();
-  const onlyMine=document.getElementById('mine').checked;
-  const rz=document.getElementById('rz');
-  if(s.razvedka){rz.innerHTML='<span class="st">Разведка контор: '+s.razvedka+'</span>'}
-  else{rz.innerHTML='<button class="rbtn" onclick="doRazvedka()">Разведка контор (≈4 мин)</button>'}
-  renderMargins(d.margins, d.mine);
-  const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&(!bk||v.bookmaker.toLowerCase().includes(bk))&&(!onlyMine||d.mine.includes(v.bookmaker)));
-  if(!rows.length){document.getElementById('tb').innerHTML='<div class="empty">Сейчас ставок с таким перевесом нет. Страница обновляется сама.</div>';return}
-  let h='<table><tr><th>Перевес</th><th>Матч</th><th>Начало (МСК)</th><th>Лига</th><th>Ставка</th><th>Контора</th><th>Кф конторы</th><th>Честная цена</th><th>Мин. кф (+порог)</th><th>Pinnacle</th><th>Обновлено</th><th>Держится</th><th>Откуда цена</th></tr>';
-  for(const v of rows){
-   h+='<tr class="'+(v.ev>=0.08?'big':'')+'"><td class="ev">+'+(v.ev*100).toFixed(1)+'%</td><td><a href="'+v.url+'bet/" target="_blank">'+v.match+'</a></td><td>'+v.start+'</td><td class="dim">'+v.league+'</td><td>'+v.market_name+': '+v.outcome+'</td><td>'+v.bookmaker+'</td><td><b>'+v.odds+'</b></td><td>'+v.fair.toFixed(2)+'</td><td>'+(v.fair*(1+thr)).toFixed(2)+'</td><td class="dim">'+v.pin_odds+'</td><td class="dim">'+fmt(v.age)+' назад</td><td class="dim">'+fmt(v.held)+'</td><td class="src">odds.ru — сверить на сайте</td></tr>'}
-  document.getElementById('tb').innerHTML=h+'</table>';
+  if(s.restarting)u.innerHTML='<span class="st">Обновляюсь… окно вернётся само примерно через минуту</span>';
+  else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="post(\'/api/update\')">Обновить до версии '+s.update_available+'</button>';
+  else u.innerHTML='<span class="ver">версия '+s.version+'</span> <button class="lbtn" onclick="post(\'/api/check_update\');this.textContent=\'проверяю…\'">проверить обновления</button>';
+  let st='обновлено '+s.now+' · матчей в работе '+s.tracked;
+  if(s.errors.length)st+=' · <span class="bad">ошибка: '+s.errors[s.errors.length-1]+'</span>';
+  document.getElementById('st').innerHTML=st;
+  const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99);
+  const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
+  let h='';
+  for(const b of d.mine){
+   const c=COLORS[b]||'#7fb6ff';const rs=rows.filter(v=>v.bookmaker===b);
+   const f=s.feeds[b];let feed;
+   if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы · матчей '+f.events+', сопоставлено '+f.matched+'</div>';
+   else feed='<div class="feed warn">цены с odds.ru, могут отставать — перед ставкой сверить на сайте конторы</div>';
+   h+='<div class="col" style="--c:'+c+'"><div class="colh"><span class="bk">'+b+'</span><span class="cnt">'+(rs.length?rs.length+' шт.':'')+'</span></div>'+feed;
+   if(!rs.length)h+='<div class="empty">Сейчас подходящих ставок нет</div>';
+   for(const v of rs){
+    const direct=v.source==='сайт';
+    const old=v.age>180||(v.pin_age!=null&&v.pin_age>180);
+    h+='<div class="card'+(old?' stale':'')+'"><div class="r1"><div><span class="bet">'+betText(v)+'</span><span class="odd">'+v.odds+'</span></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div></div>'
+     +'<div class="m"><a href="'+v.url+'bet/" target="_blank">'+v.match+'</a></div>'
+     +'<div class="sm">'+when(v.start_ts)+' · '+v.league+'</div>'
+     +'<div class="need">брать, если кф не ниже <b>'+(v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div>'
+     +'<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, '+fmt(v.age)+' назад':'кф с odds.ru, '+fmt(v.age)+' назад — сверить')+(v.pin_age!=null?' · Pinnacle '+fmt(v.pin_age)+' назад':'')+'</div></div>'}
+   h+='</div>'}
+  document.getElementById('cols').innerHTML=h;
+  let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
+  if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
+  m+=s.razvedka?'<p class="st">Разведка контор: '+s.razvedka+'</p>':'<p><button class="lbtn" onclick="post(\'/api/razvedka\')">Разведка контор (≈4 мин)</button></p>';
+  const bks=Object.keys(d.margins||{}).sort((a,b)=>(d.mine.includes(b)-d.mine.includes(a))||a.localeCompare(b));
+  if(bks.length){m+='<table><tr><th>Маржа контор (с запуска программы)</th><th>1Х2</th><th>Тоталы</th></tr>';
+   for(const b of bks){const x=d.margins[b];const c=y=>y?y[0]+'% <span class="st">('+y[1]+')</span>':'—';m+='<tr><td>'+(d.mine.includes(b)?'<b>'+b+'</b>':b)+'</td><td>'+c(x['1Х2'])+'</td><td>'+c(x['Тотал'])+'</td></tr>'}
+   m+='</table>'}
+  document.getElementById('more').innerHTML=m;
  }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
-function renderMargins(m,mine){
- const bks=Object.keys(m||{}).sort((a,b)=>(mine.includes(b)-mine.includes(a))||a.localeCompare(b));
- if(!bks.length){document.getElementById('mg').innerHTML='';return}
- let h='<h2>Маржа контор с запуска программы (чем ниже, тем чаще кф выше честной цены). В скобках — число линий</h2><table class="mt"><tr><th>Контора</th><th>1Х2</th><th>Тоталы</th></tr>';
- for(const b of bks){const r=m[b];const c=x=>x?x[0]+'% <span class="dim">('+x[1]+')</span>':'—';
-  h+='<tr><td>'+(mine.includes(b)?'<b>'+b+'</b>':b)+'</td><td>'+c(r['1Х2'])+'</td><td>'+c(r['Тотал'])+'</td></tr>'}
- document.getElementById('mg').innerHTML=h+'</table>';
-}
-async function doRazvedka(){
- document.getElementById('rz').innerHTML='<span class="st">Разведка контор: запускаю…</span>';
- try{await fetch('/api/razvedka',{method:'POST'})}catch(e){}
-}
-async function doUpdate(){
- document.getElementById('upd').innerHTML='<span class="st">Обновляюсь… окно вернётся само примерно через минуту</span>';
- try{await fetch('/api/update',{method:'POST'})}catch(e){}
-}
+async function post(u){try{await fetch(u,{method:'POST'})}catch(e){}}
 tick();setInterval(tick,3000);
 </script></body></html>"""
 
@@ -279,7 +509,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path.startswith('/api/razvedka'):
+        if self.path.startswith('/api/check_update'):
+            with STATE.lock:
+                STATE.status['check_now'] = True
+            body = b'{"ok": true}'
+        elif self.path.startswith('/api/razvedka'):
             with STATE.lock:
                 if not STATE.status['razvedka'] or STATE.status['razvedka'].startswith('готово'):
                     STATE.razvedka_requested = True
@@ -345,6 +579,7 @@ class Collector:
         self.pw = None
         self.last_events = 0
         self.ever_ok = False
+        self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
 
     # --- браузер
     def start_browser(self):
@@ -366,6 +601,11 @@ class Collector:
         self.page.goto('https://odds.ru/football/', wait_until='domcontentloaded', timeout=90000)
         self.page.wait_for_timeout(5000)
         log('браузер открыт, odds.ru загружен')
+        for f in self.feeds:
+            try:
+                f.start(self.browser)
+            except Exception as e:
+                add_error(f'{f.name}: сайт не открылся: {str(e).splitlines()[0][:120]}')
 
     def restart_browser(self):
         try:
@@ -455,6 +695,7 @@ class Collector:
                         continue
                     found[ev['id']] = {
                         'id': ev['id'], 'url': ev.get('url', ''),
+                        'home': ev['home']['title'], 'away': ev['away']['title'],
                         'title': f"{ev['home']['title']} — {ev['away']['title']}",
                         'league': f"{lg.get('region', '')}: {lg.get('title', '')}",
                         'start': start.timestamp(), 'start_str': start.strftime('%d.%m %H:%M'),
@@ -473,6 +714,8 @@ class Collector:
                 STATE.matches[mid] = m
             for k in [k for k, v in STATE.values.items() if v['match_id'] not in found]:
                 STATE.values.pop(k)
+            for mid in [mid for mid in STATE.odds_data if mid not in found]:
+                STATE.odds_data.pop(mid)
             STATE.status['events_updated'] = now_str()
         cur = self.con.cursor()
         for m in found.values():
@@ -500,6 +743,76 @@ class Collector:
                 if over > best_over:
                     best, best_over = m, over
         return best, best_over
+
+    def poll_feeds(self):
+        now = time.time()
+        for f in self.feeds:
+            if f.page is None or now - f.last_poll < self.cfg.get('direct_poll_sec', 5):
+                continue
+            try:
+                f.poll()
+            except Exception as e:
+                f.fails += 1
+                f.last_poll = time.time()
+                if f.fails in (1, 5) or f.fails % 20 == 0:
+                    add_error(f'{f.name} (прямая линия): {str(e).splitlines()[0][:150]}')
+                if f.fails % 10 == 0:
+                    f.version = None          # начать заново с полного снимка
+                continue
+            self.direct_values_for(f)
+
+    def direct_values_for(self, f):
+        now = time.time()
+        with STATE.lock:
+            matches = dict(STATE.matches)
+            odds_data = {k: dict(v) for k, v in STATE.odds_data.items()}
+        new, matched, urgent, cover = {}, 0, [], set()
+        evs = f.football()
+        for ev in evs:
+            mid = f.match_to_oddsru(ev, matches)
+            if not mid:
+                continue
+            matched += 1
+            cover.add(mid)
+            fair = pinnacle_fair(odds_data.get(mid, {}))
+            if not fair:
+                continue
+            for key, bo in f.odds_of(ev['id']).items():
+                if key not in fair:
+                    continue
+                p, po, pts = fair[key]
+                if len(bo) != len(p):
+                    continue
+                for i, odd in enumerate(bo):
+                    ev_ = odd * p[i] - 1
+                    if ev_ <= 0:
+                        continue
+                    if key[0] == '1x2':
+                        outcome, market_name = ['П1', 'Х', 'П2'][i], '1Х2'
+                    else:
+                        ln = ('%g' % key[1])
+                        outcome, market_name = (f'Больше ({ln})' if i == 0 else f'Меньше ({ln})'), 'Тотал'
+                    k = ('direct', f.name, mid, market_name, outcome)
+                    new[k] = {'bookmaker': f.name, 'match_id': mid, 'market': key[0], 'market_name': market_name,
+                              'outcome': outcome, 'odds': odd, 'fair': round(1 / p[i], 3), 'pin_odds': po[i],
+                              'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full)}
+                    if now - pts > 60 and ev_ >= 0.03:
+                        urgent.append(mid)
+        with STATE.lock:
+            for k in [k for k in STATE.direct_values if k[1] == f.name and k not in new]:
+                STATE.direct_values.pop(k)
+            for k, v in new.items():
+                old = STATE.direct_values.get(k)
+                v['first_seen'] = old['first_seen'] if old else now
+                v['updated'] = max(v['odds_ts'], 0)
+                STATE.direct_values[k] = v
+            for mid in urgent:                     # цену Pinnacle по таким матчам обновить первой очередью
+                mm = STATE.matches.get(mid)
+                if mm:
+                    mm['last_update'] = 0
+            STATE.direct_cover[f.name] = cover
+            STATE.status['feeds'][f.name] = {'last_ok': f.last_ok, 'events': len(evs), 'matched': matched,
+                                             'host': f.host}
 
     def match_url(self, mid, market):
         return (f'/next-api/coefficients/rates/ru/?sport=football&matchId={mid}'
@@ -571,6 +884,9 @@ class Collector:
                 v['first_seen'] = old['first_seen'] if old else now
                 v['updated'] = now
                 STATE.values[k] = v
+            od = STATE.odds_data.setdefault(mid, {})
+            for market, data in datas.items():
+                od[market] = (data, now)
             for bk, market, mg in marg:
                 acc = STATE.margins.setdefault((bk, market), [0.0, 0])
                 acc[0] += mg
@@ -706,6 +1022,7 @@ class Collector:
                 if time.time() - self.last_events > self.cfg['refresh_events_sec']:
                     self.refresh_events()
                     self.ever_ok = True
+                self.poll_feeds()
                 ms = self.pick_batch(self.cfg['batch_matches'])
                 if not ms:
                     time.sleep(1)
@@ -772,7 +1089,11 @@ def update_checker():
                     STATE.status['update_available'] = rv
         except Exception as e:
             log(f'проверка обновлений не удалась: {str(e).splitlines()[0][:120]}')
-        time.sleep(600)
+        for _ in range(180):              # раз в 3 минуты или сразу по кнопке
+            if STATE.status.get('check_now'):
+                STATE.status['check_now'] = False
+                break
+            time.sleep(1)
 
 
 def load_config():
