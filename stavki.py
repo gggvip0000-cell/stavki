@@ -15,8 +15,11 @@ import urllib.parse
 import urllib.request
 import sqlite3
 import subprocess
+import gzip
 import io
+import struct
 import zipfile
+import zlib
 import sys
 import threading
 import time
@@ -25,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-41"
+VERSION = "2026.11.21-42"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1138,6 +1141,780 @@ class ExtStats:
                     out[k] = v
         return out
 
+# ================================================================ Винлайн: разбор потока websocket (версия -42)
+# Формат восстановлен по коду сайта и проверен на записанных кадрах разведки 21.11 (176 совпадений с DOM, 0 расхождений).
+# Рынки с пометкой 'dom' сверены со страницей сайта, 'name' — только по названию из справочника;
+# программа берёт ТОЛЬКО сверенные (verified_only=True): 1x2, тотал, фора, то же на 1-й тайм.
+
+STEP_PACK = 20000          # пачка сообщений
+STEP_GZIP = 0x8B1F         # 35615: первые байты 1f 8b — сообщение сжато gzip
+STEP_PREMATCH = 3
+STEP_LIVE = 4
+STEP_MENU = 16
+STEP_EVENT_FILL = 18       # ответ на 'event.plus' (по коду сайта; в записи не встречался)
+STEP_EVENT_FILL_NEW = 1118
+STEP_GET_DATE = 38
+STEP_INITIALIZED = 51
+
+STEP_NAMES = {
+    3: 'GET_PREMATCH', 4: 'LIVE', 7: 'LIVE_OUTRIGHTS', 16: 'GET_MENU', 18: 'GET_EVENT_FILL',
+    38: 'GET_DATE', 44: 'GET_BOUNUS_KOEF', 51: 'CLIENT_IS_INITIALIZED', 76: 'SPECIAL_EVENTS_PLUS',
+    86: 'GET_SPECIAL_EVENTS_CASH', 94: 'PING', 110: 'GET_MULTIPLICATION', 1118: 'GET_EVENT_FILL_NEW',
+    1180: 'TACTICAL_MARKETING', 1181: 'IGNORED_1181', 1348: 'CONTENT_VERSION',
+    1399: 'INTERNATIONAL2025_COMMON_DATA', 2000: 'CUPIS_GATEWAY_CONFIG', 2001: 'CUPIS_2001',
+    2002: 'CUPIS_2002', 20000: 'STEP_PACK',
+}
+
+# Сервер шлёт время как «московские часы, записанные как UTC» (в коде сайта TZ_OFFSET_MS = 108e5).
+TZ_OFFSET = 10800
+
+# Команды, которые сайт отправляет текстом сразу после открытия websocket (initCommands).
+INIT_COMMANDS = ['lang', 'AA==', 'data', 'WINLINE', 'getdate']
+KEEPALIVE_COMMAND = 'getdate'     # сайт шлёт его, если 5 с не было входящих; >40 с тишины — переподключение
+WS_URL = 'wss://wss.winline.ru/data_ng?client=newsite&nb=true'
+
+
+class WinlineDecodeError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- чтение байтов
+class _R:
+    __slots__ = ('b', 'p')
+
+    def __init__(self, b, p=0):
+        self.b = b
+        self.p = p
+
+    def left(self):
+        return len(self.b) - self.p
+
+    def u8(self):
+        v = self.b[self.p]
+        self.p += 1
+        return v
+
+    def u16(self):
+        v = struct.unpack_from('<H', self.b, self.p)[0]
+        self.p += 2
+        return v
+
+    def u32(self):
+        v = struct.unpack_from('<I', self.b, self.p)[0]
+        self.p += 4
+        return v
+
+    def i32(self):
+        v = struct.unpack_from('<i', self.b, self.p)[0]
+        self.p += 4
+        return v
+
+    def utf(self):
+        n = self.u16()
+        raw = self.b[self.p:self.p + n]
+        if len(raw) < n:
+            raise WinlineDecodeError('строка выходит за конец сообщения')
+        self.p += n
+        k = raw.find(b'\x1b')
+        if k >= 0:
+            raw = raw[:k]
+        return raw.decode('utf-8', 'replace')
+
+    def skip_block16(self):
+        """Блок виджетов события (Re в коде сайта): [длина u16][TLV...] — нам не нужен."""
+        n = self.u16()
+        self.p += n
+
+
+# ---------------------------------------------------------------- распаковка
+def _gunzip(b):
+    # сайт отрезает 10 байт заголовка gzip и распаковывает «сырой» deflate
+    try:
+        return zlib.decompressobj(-15).decompress(b[10:])
+    except zlib.error:
+        return gzip.decompress(b)
+
+
+def unpack_messages(data):
+    """bytes кадра -> список (шаг, данные_без_шага). Пачки и gzip раскрываются."""
+    out = []
+    _unpack(bytes(data), out, 0)
+    return out
+
+
+def _unpack(b, out, depth):
+    if depth > 8 or len(b) < 2:
+        if len(b) == 1:
+            out.append((b[0], b''))
+        return
+    step = b[0] | (b[1] << 8)
+    if step == STEP_GZIP:
+        _unpack(_gunzip(b), out, depth + 1)
+        return
+    if step != STEP_PACK:
+        out.append((step, b[2:]))
+        return
+    i = 2
+    while i + 4 <= len(b):
+        n = struct.unpack_from('<I', b, i)[0]
+        _unpack(b[i + 4:i + 4 + n], out, depth + 1)
+        i += 4 + n
+
+
+# ---------------------------------------------------------------- коэффициенты
+def _js_round2(x):
+    return math.floor(x * 100 + 0.5) / 100        # Math.round(x*100)/100
+
+
+def _js_num(x):
+    """Как JS превращает число в строку: 2.5 -> '2.5', 3.0 -> '3'."""
+    if x == int(x):
+        return str(int(x))
+    return repr(x)
+
+
+def set_coeff(V, p, tip_id, is_live):
+    """Порт setCoeff сайта: наценка p (обычно 1 — без изменений)."""
+    V = list(V)
+    if p == 1 or is_live == 1:
+        return V
+    V = [_js_round2(1 + (g - 1) * p) if g > 1 else g for g in V]
+    if tip_id in (114, 115, 116, 117, 181) and len(V) >= 3 and all(V[:3]):
+        g0, g1, g2 = V[0], V[1], V[2]
+        s = 1 / g0 + 1 / g1 + 1 / g2
+        V[0] = 1 / (s - 1 / g2) if g2 != 0 else 1
+        V[1] = 1 / (s - 1 / g1) if g1 != 0 else 1
+        V[2] = 1 / (s - 1 / g0) if g0 != 0 else 1
+        V[:3] = [_js_round2(max(v, 1)) for v in V[:3]]
+    out = []
+    for g in V:
+        if g > 0:
+            if g >= 10:
+                g = float(math.floor(g))
+            elif g < 1.01:
+                g = 1.0
+        out.append(g)
+    return out
+
+
+# ---------------------------------------------------------------- шаг 16: справочник
+def _parse_menu(p):
+    r = _R(p)
+    recs = []
+    for _ in range(r.u32()):
+        sid = r.i32()
+        sort = r.i32()
+        name = r.utf()
+        strings = dict(zip(['NP', 'RT', 'FT', 'HT', 'P', 'OT', 'PEN', 'Z', 'W'],
+                           [r.utf() for _ in range(9)]))
+        recs.append({'kind': 'sport', 'id': sid, 'sort': sort, 'name': name, 'strings': strings})
+    for _ in range(r.u32()):
+        t = {'kind': 'tipline', 'id': r.u32(), 'sports': r.utf(), 'favorite': r.u32(),
+             'count_v': r.u32(), 'src': r.u32(), 'name': r.utf()}
+        t['outcomes'] = [r.utf() for _ in range(30)]
+        recs.append(t)
+    for _ in range(r.u32()):
+        recs.append({'kind': 'tv', 'id': r.u32(), 'name': r.utf()})
+    variables = {}
+    for _ in range(r.u32()):
+        k = r.u8()
+        variables[k] = r.u32()
+    recs.append({'kind': 'vars', 'vars': variables})
+    return recs
+
+
+# ---------------------------------------------------------------- шаг 3: прематч
+def _pm_line(r, tip_src, ev_id, with_event):
+    L = {'id': r.u32()}
+    L['event_id'] = r.u32() if with_event else ev_id
+    L['tip'] = r.u16()
+    m1 = r.u16()
+    m2 = r.u16()
+    L['margin'] = m2 / 1e4          # клиент CUPIS берёт второе число (Xe.read)
+    L['margin_raw'] = (m1, m2)
+    src = tip_src.get(L['tip'])
+    if src is None:
+        raise WinlineDecodeError('нет типа рынка %d в справочнике (шаг 16 не получен?)' % L['tip'])
+    fav = 0
+    koef = ''
+    if src in (3, 6):
+        fav = r.u8()
+        koef = _js_num(r.u16() / 100)
+    elif src in (4, 7):
+        koef = _js_num(r.u16() / 100)
+    elif src in (51, 151):
+        koef = '1'
+    elif src == 61:
+        fav = r.u8()
+        koef = '1/' + _js_num(r.u16() / 100)
+    elif src == 71:
+        koef = '1/' + _js_num(r.u16() / 100)
+    V = [r.u16() / 100, r.u16() / 100]
+    if src in (2, 5, 51):
+        V.append(r.u16() / 100)
+    elif src == 9:
+        V += [r.u16() / 100, r.u16() / 100]
+    L['favorite'] = fav
+    L['koef'] = koef
+    L['V_raw'] = V
+    L['V'] = set_coeff(V, L['margin'], L['tip'], 0)
+    return L
+
+
+def _pm_event(r, champ_id, update):
+    e = {'id': r.u32(), 'id_radar': r.u32(), 'id_native': r.u32(), 'provider': r.u8(),
+         'category': r.u8(), 'id_live': r.u8(), 'lines_availability': r.u8()}
+    r.u8()
+    r.u8()
+    r.skip_block16()
+    e['champ_id'] = r.u32() if update else champ_id
+    t = r.u32()
+    e['t_raw'] = t
+    e['start_ts'] = _pm_ts(t)
+    e['count_add_line'] = r.u8()
+    e['is_od'] = r.u8()
+    e['home'] = r.utf()
+    e['away'] = r.utf()
+    return e
+
+
+def _pm_ts(t):
+    # setDate(1e3*t + 29999 - TZ_OFFSET_MS), затем setSeconds(0): округление до минуты
+    return ((t * 1000 + 29999 - TZ_OFFSET * 1000) // 60000) * 60
+
+
+def _parse_prematch(p, tip_src):
+    r = _R(p, 16)                      # 16 байт заголовка (в записи — нули)
+    recs = []
+    champ = None
+    ev = None
+    while r.left() > 0:
+        s = r.u8()
+        if s == 1:
+            recs.append({'kind': 'pm_country', 'id': r.u32(), 'is_region': r.u32(), 'name': r.utf(),
+                         'sort': r.u32(), 'continent': r.u8(), 'x': r.u16(), 'y': r.u16(),
+                         'show_group': r.u8()})
+        elif s == 2:
+            c = {'kind': 'pm_champ', 'id': r.u32(), 'sport_id': r.u32(), 'country_id': r.u32(),
+                 'name': r.utf(), 'sort': r.i32(), 'code': r.u32(), 'count_special': r.u32(),
+                 'level': r.u8(), 'sort_level': r.u32(), 'sort_new_level': r.u32()}
+            champ = c['id']
+            recs.append(c)
+        elif s == 3 or s == 34:
+            e = _pm_event(r, champ, s == 34)
+            e['kind'] = 'pm_event' if s == 3 else 'pm_event_update'
+            ev = e['id']
+            recs.append(e)
+        elif s == 4 or s == 43:
+            L = _pm_line(r, tip_src, ev, s == 43)
+            L['kind'] = 'pm_line' if s == 4 else 'pm_line_update'
+            recs.append(L)
+        elif s == 31:
+            eid = r.u32()
+            t = r.u32()
+            recs.append({'kind': 'pm_event_time', 'id': eid, 't_raw': t, 'start_ts': _pm_ts(t)})
+        elif s == 32:
+            recs.append({'kind': 'pm_event_delete', 'id': r.u32()})
+        elif s == 33:
+            recs.append({'kind': 'pm_event_add', 'id': r.u32(), 'count_add_line': r.u8(),
+                         'is_od': r.u8()})
+        elif s == 42:
+            recs.append({'kind': 'pm_line_delete', 'id': r.u32()})
+        else:
+            raise WinlineDecodeError('прематч: неизвестный подшаг %d на %d/%d' % (s, r.p, len(p)))
+    return recs
+
+
+# ---------------------------------------------------------------- шаг 4: лайв
+def _parse_live(p):
+    r = _R(p, 0)
+    n_ch, n_ev, n_ln = r.u32(), r.u32(), r.u32()      # заголовок: число турниров, событий, линий
+    recs = [{'kind': 'live_header', 'champs': n_ch, 'events': n_ev, 'lines': n_ln}]
+    while r.left() > 0:
+        s = r.u8()
+        if s == 2:
+            recs.append({'kind': 'live_champ', 'id': r.u32(), 'sport_id': r.u32(), 'sort': r.i32(),
+                         'country_id': r.u32(), 'code': r.u8(), 'name': r.utf(), 'level': r.u8(),
+                         'sort_level': r.u32(), 'sort_new_level': r.u32()})
+        elif s == 3 or s == 4:
+            e = {'id': r.i32()}
+            if s == 3:
+                e.update(id_radar=r.u32(), id_native=r.u32(), provider=r.u8(), category=r.u8())
+            r.skip_block16()
+            e['is_od'] = r.u8()
+            r.u8()
+            e['duration'] = r.u8()
+            e['state'] = r.i32()
+            if e['state'] > 3:                         # > STATUSES.DELETE -> событие удалено
+                recs.append({'kind': 'live_event_delete', 'id': e['id'], 'state': e['state']})
+                continue
+            if s == 3:
+                e['champ_id'] = r.u32()
+                e['home'] = r.utf()
+                e['away'] = r.utf()
+                t = r.u32()
+                e['t_raw'] = t
+                e['start_ts'] = t - TZ_OFFSET
+            e['time'] = r.utf()
+            e['cards'] = {'Y1': r.u8(), 'Y2': r.u8(), 'R1': r.u8(), 'R2': r.u8()}
+            e['feed'] = r.u8()
+            e['score'] = r.utf()
+            e['set_scores'] = r.utf()
+            e['add_info'] = r.utf()          # для футбола — угловые «3:3»
+            e['line_count'] = r.u8()
+            e['kind'] = 'live_event' if s == 3 else 'live_event_update'
+            recs.append(e)
+        elif s == 5:
+            lid = r.u32()
+            st = r.u8()
+            if st == 5:                                # STATUSES.DELETE линии
+                recs.append({'kind': 'live_line_delete', 'id': lid})
+                continue
+            L = {'kind': 'live_line', 'id': lid, 'state': st, 'event_id': r.u32()}
+            n = r.u8()
+            L['V'] = [r.u16() / 100 for _ in range(n)]
+            L['tip'] = r.u16()
+            L['koef'] = r.utf()
+            L['favorite'] = r.u8()
+            recs.append(L)
+        elif s == 6:
+            recs.append({'kind': 'live_count', 'event_id': r.u32(), 'n': r.u8()})
+        else:
+            raise WinlineDecodeError('лайв: неизвестный подшаг %d на %d/%d' % (s, r.p, len(p)))
+    return recs
+
+
+# ---------------------------------------------------------------- шаг 18/1118: роспись события
+def _parse_event_fill(p, new_format):
+    """По коду сайта (класс Le). В записанной разведке такого ответа нет — НЕ ПРОВЕРЕНО на данных."""
+    r = _R(p)
+    eid = r.u32()
+    rec = {'kind': 'fill_event', 'event_id': eid}
+    if new_format:
+        rec['team_ids'] = (r.u32(), r.u32())
+    recs = [rec]
+    while r.left() > 0:
+        L = {'kind': 'fill_line', 'event_id': eid, 'id': r.u32(), 'tip': r.u16()}
+        r.u16()
+        L['margin'] = r.u16() / 1e4
+        L['favorite'] = r.u8()
+        L['koef'] = r.utf()
+        kol = r.u32()
+        V = [r.u32() / 1e4 for _ in range(min(kol, 30))]
+        L['V_raw'] = V
+        L['V'] = set_coeff(V, L['margin'], L['tip'], 0)
+        recs.append(L)
+    return recs
+
+
+# ---------------------------------------------------------------- общий вход
+_DEFAULT_TIP_SRC = {}
+
+
+def decode_frame(data, tip_src=None):
+    """Двоичный кадр websocket (как пришёл, gzip) -> список записей (dict с полем 'kind' и 'step').
+
+    tip_src — {id типа рынка: idTipEventSrc} из справочника (шаг 16). Нужен для разбора линий
+    прематча (длина записи зависит от типа). Если не передан — берётся из последнего справочника,
+    который проходил через decode_frame.
+    """
+    if isinstance(data, str):
+        return [{'kind': 'text', 'step': None, 'text': data}]
+    if tip_src is None:
+        tip_src = _DEFAULT_TIP_SRC
+    out = []
+    for step, p in unpack_messages(data):
+        if step == STEP_MENU:
+            recs = _parse_menu(p)
+            src = {t['id']: t['src'] for t in recs if t['kind'] == 'tipline'}
+            tip_src.update(src)
+            if tip_src is not _DEFAULT_TIP_SRC:
+                _DEFAULT_TIP_SRC.update(src)
+        elif step == STEP_PREMATCH:
+            recs = _parse_prematch(p, tip_src)
+        elif step == STEP_LIVE:
+            recs = _parse_live(p)
+        elif step in (STEP_EVENT_FILL, STEP_EVENT_FILL_NEW):
+            recs = _parse_event_fill(p, step == STEP_EVENT_FILL_NEW)
+        elif step == STEP_GET_DATE and len(p) >= 4:
+            t = struct.unpack_from('<I', p, 0)[0]
+            recs = [{'kind': 'server_date', 't_raw': t, 'ts': t - TZ_OFFSET}]
+        elif step == STEP_INITIALIZED:
+            recs = [{'kind': 'initialized'}]
+        else:
+            recs = [{'kind': 'other', 'name': STEP_NAMES.get(step, ''), 'size': len(p)}]
+        for x in recs:
+            x['step'] = step
+        out.extend(recs)
+    return out
+
+
+# ---------------------------------------------------------------- рынки футбола
+# tip -> (семейство, где линия, как читать исходы). Каждая строка подтверждена:
+#   'dom'  — коэффициенты совпали со страницей (line.html / match.html);
+#   'name' — только по названию рынка и исходов в справочнике сайта (шаг 16), с DOM не сверено.
+# Линия: 'none' — без линии; 'a' — koef целиком; 'b' — вторая часть 'период/линия';
+# '_fav' — фора: знак по байту favorite (1 — минус у хозяев, 2 — плюс у хозяев).
+# Семейство с '{p}' — период из первой части koef: 1 -> 'h1_', 2 -> 'h2_'.
+_O_1X2 = ['1', 'X', '2']
+_O_AH = ['1', '2']
+_O_TOT = ['Больше', 'Меньше']
+_O_DC = ['1X', '12', 'X2']
+
+WL_MARKETS = {
+    490:  ('1x2', 'none', _O_1X2, 'dom'),          # Исход 1X2 (@NP@)
+    2:    ('h1_1x2', 'none', _O_1X2, 'dom'),       # @1HT@ исход 1X2
+    956:  ('h2_1x2', 'none', _O_1X2, 'dom'),       # @2HT@ исход 1X2
+    939:  ('{p}1x2', 'p', _O_1X2, 'dom'),          # @[a]P@ исход 1X2 (a = номер тайма)
+    1049: ('total', 'a', _O_TOT, 'dom'),           # Тотал [a] (@NP@)
+    985:  ('h1_total', 'a', _O_TOT, 'dom'),        # @1HT@ тотал [a]
+    960:  ('h2_total', 'a', _O_TOT, 'name'),       # @2HT@ тотал [a]
+    933:  ('{p}total', 'b', _O_TOT, 'dom'),        # @[a]P@ тотал [b]
+    1073: ('ah', 'a_fav', _O_AH, 'dom'),           # Фора [a] (@NP@)
+    988:  ('h1_ah', 'a_fav', _O_AH, 'dom'),        # @1HT@ фора [a]
+    958:  ('h2_ah', 'a_fav', _O_AH, 'name'),       # @2HT@ фора [a]
+    932:  ('{p}ah', 'b_fav', _O_AH, 'dom'),        # @[a]P@ фора [b]
+    1050: ('tt1', 'a', _O_TOT, 'name'),            # Тотал [a] (@NP@) @1
+    1051: ('tt2', 'a', _O_TOT, 'name'),            # Тотал [a] (@NP@) @2
+    986:  ('h1_tt1', 'a', _O_TOT, 'name'),         # @1HT@ тотал [a] @1
+    987:  ('h1_tt2', 'a', _O_TOT, 'name'),         # @1HT@ тотал [a] @2
+    961:  ('h2_tt1', 'a', _O_TOT, 'name'),
+    962:  ('h2_tt2', 'a', _O_TOT, 'name'),
+    947:  ('{p}tt1', 'b', _O_TOT, 'name'),         # @[a]P@ тотал [b] @1
+    948:  ('{p}tt2', 'b', _O_TOT, 'name'),
+    114:  ('dc', 'none', _O_DC, 'name'),           # Двойной шанс (@NP@)
+    115:  ('h1_dc', 'none', _O_DC, 'name'),        # @1HT@ двойной шанс
+    966:  ('h2_dc', 'none', _O_DC, 'name'),
+    978:  ('{p}dc', 'p', _O_DC, 'name'),           # @[a]P@ двойной шанс
+    80:   ('c_1x2', 'none', _O_1X2, 'name'),       # Исход 1X2 угловые (@NP@)
+    1070: ('c_total', 'a', _O_TOT, 'name'),        # Тотал угловых [a] (@NP@)
+    1071: ('c_tt1', 'a', _O_TOT, 'name'),          # Тотал угловых [a] (@NP@) @1
+    1072: ('c_tt2', 'a', _O_TOT, 'name'),          # Тотал угловых [a] (@NP@) @2
+    1079: ('c_ah', 'a_fav', _O_AH, 'name'),        # Фора угловых [a] (@NP@)
+    81:   ('c_h1_1x2', 'none', _O_1X2, 'name'),    # @1P@ исход 1X2 угловые
+    1006: ('c_h1_total', 'a', _O_TOT, 'name'),     # @1P@ тотал угловых [a]
+    1007: ('c_h1_tt1', 'a', _O_TOT, 'name'),
+    1008: ('c_h1_tt2', 'a', _O_TOT, 'name'),
+    1010: ('c_h1_ah', 'a_fav', _O_AH, 'name'),     # @1P@ фора угловых [a]
+}
+
+FOOTBALL_SPORT_ID = 1
+
+
+def _num(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def market_key(tip, koef, favorite, tipline=None):
+    """(семейство, линия, перестановка исходов) или None, если рынок нам не нужен/не распознан."""
+    m = WL_MARKETS.get(tip)
+    if m is None:
+        return None
+    fam, how, want, _proof = m
+    # порядок исходов берём по названиям из справочника сайта, а не «по привычке»
+    if tipline is not None:
+        names = [x.strip() for x in tipline['outcomes'][:max(tipline['count_v'], len(want))]]
+        try:
+            order = [names.index(w) for w in want]
+        except ValueError:
+            return None
+    else:
+        order = list(range(len(want)))
+    parts = (koef or '').split('/')
+    if '{p}' in fam:
+        per = parts[0] if parts else ''
+        if per not in ('1', '2'):
+            return None
+        fam = fam.replace('{p}', 'h%s_' % per)
+    line = None
+    if how in ('a', 'a_fav'):
+        line = _num(parts[0])
+        if line is None:
+            return None
+    elif how in ('b', 'b_fav'):
+        if len(parts) < 2:
+            return None
+        line = _num(parts[1])
+        if line is None:
+            return None
+    if how.endswith('_fav'):
+        x = abs(line)
+        if favorite == 1:
+            line = -x
+        elif favorite == 2:
+            line = x
+        line = line + 0.0
+        if line == 0:
+            line = 0.0
+    return fam, line, order
+
+
+def _odds_out(V, order):
+    out = []
+    for i in order:
+        v = V[i] if i < len(V) else None
+        out.append(v if (v is not None and v > 1.0) else None)   # 1.0 = исход закрыт («-» на сайте)
+    return out
+
+
+class WinlineLine:
+    """Состояние линии Винлайна, собранное из кадров websocket."""
+
+    def __init__(self):
+        self.reset(full=True)
+
+    def reset(self, full=False):
+        if full:
+            self.sports = {}
+            self.tiplines = {}
+            self.tip_src = {}
+        self.countries = {}
+        self.pm_champs = {}
+        self.pm_events = {}
+        self.pm_lines = {}
+        self.live_champs = {}
+        self.live_events = {}
+        self.live_lines = {}
+        self.server_ts = None
+        self.initialized = False
+        self.frames = 0
+
+    # ---- приём кадров
+    def feed(self, frame_bytes):
+        if isinstance(frame_bytes, str):
+            return []
+        recs = decode_frame(frame_bytes, self.tip_src)
+        self.frames += 1
+        for x in recs:
+            self._apply(x)
+        return recs
+
+    def _apply(self, x):
+        k = x['kind']
+        if k == 'sport':
+            self.sports[x['id']] = x
+        elif k == 'tipline':
+            self.tiplines[x['id']] = x
+        elif k == 'vars':
+            # справочник приходит первым в каждом новом подключении: старое состояние выбрасываем,
+            # как сайт (clearDB при переподключении)
+            self.reset(full=False)
+        elif k == 'server_date':
+            self.server_ts = x['ts']
+        elif k == 'initialized':
+            self.initialized = True
+        elif k == 'pm_country':
+            self.countries[x['id']] = x
+        elif k == 'pm_champ':
+            self.pm_champs[x['id']] = x
+        elif k == 'pm_event':
+            self.pm_events[x['id']] = x
+        elif k == 'pm_event_update':
+            e = self.pm_events.setdefault(x['id'], {})
+            e.update(x)
+        elif k in ('pm_event_time', 'pm_event_add'):
+            e = self.pm_events.get(x['id'])
+            if e is not None:
+                e.update({kk: vv for kk, vv in x.items() if kk not in ('kind', 'step')})
+        elif k == 'pm_event_delete':
+            self.pm_events.pop(x['id'], None)
+            for lid in [lid for lid, L in self.pm_lines.items() if L['event_id'] == x['id']]:
+                del self.pm_lines[lid]
+        elif k in ('pm_line', 'pm_line_update', 'fill_line'):
+            self.pm_lines[x['id']] = x
+        elif k == 'fill_event':
+            for lid in [lid for lid, L in self.pm_lines.items() if L['event_id'] == x['event_id']]:
+                del self.pm_lines[lid]
+        elif k == 'pm_line_delete':
+            self.pm_lines.pop(x['id'], None)
+        elif k == 'live_champ':
+            self.live_champs[x['id']] = x
+        elif k == 'live_event':
+            self.live_events[x['id']] = x
+        elif k == 'live_event_update':
+            e = self.live_events.get(x['id'])
+            if e is not None:
+                e.update({kk: vv for kk, vv in x.items() if kk not in ('kind', 'step')})
+        elif k == 'live_event_delete':
+            self.live_events.pop(x['id'], None)
+            for lid in [lid for lid, L in self.live_lines.items() if L['event_id'] == x['id']]:
+                del self.live_lines[lid]
+        elif k == 'live_line':
+            self.live_lines[x['id']] = x
+        elif k == 'live_line_delete':
+            self.live_lines.pop(x['id'], None)
+
+    # ---- выдача
+    def _markets(self, lines, verified_only):
+        mk = {}
+        for L in sorted(lines, key=lambda L: L['id']):
+            m = WL_MARKETS.get(L['tip'])
+            if m is None or (verified_only and m[3] != 'dom'):
+                continue
+            key = market_key(L['tip'], L['koef'], L['favorite'], self.tiplines.get(L['tip']))
+            if key is None:
+                continue
+            fam, line, order = key
+            odds = _odds_out(L['V'], order)
+            if any(o is not None for o in odds):
+                mk[(fam, line)] = odds
+        return mk
+
+    def football(self, live=None, verified_only=False):
+        """Список футбольных событий.
+
+        live=None — все; False — только прематч; True — только лайв.
+        verified_only=True — только рынки, сверенные с DOM (см. WL_MARKETS).
+        Исход, закрытый на сайте (кф 1.0, на странице «-»), отдаётся как None.
+        """
+        by_ev_pm = {}
+        for L in self.pm_lines.values():
+            by_ev_pm.setdefault(L['event_id'], []).append(L)
+        by_ev_live = {}
+        for L in self.live_lines.values():
+            by_ev_live.setdefault(L['event_id'], []).append(L)
+        out = []
+        if live is not True:
+            for e in self.pm_events.values():
+                if e['id'] in self.live_events or 'champ_id' not in e:
+                    continue
+                ch = self.pm_champs.get(e['champ_id'])
+                if not ch or ch['sport_id'] != FOOTBALL_SPORT_ID:
+                    continue
+                out.append(self._ev(e, ch, False, by_ev_pm.get(e['id'], []), verified_only))
+        if live is not False:
+            for e in self.live_events.values():
+                ch = self.live_champs.get(e.get('champ_id')) or self.pm_champs.get(e.get('champ_id'))
+                if not ch or ch['sport_id'] != FOOTBALL_SPORT_ID:
+                    continue
+                out.append(self._ev(e, ch, True, by_ev_live.get(e['id'], []), verified_only))
+        out.sort(key=lambda d: (d['start_ts'], d['id']))
+        return out
+
+    def _ev(self, e, ch, is_live, lines, verified_only):
+        c = self.countries.get(ch.get('country_id'))
+        d = {
+            'id': e['id'], 'home': e.get('home', ''), 'away': e.get('away', ''),
+            'start_ts': e.get('start_ts'), 'league': ch.get('name'),
+            'country': c['name'] if c else None, 'champ_id': ch['id'], 'live': is_live,
+            'url': 'https://winline.ru/stavki/event/%d' % e['id'],
+            'markets': self._markets(lines, verified_only),
+        }
+        if is_live:
+            d['score'] = e.get('score')
+            d['time'] = e.get('time')
+        else:
+            d['count_add_line'] = e.get('count_add_line')    # на сайте «+N» = это число − 1
+        return d
+
+
+def event_plus_command(event_id, kind=0):
+    """Два текстовых кадра, которыми сайт просит полную роспись события (по коду сайта, не проверено):
+    'event.plus', затем base64([event_id u32 LE][kind u8]); kind 0 — все рынки, 1 — игроки, 2 — спецставки.
+    Ответ — шаг 18/1118 (_parse_event_fill)."""
+    import base64
+    return ['event.plus', base64.b64encode(struct.pack('<IB', event_id, kind)).decode()]
+
+
+class WinlineFeed:
+    """Винлайн напрямую: страница линии футбола в браузере программы, кадры websocket data_ng → WinlineLine.
+    Ничего не отправляет сама — подписку делает сайт. Интерфейс как у DirectFeed (для direct_values_for)."""
+    name = 'Винлайн'
+    SITE = 'https://winline.ru/stavki/sport/futbol'
+
+    def __init__(self):
+        self.page = None
+        self.host = 'wss.winline.ru'
+        self.page_url = ''
+        self.line = WinlineLine()
+        self.queue = []
+        self.last_frame = 0
+        self.last_poll = 0
+        self.last_full = 0
+        self.last_ok = None
+        self.fails = 0
+        self.version = None
+        self.last_error = ''
+        self.match_map = {}
+        self.match_tried = {}
+        self.events, self.miscs, self.factors, self.touched = {}, {}, {}, {}
+        self._evs = {}
+        self.started = 0
+
+    def start(self, browser):
+        self.page = browser.new_page(locale='ru-RU')
+
+        def on_ws(ws):
+            if 'data_ng' not in ws.url:
+                return
+
+            def rec(payload):
+                if isinstance(payload, (bytes, bytearray)):
+                    self.queue.append(bytes(payload))
+            ws.on('framereceived', rec)
+        self.page.on('websocket', on_ws)
+        self.line = WinlineLine()
+        self.queue = []
+        self.started = time.time()
+        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=90000)
+        self.page.wait_for_timeout(5000)
+        self.page_url = self.page.url
+        log(f'Винлайн: сайт открыт, кадров получено {len(self.queue)}')
+
+    def poll(self):
+        try:
+            self.page.wait_for_timeout(1)          # дать браузеру передать накопившиеся кадры
+        except Exception as e:
+            raise RuntimeError('страница Винлайна не отвечает: ' + str(e).splitlines()[0][:80])
+        q, self.queue = self.queue, []
+        bad = 0
+        for fr in q:
+            try:
+                self.line.feed(fr)
+            except Exception:
+                bad += 1
+        if q:
+            self.last_frame = time.time()
+        if bad and bad == len(q):
+            raise RuntimeError(f'кадры Винлайна не разбираются ({bad} шт.) — сайт мог сменить формат')
+        if time.time() - max(self.last_frame, self.started) > 90:
+            self.line = WinlineLine()
+            self.started = time.time()
+            self.page.reload(wait_until='domcontentloaded', timeout=90000)     # поток встал — открыть заново
+            raise RuntimeError('от Винлайна нет данных 90 с — страница открыта заново')
+        if not self.line.pm_events:
+            raise RuntimeError('Винлайн ещё не прислал линию')
+        now = time.time()
+        self._evs = {e['id']: e for e in self.line.football(live=False, verified_only=True) if e.get('start_ts')}
+        self.last_poll = now
+        self.last_ok = now
+        self.last_full = self.started
+        self.fails = 0
+
+    def football(self):
+        now = time.time()
+        return [{'id': e['id'], 'team1': e['home'], 'team2': e['away'], 'startTime': e['start_ts'], '_wl': e}
+                for e in self._evs.values() if e['start_ts'] > now + 60]
+
+    def odds_of(self, eid):
+        out = {}
+        for key, odds in ((self._evs.get(eid) or {}).get('markets') or {}).items():
+            if odds and all(isinstance(x, (int, float)) and x > 1 for x in odds):
+                out[key] = list(odds)
+        return out
+
+    def match_odds(self, ev):
+        m = ((self._evs.get(ev['id']) or {}).get('markets') or {}).get(('1x2', None)) or [None] * 3
+        return list(m) + [None, None, None]       # двойной шанс у Винлайна не сверен — не показываем
+
+    def event_url(self, ev):
+        return ev['_wl']['url']
+
+    match_to_oddsru = DirectFeed.match_to_oddsru
+
 
 def settle_ah(margin, hcap, odds):
     """азиатская фора: margin — разница мячей своей команды, hcap — её фора; четверти делятся пополам"""
@@ -1758,6 +2535,8 @@ class Collector:
         self.last_events = 0
         self.ever_ok = False
         self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
+        if 'Винлайн' in MY_BOOKMAKERS:
+            self.feeds.append(WinlineFeed())
         self.pin = PinnacleFeed()
         self.pin_start_try = 0
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
@@ -2348,7 +3127,8 @@ class Collector:
                               'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full),
                               'bk_url': f.event_url(ev),
                               'bk_title': f"{ev.get('team1', '')} — {ev.get('team2', '')}" if ev.get('team1') else None,
-                              'mo': [(f.factors.get(ev['id'], {}).get(c) or {}).get('v') for c in F_MATCH_ODDS]}
+                              'mo': (f.match_odds(ev) if hasattr(f, 'match_odds') else
+                                     [(f.factors.get(ev['id'], {}).get(c) or {}).get('v') for c in F_MATCH_ODDS])}
                     if now - pts > 60 and ev_ >= 0.03:
                         urgent.append(mid)
         with STATE.lock:
