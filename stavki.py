@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-35"
+VERSION = "2026.11.21-36"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1403,7 +1403,9 @@ a.btn:hover{background:#3d4553}a.btn.h{border-left-color:#9be15d}a.btn.a{border-
 a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-decoration:underline;text-decoration-color:#ffffff33;text-underline-offset:3px}
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
-.wh{font-size:11px;color:#6f7c89;margin:2px 2px 0}
+.okm{color:#5fd38d;font-weight:800;font-size:14px}.bad2{color:#ffb454;font-weight:700}
+.newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
+@keyframes blink{50%{opacity:.45}}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
 .pp h2{font-size:16px;margin:0 0 6px}
 .big{font-size:15px}
@@ -1451,6 +1453,11 @@ function betText(v){const t=(v.match||'').split(' — ');const mn=v.market_name|
   if(base==='Инд. тотал хозяев')return p2+what+(t[0]||'хозяев')+' '+bm+m[2];
   if(base==='Инд. тотал гостей')return p2+what+(t[1]||'гостей')+' '+bm+m[2];return pre+'Тотал '+bm+m[2]}
  return mn+': '+v.outcome}
+// у каждой ставки: ✓ — кф с сайта конторы и цена Pinnacle свежие; ⚠ — что именно не так
+function okMark(v){const p=[];
+ if(v.source!=='сайт')p.push('кф с odds.ru — сверить');else if(v.age>180)p.push('кф не обновлялся '+fmt(v.age));
+ if(v.pin_age==null)p.push('нет цены Pinnacle');else if(v.pin_age>180)p.push('Pinnacle '+fmt(v.pin_age)+' назад');
+ return p.length?'<span class="bad2">⚠ '+p.join(' · ')+'</span>':'<span class="okm" title="кф с сайта конторы и цена Pinnacle свежие">✓</span>'}
 async function tick(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
@@ -1480,7 +1487,10 @@ async function tick(){
   const SECS=[['m','МАТЧ'],['h1','1-Й ТАЙМ'],['c','УГЛОВЫЕ']];
   for(const [sk,sn] of SECS){
    const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
-   h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+'</div>';
+   const keys=srows.map(v=>v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome);
+   if(!closed){SEEN[sk]=keys}                       // раздел открыт — всё, что в нём сейчас, увидено
+   const fresh=closed&&keys.some(k=>!(SEEN[sk]||[]).includes(k));
+   h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+(fresh?'<span class="newb">НОВОЕ</span>':'')+'</div>';
    if(closed)continue;
    h+='<div class="cols">';
    for(const b of bkCols){
@@ -1488,7 +1498,9 @@ async function tick(){
     const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
     const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel)));
     const f=s.feeds[b];let feed;
-    if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы</div>';
+    const pins=rs.map(v=>v.pin_age).filter(x=>x!=null),ages=rs.map(v=>v.age);
+    const chk=(ages.length?' · проверены '+fmt(Math.max(...ages))+' назад':'')+(pins.length?' · Pinnacle до '+fmt(Math.max(...pins))+' назад':'');
+    if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы'+chk+'</div>';
     else feed='<div class="feed warn">цены с odds.ru, могут отставать — сверить на сайте конторы'+(f&&f.error?'<br>прямая линия не работает: '+esc(f.error):'')+'</div>';
     h+='<div class="col" style="--c:'+c+'"><div class="colh"><span class="bk">'+b+'</span><span class="cnt">'+(cards.length?cards.length+' матч.':'')+'</span></div>'+feed;
     if(!cards.length)h+='<div class="empty">Сейчас подходящих ставок нет</div>';
@@ -1507,11 +1519,11 @@ async function tick(){
       const [,side,title]=vw(v);const star=best.has(v);
       h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
        +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
-       +'<div class="info"><span>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span></div>'
-       +(v.where?'<div class="wh">где на сайте: '+esc(v.where)+'</div>':'')+'</div>'}
-     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
+       +'<div class="info"><span>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
+     h+='</div>'}
     h+='</div>'}
    h+='</div>'}
+  try{localStorage.setItem('seen',JSON.stringify(SEEN))}catch(e){}
   document.getElementById('cols').innerHTML=h;
   // ставка — одной строкой: длинная уменьшается, пока не поместится
   for(const b of document.querySelectorAll('.bl,.btn .nm')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
@@ -1531,6 +1543,7 @@ async function tick(){
  }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
+let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
 let SCOL={};try{SCOL=JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
 function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
@@ -2760,7 +2773,7 @@ def tg_text(v, code):
     bet, where = bet_info(v)
     bet = f'{bet_kind(event_of(v))[0]}: {bet}'
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
-    return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\nгде на сайте: {where}\n{v.get('match', '')}, {start} МСК\n"
+    return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
             f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}"
             + (f"\n{v['bk_url']}" if v.get('bk_url') else ''))
