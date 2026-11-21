@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-29"
+VERSION = "2026.11.21-31"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -41,7 +41,7 @@ DEFAULT_CONFIG = {
     "batch_matches": 6,           # сколько матчей запрашивать одновременно
     "direct_poll_sec": 5,
     "paper_stake_rub": 100,       # условная ставка на бумаге; пороги способов — в STRATEGIES
-    "my_bookmakers_list": ["Фонбет", "Винлайн", "PARI"],   # конторы, где есть счёт (выбор владельца 21.11)
+    "my_bookmakers_list": ["Фонбет", "PARI", "Винлайн"],   # конторы, где есть счёт (выбор владельца 21.11)
     "refresh_events_sec": 120,
     "headless": True,
     "telegram_token": "",         # заполняется кнопкой «Подключить Telegram» в окне
@@ -1367,7 +1367,17 @@ main{padding:16px 20px}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
 .pp h2{font-size:16px;margin:0 0 6px}
 .big{font-size:15px}
-.pos{color:#5fd38d}.neg{color:#ff6b6b}
+.pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
+.ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
+.pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
+.pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
+.ptab th:first-child,.ptab td:first-child{text-align:left}.ptab td:last-child{text-align:right;font-weight:700}.ptab th:last-child{text-align:right}
+.ptab tr:nth-child(odd) td{background:#17202a}
+.ptab td.w{color:#5fd38d;font-weight:700}.ptab td.l{color:#ff6b6b;font-weight:700}.ptab td.p{color:#c9d1d9}
+.ptab td:nth-child(3),.ptab td:nth-child(4),.ptab td:nth-child(5),.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){box-shadow:inset 0 0 0 999px rgba(90,176,255,.06)}
+.ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(7),.ptab th:nth-child(7){border-left:2px solid #34414f}
+.pp .ptab tr.tot td{border-top:2px solid #3a4756;font-weight:800;font-size:16px;background:#1b2430}
+.kind.ks{font-size:11px;padding:2px 7px;margin:0;vertical-align:1px;color:#111}
 .pp table td,.pp table th{font-size:12px;padding:3px 14px 3px 6px}
 details{margin-top:26px;color:#9fb0c0}
 summary{cursor:pointer;font-size:14px}
@@ -1417,7 +1427,8 @@ async function tick(){
   const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99);
   const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
   let h='';
-  for(const b of d.mine){
+  const ORD=['Фонбет','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // Фонбет и PARI — рядом (владелец 21.11)
+  for(const b of [...d.mine].sort((a,c)=>oi(a)-oi(c))){
    const c=COLORS[b]||'#7fb6ff';const rs=rows.filter(v=>v.bookmaker===b);
    const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
    const main=v=>/^(1x2|total|ah|tt1|tt2|match_winner|total_points)$/.test(v.market||'')?1:0;
@@ -1461,15 +1472,17 @@ async function tick(){
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 function renderPaper(p){
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
- const row=(name,g,b)=>{const o=b?'<b>':'',c=b?'</b>':'';return '<tr><td>'+o+name+c+'</td><td>'+o+g.n+c+'</td><td>'+g.w+'</td><td>'+g.l+'</td><td>'+g.push+'</td><td>'+(g.n-g.done)+'</td><td>'+o+sg(g.profit_rub,' ₽')+c+'</td></tr>'};
- let h='<div class="pp"><h2>Ставки на бумаге (понарошку, по '+p.stake_rub+' ₽, одна ставка на событие)</h2>';
+ const z=x=>x?x:'·';
+ const row=(name,g,tot)=>'<tr'+(tot?' class="tot"':'')+'><td>'+name+'</td><td>'+g.n+'</td><td class="w">'+z(g.w)+'</td><td class="l">'+z(g.l)+'</td><td class="p">'+z(g.push)+'</td><td>'+z(g.n-g.done)+'</td><td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td></tr>';
+ let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
- h+='<table><tr><th>Вид ставки</th><th>Сделано</th><th>Выиграно</th><th>Проиграно</th><th>Возврат</th><th>Ждут матча</th><th>Итог</th></tr>';
- for(const g of p.simple)h+=row(g.val,g,false);
+ h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
+ for(const g of p.simple)h+=row((g.part?'<span class="kind ks '+g.kc+'">'+g.part+'</span> ':'')+(g.name||g.val),g,false);
  h+=row('Всего',p.simple_total,true)+'</table>';
- if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: контора не показала счёт — в итог не входят</div>';
+ if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
 }
+
 
 async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
  try{await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:k})})}catch(e){}}
@@ -2492,7 +2505,12 @@ def paper_stats(con, stake_rub):
     for (fam,) in con.execute("SELECT DISTINCT COALESCE(fam, event) FROM paper2 WHERE strategy='Б' AND src='сайт'"):
         a = agg("strategy='Б' AND src='сайт' AND COALESCE(fam, event) = ?", (fam,))
         if a['n']:
-            out['simple'].append(dict(a, val=market_label(fam) if fam else '—'))
+            pre, base = split_fam(fam or '')
+            name = {'1x2': 'Исход', 'ah': 'Фора', 'total': 'Тотал' if pre == 'c_' else 'Тотал голов',
+                    'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}.get(base, market_label(fam or '—'))
+            out['simple'].append(dict(a, val=market_label(fam) if fam else '—', name=name,
+                                      part={'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
+                                      kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm')))
     out['simple'].sort(key=lambda r: -r['n'])
     out['simple_total'] = agg("strategy='Б' AND src='сайт'")
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
