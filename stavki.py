@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-20"
+VERSION = "2026.11.21-21"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -198,6 +198,28 @@ def outcome_names(fam, line):
         return [f'Ф1 ({fmt_ln(line)})', f'Ф2 ({fmt_ln(-line)})']
     ln = '%g' % line
     return [f'Больше ({ln})', f'Меньше ({ln})']
+
+
+def bet_info(v):
+    """(ставка как на сайте конторы, где искать): «Тотал 3 Больше», «Ф1 (−1.5) · Мельбурн»; «Угловые → Инд. тоталы»"""
+    t = (v.get('match') or '').split(' — ')
+    home, away = t[0], t[-1]
+    pre, base = split_fam(event_of(v))
+    out = v.get('outcome', '')
+    ln = line_of(out)
+    lns = '%g' % ln if ln is not None else ''
+    bm = 'Больше' if out.startswith('Больше') else 'Меньше'
+    if base == '1x2':
+        bet, sec = {'П1': 'П1 · ' + home, 'Х': 'Х · ничья', 'П2': 'П2 · ' + away}.get(out, out), 'Исходы'
+    elif base == 'ah':
+        side = out[:2]
+        bet, sec = f"{side} ({fmt_ln(ln)}) · {home if side == 'Ф1' else away}", 'Форы'
+    elif base in ('tt1', 'tt2'):
+        bet, sec = f"{home if base == 'tt1' else away}: Тотал {lns} {bm}", 'Инд. тоталы'
+    else:
+        bet, sec = f'Тотал {lns} {bm}', 'Тоталы'
+    where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → '}[pre] + sec
+    return bet, where
 
 
 def db_market(fam):
@@ -973,6 +995,8 @@ class State:
                                  start=m.get('start_str', ''), start_ts=m.get('start', 0), url=m.get('url', ''),
                                  source=v.get('source', 'odds.ru'),
                                  pin_age=int(now - v['pin_ts']) if v.get('pin_ts') else None,
+                                 bet=bet_info(dict(v, match=m.get('title', '')))[0],
+                                 where=bet_info(dict(v, match=m.get('title', '')))[1],
                                  chance=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[0], 4),
                                  rel=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[1], 4)))
             tracked = len(self.matches)
@@ -1195,7 +1219,7 @@ async function tick(){
      +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
     vs.forEach((v,i)=>{
      const star=i===0&&vs.length>1&&main(v);
-     h+='<div class="var'+(star?' best':'')+'"><div>'+(star?'<span class="star">★ лучший</span>':'')+'<span class="bet">'+betText(v)+'</span><span class="odd">'+v.odds+'</span></div>'
+     h+='<div class="var'+(star?' best':'')+'"><div>'+(star?'<span class="star">★ лучший</span>':'')+'<span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
       +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
       +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
@@ -2229,22 +2253,9 @@ def set_tg(text, ok):
 
 
 def tg_text(v, code):
-    t = (v.get('match') or '').split(' — ')
-    fam = event_of(v)
-    if fam == 'ah':
-        f = re.match(r'Ф([12]) \(([-+\d.]+)\)', v['outcome'])
-        bet = ('Фора ' + (t[0] if f.group(1) == '1' else t[-1]) + ' ' + f.group(2)) if f else v['outcome']
-    elif fam in ('tt1', 'tt2'):
-        bet = ('Голы ' + (t[0] if fam == 'tt1' else t[-1]) + ' ' + v['outcome'].replace('Больше', 'больше')
-               .replace('Меньше', 'меньше').replace('(', '').replace(')', ''))
-    elif v['market_name'] == '1Х2':
-        bet = {'П1': 'Победа ' + (t[0] if t else 'хозяев'), 'П2': 'Победа ' + (t[1] if len(t) > 1 else 'гостей'),
-               'Х': 'Ничья'}.get(v['outcome'], v['outcome'])
-    else:
-        m = re.match(r'(Больше|Меньше) \(([\d.]+)\)', v['outcome'])
-        bet = (('Тотал больше ' if m.group(1) == 'Больше' else 'Тотал меньше ') + m.group(2)) if m else v['outcome']
+    bet, where = bet_info(v)
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
-    return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\n{v.get('match', '')}, {start} МСК\n"
+    return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\nгде на сайте: {where}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
             f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}")
 
