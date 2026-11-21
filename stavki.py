@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-32"
+VERSION = "2026.11.21-33"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -168,6 +168,7 @@ F_TOTALS = [(930, 931), (940, 941), (1848, 1849), (1696, 1697), (1727, 1728), (1
 F_AH = [(1851, 1852), (910, 912), (927, 928), (937, 938), (989, 991), (1569, 1572), (1672, 1675), (1677, 1678), (1680, 1681), (1683, 1684), (1686, 1687), (1689, 1690), (1692, 1718), (1723, 1724), (1845, 1846)]
 F_TT1 = [(974, 976), (1809, 1810), (1812, 1813), (1815, 1816), (1818, 1819), (1821, 1822), (1824, 1825), (1827, 1828), (1830, 1831), (2203, 2204)]
 F_TT2 = [(978, 980), (1854, 1871), (1873, 1874), (1880, 1881), (1883, 1884), (1886, 1887), (1893, 1894), (1896, 1897), (1899, 1900), (2209, 2210)]
+F_MATCH_ODDS = (921, 922, 923, 924, 1571, 925)   # П1 Х П2 1Х 12 Х2 (каталог Фонбета, таблица «Исходы»)
 FB_PARTS = {'1-й тайм': 'h1_', 'угловые': 'c_'}
 MARKET_LABEL = {'1x2': '1Х2', 'total': 'Тотал', 'ah': 'Фора', 'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}
 PART_LABEL = {'': '', 'h1_': '1-й тайм: ', 'c_': 'Угловые: '}
@@ -232,6 +233,27 @@ def bet_kind(fam):
             'tt2': 'ИНД. ТОТАЛ ГОЛОВ' if goals else 'ИНД. ТОТАЛ'}.get(base, base.upper())
     part = {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}[pre]
     return f'{part} · {kind}', {'': 'm', 'h1_': 'h1', 'c_': 'c'}[pre]
+
+
+def bet_view(fam, outcome):
+    """(раздел окна, к какой команде ставка h/a/'' , заголовок рынка) — для карточек по разделам (владелец 21.11)"""
+    pre, base = split_fam(fam)
+    o = outcome or ''
+    side = ''
+    if base == '1x2':
+        side = {'П1': 'h', 'П2': 'a'}.get(o, '')
+    elif base == 'ah':
+        side = 'h' if o.startswith('Ф1') else ('a' if o.startswith('Ф2') else '')
+    elif base in ('tt1', 'tt2'):
+        side = 'h' if base == 'tt1' else 'a'
+    title = {'': {'1x2': 'Исход матча', 'total': 'Тотал голов', 'ah': 'Фора', 'tt1': 'Инд. тотал', 'tt2': 'Инд. тотал'},
+             'h1_': {'1x2': 'Исход 1-го тайма', 'total': 'Тотал 1-го тайма', 'ah': 'Фора 1-го тайма',
+                     'tt1': 'Инд. тотал 1-го тайма', 'tt2': 'Инд. тотал 1-го тайма'},
+             'c_': {'1x2': 'Исход по угловым', 'total': 'Тотал угловых', 'ah': 'Фора по угловым',
+                    'tt1': 'Инд. тотал угловых', 'tt2': 'Инд. тотал угловых'}}.get(pre, {}).get(base, market_label(fam))
+    sec = {'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm')
+    order = ['1x2', 'total', 'ah', 'tt1', 'tt2'].index(base) if base in ('1x2', 'total', 'ah', 'tt1', 'tt2') else 9
+    return sec, side, title, order
 
 
 def db_market(fam):
@@ -1193,6 +1215,7 @@ class State:
                                  bet=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[0],
                                  where=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[1],
                                  kind=bet_kind(event_of(v))[0], kc=bet_kind(event_of(v))[1],
+                                 view=bet_view(event_of(v), v.get('outcome')),
                                  chance=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[0], 4),
                                  rel=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[1], 4)))
             tracked = len(self.matches)
@@ -1364,6 +1387,23 @@ main{padding:16px 20px}
 .src{font-size:12px;margin-top:3px}
 .src.ok{color:#5fd38d}.src.warn{color:#d8a657}
 .empty{padding:6px 14px 16px;color:#7d8b99;font-size:13px}
+.sec{display:flex;align-items:center;gap:12px;background:#1b2430;border-radius:10px;padding:10px 14px;margin:14px 0 10px;cursor:pointer;user-select:none}
+.sec:hover{background:#212c3a}.sec .ar{color:#8b98a5;width:16px}.sec .kind{font-size:14px;margin:0;padding:3px 10px}.sec .sn{color:#aab4be;font-size:14px}.sec .sn b{color:#fff}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.tl{min-width:0}
+.mh .th{color:#9be15d}.mh .ta{color:#c69cff}.mh .td{color:#6b7785}
+.lgl{display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap}
+.lgl .cty{font-size:11px;font-weight:800;color:#0f1419;background:#9fb3c8;border-radius:4px;padding:1px 6px;text-transform:uppercase;letter-spacing:.3px}
+.lgl .cty:empty{display:none}.lgl .lgn{font-size:13px;font-weight:700;color:#e6e6e6}
+.mo{display:grid;grid-template-columns:repeat(3,auto);gap:2px 10px;font-size:12px;color:#8b98a5;padding:4px 8px;background:#141920;border-radius:6px;white-space:nowrap}
+.mo b{color:#e6e6e6}.mo .h b{color:#9be15d}.mo .a b{color:#c69cff}
+.bet{background:#232a34;border-radius:8px;padding:6px 10px 8px;margin-top:10px;border:1px solid #2e3744}
+.mkt{font-size:11px;color:#7fd1b9;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+a.btn{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#353c48;border-radius:6px;padding:8px 12px;margin-top:6px;border-left:4px solid #5d6876;text-decoration:none;color:#e6e6e6}
+a.btn:hover{background:#3d4553}a.btn.h{border-left-color:#9be15d}a.btn.a{border-left-color:#c69cff}a.btn.best{box-shadow:0 0 0 2px #5bc8ac inset}
+a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-decoration:underline;text-decoration-color:#ffffff33;text-underline-offset:3px}
+a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
+.info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
+.wh{font-size:11px;color:#6f7c89;margin:2px 2px 0}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
 .pp h2{font-size:16px;margin:0 0 6px}
 .big{font-size:15px}
@@ -1390,7 +1430,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <label>перевес от, % <input id="thr" type="number" step="0.5" value="5"></label>
 <label>кф до <input id="mx" type="number" step="0.5" value="4"></label>
 <span class="st" id="st">загрузка…</span></header>
-<main><div id="paper"></div><div class="cols" id="cols"></div>
+<main><div id="paper"></div><div id="cols"></div>
 <details><summary>Подробнее: работа программы, маржа контор, разведка, Telegram</summary>
 <p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
 <button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p><div id="more"></div></details></main>
@@ -1430,32 +1470,51 @@ async function tick(){
   const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
   let h='';
   const ORD=['Фонбет','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // Фонбет и PARI — рядом (владелец 21.11)
-  for(const b of [...d.mine].sort((a,c)=>oi(a)-oi(c))){
-   const c=COLORS[b]||'#7fb6ff';const rs=rows.filter(v=>v.bookmaker===b);
-   const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
-   const main=v=>/^(1x2|total|ah|tt1|tt2|match_winner|total_points)$/.test(v.market||'')?1:0;
-   const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(main(y)-main(x))||(y.rel-x.rel))).sort((x,y)=>y[0].rel-x[0].rel);
-   const f=s.feeds[b];let feed;
-   if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы · матчей '+f.events+', сопоставлено '+f.matched+'</div>';
-   else feed='<div class="feed warn">цены с odds.ru, могут отставать — перед ставкой сверить на сайте конторы'+(f&&f.error?'<br>прямая линия не работает: '+f.error:'')+'</div>';
-   h+='<div class="col" style="--c:'+c+'"><div class="colh"><span class="bk">'+b+'</span><span class="cnt">'+(cards.length?cards.length+' матч.':'')+'</span></div>'+feed;
-   if(!cards.length)h+='<div class="empty">Сейчас подходящих ставок нет</div>';
-   for(const vs of cards){
-    const v0=vs[0];const direct=v0.source==='сайт';
-    const age=Math.max(...vs.map(v=>v.age));const pa=vs.map(v=>v.pin_age).filter(x=>x!=null);const pin=pa.length?Math.max(...pa):null;
-    const old=age>180||(pin!=null&&pin>180);
-    h+='<div class="card'+(old?' stale':'')+'"><div class="mh"><a href="'+(v0.bk_url||(v0.url+'bet/'))+'" target="_blank" title="'+(v0.bk_url?'открыть матч на сайте конторы':'открыть на odds.ru')+'">'+v0.match+'</a></div>'
-     +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
-    vs.forEach((v,i)=>{
-     const star=i===0&&vs.length>1&&main(v);
-     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><div class="bl"><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd"><span class="kf">кф</span>'+v.odds+'</span></div>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
-      +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
-      +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
-    h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
+  const bkCols=[...d.mine].sort((a,c)=>oi(a)-oi(c));
+  const main=v=>/^(1x2|total|ah|tt1|tt2|match_winner|total_points)$/.test(v.market||'')?1:0;
+  const vw=v=>v.view||['m','',v.market_name||'',9];
+  // ★ лучший — как раньше: в матче у конторы лучшая по надёжности среди ставок бумаги
+  const best=new Set();const byBM={};for(const v of rows)(byBM[v.bookmaker+'|'+v.match_id]=byBM[v.bookmaker+'|'+v.match_id]||[]).push(v);
+  for(const vs of Object.values(byBM)){vs.sort((x,y)=>(main(y)-main(x))||(y.rel-x.rel));if(vs.length>1&&main(vs[0]))best.add(vs[0])}
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const SECS=[['m','МАТЧ'],['h1','1-Й ТАЙМ'],['c','УГЛОВЫЕ']];
+  for(const [sk,sn] of SECS){
+   const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
+   h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок: <b>'+srows.length+'</b>'+(closed?' · свёрнуто':'')+'</span></div>';
+   if(closed)continue;
+   h+='<div class="cols">';
+   for(const b of bkCols){
+    const c=COLORS[b]||'#7fb6ff';const rs=srows.filter(v=>v.bookmaker===b);
+    const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
+    const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel)));
+    const f=s.feeds[b];let feed;
+    if(f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90)feed='<div class="feed ok">✓ цены прямо с сайта конторы</div>';
+    else feed='<div class="feed warn">цены с odds.ru, могут отставать — сверить на сайте конторы'+(f&&f.error?'<br>прямая линия не работает: '+esc(f.error):'')+'</div>';
+    h+='<div class="col" style="--c:'+c+'"><div class="colh"><span class="bk">'+b+'</span><span class="cnt">'+(cards.length?cards.length+' матч.':'')+'</span></div>'+feed;
+    if(!cards.length)h+='<div class="empty">Сейчас подходящих ставок нет</div>';
+    for(const vs of cards){
+     const v0=vs[0];const direct=v0.source==='сайт';
+     const age=Math.max(...vs.map(v=>v.age));const pa=vs.map(v=>v.pin_age).filter(x=>x!=null);const pin=pa.length?Math.max(...pa):null;
+     const old=age>180||(pin!=null&&pin>180);
+     const tm=(v0.match||'').split(' — ');const url=v0.bk_url||(v0.url+'bet/');
+     const lg=(v0.league||'').split(': ');
+     const mo=v0.mo||[];const o=(k,lab,cl)=>mo[k]?'<span class="'+cl+'">'+lab+' <b>'+mo[k]+'</b></span>':'<span class="'+cl+'">'+lab+' <b>—</b></span>';
+     h+='<div class="card'+(old?' stale':'')+'"><div class="top"><div class="tl"><div class="mh"><a href="'+url+'" target="_blank"><span class="th">'+esc(tm[0])+'</span> <span class="td">—</span> <span class="ta">'+esc(tm[tm.length-1])+'</span></a></div>'
+      +'<div class="lgl"><span class="cty">'+esc(lg.length>1?lg[0]:'')+'</span>'+(lg.length>1?'<span class="lgn">'+esc(lg.slice(1).join(': '))+'</span>':'<span class="lgn">'+esc(lg[0])+'</span>')+'</div>'
+      +'<div class="sm">'+when(v0.start_ts)+'</div></div>'
+      +(mo.some(x=>x)?'<div class="mo">'+o(0,'П1','h')+o(1,'Х','')+o(2,'П2','a')+o(3,'1Х','h')+o(4,'12','')+o(5,'Х2','a')+'</div>':'')+'</div>';
+     for(const v of vs){
+      const [,side,title]=vw(v);const star=best.has(v);
+      h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
+       +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+v.odds+'</span></a>'
+       +'<div class="info"><span>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span></div>'
+       +(v.where?'<div class="wh">где на сайте: '+esc(v.where)+'</div>':'')+'</div>'}
+     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
+    h+='</div>'}
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
   // ставка — одной строкой: длинная уменьшается, пока не поместится
-  for(const b of document.querySelectorAll('.bl')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
+  for(const b of document.querySelectorAll('.bl,.btn .nm')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
@@ -1472,6 +1531,8 @@ async function tick(){
  }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
+let SCOL={};try{SCOL=JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
+function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
@@ -2190,7 +2251,8 @@ class Collector:
                               'p_win': p_win, 'p_push': p_push, 'pin_odds': po[i],
                               'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full),
                               'bk_url': f.event_url(ev),
-                              'bk_title': f"{ev.get('team1', '')} — {ev.get('team2', '')}" if ev.get('team1') else None}
+                              'bk_title': f"{ev.get('team1', '')} — {ev.get('team2', '')}" if ev.get('team1') else None,
+                              'mo': [(f.factors.get(ev['id'], {}).get(c) or {}).get('v') for c in F_MATCH_ODDS]}
                     if now - pts > 60 and ev_ >= 0.03:
                         urgent.append(mid)
         with STATE.lock:
