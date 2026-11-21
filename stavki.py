@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-12"
+VERSION = "2026.11.21-13"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -238,6 +238,7 @@ def pinnacle_fair(odds_data):
 
 PIN_API = 'https://guest.api.arcadia.pinnacle.com/0.1'
 PIN_SITE = 'https://www.pinnacle.com/en/soccer/matchups/'
+PIN_PUBLIC_KEY = 'CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R'   # открытый ключ, который сайт сам шлёт гостям (разведка 21.11)
 EN_DROP = {'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'sd', 'ud', 'fk', 'sk', 'club', 'de', 'the', 'calcio', 'football',
            'futbol', 'clube', 'cp', 'sv', 'vfb', 'vfl', 'tsg', 'bk', 'if', 'ik', 'aik', 'ca', 'cs', 'as', 'ss', 'us',
            'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l'}
@@ -338,13 +339,22 @@ class PinnacleFeed:
             if 'arcadia.pinnacle.com' in r.url and 'x-api-key' in r.headers:
                 hdr.update({k: v for k, v in r.headers.items() if k.lower() in ('x-api-key', 'x-device-uuid')})
         self.page.on('request', on_req)
-        self.page.goto(PIN_SITE, wait_until='domcontentloaded', timeout=90000)
-        self.page.wait_for_timeout(8000)
-        self.page_url = self.page.url
-        if not hdr.get('x-api-key'):
-            raise RuntimeError('сайт Pinnacle открылся, но цены не пришли — включён ли VPN?')
+        try:
+            self.page.goto(PIN_SITE, wait_until='domcontentloaded', timeout=90000)
+            self.page.wait_for_timeout(8000)
+            self.page_url = self.page.url
+        except Exception as e:
+            log('Pinnacle: страница сайта не открылась (' + str(e).splitlines()[0][:80] + '), пробую напрямую')
+        if hdr.get('x-api-key'):
+            save_config_keys({'pinnacle_key': hdr['x-api-key']})
+        else:                       # скрытое окно сайт мог не обслужить — открытый ключ сайта из прошлого раза
+            hdr['x-api-key'] = load_config().get('pinnacle_key') or PIN_PUBLIC_KEY
         self.headers = dict(hdr, Referer='https://www.pinnacle.com/', Accept='application/json')
-        log('Pinnacle: сайт открыт, цены берутся напрямую')
+        try:
+            self.get('/sports/29/leagues?all=false')
+        except Exception as e:
+            raise RuntimeError('Pinnacle не отвечает — включён ли VPN? (' + str(e).splitlines()[0][:80] + ')')
+        log('Pinnacle: цены берутся напрямую с сайта')
 
     def get(self, path):
         r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=15000)
