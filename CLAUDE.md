@@ -22,6 +22,19 @@
 - Деньги владельца — только после проверки, что коэффициенты odds.ru совпадают с конторами
   вживую, и после учёта ставок на бумаге (CLV).
 
+## Честная цена: Pinnacle С ЕГО САЙТА (с 21.11 вечера; версия -11)
+- 21.11 ~19:00 МСК Pinnacle пропал с odds.ru (разведка 20:02: ни в одном ответе, ни в футболе, ни в хоккее/баскетболе;
+  снимок владельца это подтвердил). Код odds.ru-Pinnacle оставлен запасным (`pinnacle_fair`), если вернётся.
+- pinnacle.com открывается у владельца через его VPN. Гостевой API сайта: `https://guest.api.arcadia.pinnacle.com/0.1`
+  с заголовком `x-api-key` (ключ берётся из запросов самой страницы при запуске, не зашит). Футбол = sport 29.
+  `/sports/29/leagues?all=false` (271 лига), `/leagues/{id}/matchups`, `/leagues/{id}/markets/straight`.
+  Цены американские (−120 → 1.833). Основной матч: type matchup, units Regular, без parentId; угловые/карточки —
+  отдельные matchup с parentId и units Corners/Bookings. Рынки: moneyline (home/draw/away), total, spread,
+  team_total; period 0 — матч, 1 — первый тайм.
+- Сопоставление с odds.ru — по английским названиям из адреса матча odds.ru (`/match/a-vs-b/idA-idB/`, порядок частей —
+  по возрастанию номеров команд, не хозяева/гости!) и времени ±20 мин. Проверка 21.11: 48 из 48 матчей.
+- Лиги опрашиваются по очереди: с матчем в ближайшие 3 ч — раз в минуту, 12 ч — раз в 3 мин, остальные — раз в 10 мин.
+
 ## Источники цен (разведка 21.11.2026)
 - odds.ru: `/next-api/sports/events/ru/?sport=football&status=all&date=ГГГГ-ММ-ДД&source=default` — матчи дня;
   `/next-api/coefficients/rates/ru/?sport=football&matchId=…&metricId=full_time&periodId=full_time&marketId=match_winner|total_points&source=default`

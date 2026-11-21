@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-10"
+VERSION = "2026.11.21-11"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -64,8 +64,9 @@ def fair_power(odds):
     return [x ** ((lo + hi) / 2) for x in inv]
 
 
-def values_from_rates(data, pinnacle_id=PINNACLE_ID):
-    """Из ответа odds.ru (data) делает список: исход × контора с перевесом над честной ценой."""
+def values_from_rates(data, pinnacle_id=PINNACLE_ID, fair_ext=None, market=None):
+    """Из ответа odds.ru (data) делает список: исход × контора с перевесом над честной ценой.
+    Если Pinnacle в ответе нет — берётся честная цена с сайта Pinnacle (fair_ext)."""
     data = data if isinstance(data, dict) else {}
     names = {b.get('id'): b.get('name', '') for b in (data.get('bookmakers') or []) if isinstance(b, dict)}
     out = []
@@ -77,18 +78,27 @@ def values_from_rates(data, pinnacle_id=PINNACLE_ID):
         bks = [b for b in (r.get('bookmakers') or []) if isinstance(b, dict)]
         r = dict(r, bookmakers=bks)
         pin = next((b for b in bks if b.get('id') == pinnacle_id), None)
-        if not pin:
-            continue
-        try:
-            po = [None] * len(outcomes)
-            for o in (pin.get('odds') or []):
-                po[o['outcome']] = float(o['value'])
-            if any(v is None or v <= 1.0 for v in po):
+        if pin:
+            try:
+                po = [None] * len(outcomes)
+                for o in (pin.get('odds') or []):
+                    po[o['outcome']] = float(o['value'])
+                if any(v is None or v <= 1.0 for v in po):
+                    continue
+            except (ValueError, KeyError, IndexError, TypeError):
                 continue
-        except (ValueError, KeyError, IndexError, TypeError):
-            continue
-        pin_rows += 1
-        p = fair_power(po)
+            pin_rows += 1
+            p = fair_power(po)
+        else:
+            key = None
+            if market == 'match_winner' and outcomes == ['П1', 'Х', 'П2']:
+                key = ('1x2', None)
+            elif market == 'total_points' and len(outcomes) == 2 and outcomes[0].startswith('Больше'):
+                ln = line_of(outcomes[0])
+                key = ('total', ln) if ln is not None else None
+            if not fair_ext or key not in fair_ext:
+                continue
+            p, po, pin_ts = fair_ext[key]
         for b in r.get('bookmakers', []):
             if b.get('id') == pinnacle_id:
                 continue
@@ -104,6 +114,7 @@ def values_from_rates(data, pinnacle_id=PINNACLE_ID):
                     'outcome': outcomes[i], 'bookmaker': names.get(b['id'], str(b['id'])), 'bk_id': b['id'],
                     'odds': odd, 'fair': round(1 / p[i], 3), 'pin_odds': po[i],
                     'ev': odd * p[i] - 1,
+                    **({'pin_ts': pin_ts} if not pin else {}),
                 })
     return out, pin_rows
 
@@ -221,6 +232,235 @@ def pinnacle_fair(odds_data):
                 if ln is not None:
                     out[('total', ln)] = (p, po, ts)
     return out
+
+
+# ---------------------------------------------------------------- Pinnacle прямо с сайта (с 21.11: на odds.ru его больше нет)
+
+PIN_API = 'https://guest.api.arcadia.pinnacle.com/0.1'
+PIN_SITE = 'https://www.pinnacle.com/en/soccer/matchups/'
+EN_DROP = {'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'sd', 'ud', 'fk', 'sk', 'club', 'de', 'the', 'calcio', 'football',
+           'futbol', 'clube', 'cp', 'sv', 'vfb', 'vfl', 'tsg', 'bk', 'if', 'ik', 'aik', 'ca', 'cs', 'as', 'ss', 'us',
+           'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l'}
+EN_ALIAS = {'internazionale': 'inter', 'utd': 'united', 'st': 'saint', 'munchen': 'munich', 'monchengladbach': 'gladbach',
+            'koln': 'cologne', 'psg': 'paris'}
+EN_MARK = {'women', 'w', 'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 'ii', 'b', 'reserves', 'res', 'youth'}
+
+
+def am_to_dec(price):
+    """американский кф Pinnacle → десятичный"""
+    price = float(price)
+    return round(1 + (price / 100 if price > 0 else 100 / -price), 4)
+
+
+def en_tokens(name):
+    t = (name or '').lower().replace('-', ' ')
+    t = re.sub(r'\(([^)]*)\)', r' \1 ', t)
+    t = re.sub(r'[^a-z0-9 ]+', ' ', t)
+    words = [EN_ALIAS.get(w, w) for w in t.split()]
+    marks = {w for w in words if w in EN_MARK}
+    core = [w for w in words if w not in EN_DROP and w not in EN_MARK]
+    return core or words, marks
+
+
+def en_sim(a, b):
+    (ca, ma), (cb, mb) = en_tokens(a), en_tokens(b)
+    if ma != mb:
+        return 0.0
+    sa, sb = ' '.join(ca), ' '.join(cb)
+    r = difflib.SequenceMatcher(None, sa, sb).ratio()
+    if set(ca) <= set(cb) or set(cb) <= set(ca):
+        r = max(r, 0.9)
+    elif set(ca) & set(cb):
+        r = max(r, 0.75)
+    return r
+
+
+def en_names_of(ev):
+    """английские названия команд odds.ru — из адреса матча: /match/<a>-vs-<b>/<idA>-<idB>/ (порядок по номерам)"""
+    m = re.search(r'/match/([^/]+)/(\d+)-(\d+)/?$', ev.get('url') or '')
+    if not m or '-vs-' not in m.group(1):
+        return None, None
+    a, b = m.group(1).split('-vs-', 1)
+    ida, idb = int(m.group(2)), int(m.group(3))
+    hid, aid = (ev.get('home') or {}).get('id'), (ev.get('away') or {}).get('id')
+    if (hid, aid) == (ida, idb):
+        return a, b
+    if (hid, aid) == (idb, ida):
+        return b, a
+    return None, None
+
+
+class PinnacleFeed:
+    """Цены Pinnacle с его сайта (через VPN владельца): лиги по очереди, ближайшие матчи — чаще."""
+    name = 'Pinnacle'
+
+    def __init__(self):
+        self.page = None
+        self.headers = {}
+        self.leagues = {}           # id -> {'name', 'count', 'last', 'next_start'}
+        self.leagues_ts = 0
+        self.regular = {}           # id матча Pinnacle -> {'home','away','start','league'}
+        self.special = {}           # угловые/карточки: id -> {'parent','units'}
+        self.markets = {}           # id матча Pinnacle -> [рынки как есть] (для следующих частей)
+        self.match_map = {}         # id Pinnacle -> (id odds.ru, перевёрнуто ли) или None
+        self.match_tried = {}
+        self.fair = {}              # id odds.ru -> {ключ: (p, цены, когда)}
+        self.pin_written = {}       # id odds.ru -> когда последний раз записали в базу
+        self.last_req = 0
+        self.last_ok = None
+        self.fails = 0
+        self.last_error = ''
+        self.page_url = ''
+        self.host = PIN_API
+
+    def start(self, browser):
+        self.page = browser.new_page(locale='en-US')
+        hdr = {}
+
+        def on_req(r):
+            if 'arcadia.pinnacle.com' in r.url and 'x-api-key' in r.headers:
+                hdr.update({k: v for k, v in r.headers.items() if k.lower() in ('x-api-key', 'x-device-uuid')})
+        self.page.on('request', on_req)
+        self.page.goto(PIN_SITE, wait_until='domcontentloaded', timeout=90000)
+        self.page.wait_for_timeout(8000)
+        self.page_url = self.page.url
+        if not hdr.get('x-api-key'):
+            raise RuntimeError('сайт Pinnacle открылся, но цены не пришли — включён ли VPN?')
+        self.headers = dict(hdr, Referer='https://www.pinnacle.com/', Accept='application/json')
+        log('Pinnacle: сайт открыт, цены берутся напрямую')
+
+    def get(self, path):
+        r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=30000)
+        if r.status != 200:
+            raise RuntimeError(f'Pinnacle ответил {r.status} на {path[:60]}')
+        return json.loads(r.text())
+
+    def pick_leagues(self, now, k):
+        def interval(lg):
+            ns = lg.get('next_start')
+            if ns is None:
+                return 1
+            left = ns - now
+            return 60 if left < 3 * 3600 else 180 if left < 12 * 3600 else 600
+        scored = sorted(self.leagues.items(), key=lambda kv: -(now - kv[1]['last']) / interval(kv[1]))
+        return [lid for lid, lg in scored[:k] if now - lg['last'] >= interval(lg)]
+
+    def poll(self, matches, k=3):
+        """одна-три лиги за вызов; возвращает id матчей odds.ru, у которых обновилась честная цена"""
+        now = time.time()
+        if now - self.last_req < 1.0:
+            return []
+        self.last_req = now
+        if now - self.leagues_ts > 600:
+            lgs = self.get('/sports/29/leagues?all=false')
+            for lg in lgs:
+                if lg.get('matchupCount', 0) > 0 and not lg.get('isHidden'):
+                    old = self.leagues.get(lg['id'], {'last': 0, 'next_start': None})
+                    self.leagues[lg['id']] = dict(old, name=lg.get('name', ''), count=lg.get('matchupCount', 0))
+            self.leagues_ts = now
+        changed = []
+        for lid in self.pick_leagues(now, k):
+            mu = self.get(f'/leagues/{lid}/matchups')
+            mk = self.get(f'/leagues/{lid}/markets/straight')
+            changed += self.ingest(lid, mu, mk, matches)
+        self.last_ok = time.time()
+        self.fails = 0
+        return changed
+
+    def ingest(self, lid, matchups, markets, matches):
+        now = time.time()
+        starts = []
+        for x in matchups or []:
+            if x.get('type') != 'matchup' or x.get('isLive'):
+                continue
+            try:
+                st = datetime.datetime.fromisoformat(x['startTime'].replace('Z', '+00:00')).timestamp()
+            except Exception:
+                continue
+            if x.get('parentId'):
+                self.special[x['id']] = {'parent': x['parentId'], 'units': x.get('units')}
+                continue
+            if x.get('units') != 'Regular':
+                continue
+            ps = {p.get('alignment'): p.get('name') for p in x.get('participants') or []}
+            if not ps.get('home') or not ps.get('away'):
+                continue
+            self.regular[x['id']] = {'home': ps['home'], 'away': ps['away'], 'start': st, 'league': lid}
+            if st > now:
+                starts.append(st)
+        lg = self.leagues.setdefault(lid, {'name': '', 'count': 0})
+        lg['last'] = now
+        lg['next_start'] = min(starts) if starts else now + 86400
+        by = {}
+        for k in markets or []:
+            if k.get('status', 'open') == 'open':
+                by.setdefault(k.get('matchupId'), []).append(k)
+        changed = []
+        for pid, ks in by.items():
+            self.markets[pid] = ks
+            if pid not in self.regular:
+                continue
+            got = self.map_match(pid, matches)
+            if not got:
+                continue
+            mid, swapped = got
+            fair = {}
+            for k in ks:
+                if k.get('period') != 0:
+                    continue
+                pr = {p.get('designation'): p for p in k.get('prices') or []}
+                try:
+                    if k['type'] == 'moneyline' and {'home', 'away', 'draw'} <= set(pr):
+                        h, d, a = (am_to_dec(pr[s]['price']) for s in ('home', 'draw', 'away'))
+                        po = [a, d, h] if swapped else [h, d, a]
+                        fair[('1x2', None)] = (fair_power(po), po, now)
+                    elif k['type'] == 'total' and {'over', 'under'} <= set(pr):
+                        po = [am_to_dec(pr['over']['price']), am_to_dec(pr['under']['price'])]
+                        fair[('total', float(pr['over']['points']))] = (fair_power(po), po, now)
+                except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                    continue
+            if fair:
+                self.fair[mid] = fair
+                changed.append(mid)
+        return changed
+
+    def map_match(self, pid, matches):
+        if pid in self.match_map and (self.match_map[pid] or time.time() - self.match_tried.get(pid, 0) < 600):
+            return self.match_map[pid]
+        r = self.regular[pid]
+        best, best_s = None, 0.0
+        for m in matches.values():
+            if not m.get('home_en') or abs(m['start'] - r['start']) > 20 * 60:
+                continue
+            for swapped, (h, a) in ((False, (r['home'], r['away'])), (True, (r['away'], r['home']))):
+                s1, s2 = en_sim(h, m['home_en']), en_sim(a, m['away_en'])
+                sc = (s1 + s2) / 2
+                if min(s1, s2) >= 0.5 and sc > best_s:
+                    best, best_s = (m['id'], swapped), sc
+        res = best if best_s >= 0.7 else None
+        self.match_map[pid] = res
+        self.match_tried[pid] = time.time()
+        return res
+
+    def compact(self, mid):
+        """для таблицы pin (цена закрытия): [[названия исходов], [кф]] по рынкам odds.ru"""
+        out = {'match_winner': [], 'total_points': []}
+        for key, (p, po, ts) in self.fair.get(mid, {}).items():
+            if key[0] == '1x2':
+                out['match_winner'].append([['П1', 'Х', 'П2'], po])
+            else:
+                ln = '%g' % key[1]
+                out['total_points'].append([[f'Больше ({ln})', f'Меньше ({ln})'], po])
+        return out
+
+
+def fair_for(mid, odds_data):
+    """честная цена матча: Pinnacle с его сайта (свежая, до 20 мин), иначе — как раньше, с odds.ru"""
+    with STATE.lock:
+        d = STATE.pin_fair.get(mid)
+    if d and any(time.time() - ts < 1200 for _p, _po, ts in d.values()):
+        return d
+    return pinnacle_fair(odds_data or {})
 
 
 class DirectFeed:
@@ -406,6 +646,7 @@ class State:
         self.restart_requested = False
         self.razvedka_requested = False
         self.margins = {}        # (контора, рынок) -> [сумма, число строк]
+        self.pin_fair = {}       # id матча odds.ru -> честные цены Pinnacle с его сайта
 
     def snapshot(self):
         with self.lock:
@@ -605,6 +846,9 @@ async function tick(){
   else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="post(\'/api/update\')">Обновить до версии '+s.update_available+'</button>';
   else u.innerHTML='<span class="ver">версия '+s.version+'</span> <button class="lbtn" onclick="post(\'/api/check_update\');this.textContent=\'проверяю…\'">проверить обновления</button>';
   let st='обновлено '+s.now+' · матчей в работе '+s.tracked;
+  const pf=s.feeds&&s.feeds['Pinnacle'];
+  if(pf&&pf.last_ok&&(Date.now()/1000-pf.last_ok)<120)st+=' · <span class="pos">честная цена: Pinnacle с его сайта, сопоставлено матчей '+pf.matched+'</span>';
+  else st+=' · <span class="bad">Pinnacle не отвечает'+(pf&&pf.error?': '+pf.error:'')+' — проверьте, включён ли VPN</span>';
   if(s.errors.length)st+=' · <span class="bad">ошибка: '+s.errors[s.errors.length-1]+'</span>';
   document.getElementById('st').innerHTML=st;
   const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99);
@@ -773,6 +1017,8 @@ class Collector:
         self.last_events = 0
         self.ever_ok = False
         self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
+        self.pin = PinnacleFeed()
+        self.pin_start_try = 0
         # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
         self.batch_cur = cfg['batch_matches']
         self.extra_pause = 0.0
@@ -804,6 +1050,66 @@ class Collector:
                 f.start(self.browser)
             except Exception as e:
                 add_error(f'{f.name}: сайт не открылся: {str(e).splitlines()[0][:120]}')
+        self.start_pin()
+
+    def start_pin(self):
+        self.pin_start_try = time.time()
+        try:
+            if self.pin.page is not None:
+                try:
+                    self.pin.page.close()
+                except Exception:
+                    pass
+                self.pin.page = None
+            self.pin.start(self.browser)
+            with STATE.lock:
+                STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'events': 0, 'matched': 0, 'error': ''}
+        except Exception as e:
+            self.pin.page = None
+            self.pin.last_error = str(e).splitlines()[0][:160]
+            with STATE.lock:
+                STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error}
+            add_error('Pinnacle: ' + self.pin.last_error)
+
+    def poll_pin(self):
+        if self.pin.page is None:
+            if time.time() - self.pin_start_try > 300:
+                self.start_pin()
+            return
+        with STATE.lock:
+            matches = dict(STATE.matches)
+        try:
+            changed = self.pin.poll(matches)
+        except Exception as e:
+            self.pin.fails += 1
+            self.pin.last_error = str(e).splitlines()[0][:160]
+            with STATE.lock:
+                STATE.status['feeds'].setdefault('Pinnacle', {}).update(error=self.pin.last_error)
+            if self.pin.fails in (1, 5) or self.pin.fails % 20 == 0:
+                add_error('Pinnacle: ' + self.pin.last_error)
+            if self.pin.fails % 10 == 0:
+                self.start_pin()
+            return
+        now = time.time()
+        with STATE.lock:
+            for mid in changed:
+                STATE.pin_fair[mid] = self.pin.fair[mid]
+            for mid in [mid for mid in STATE.pin_fair if mid not in STATE.matches]:
+                STATE.pin_fair.pop(mid)
+            near = [m for m in STATE.matches.values() if m['id'] in STATE.pin_fair]
+            STATE.status['feeds']['Pinnacle'] = {
+                'last_ok': self.pin.last_ok, 'events': len(self.pin.regular), 'matched': len(STATE.pin_fair),
+                'leagues': len(self.pin.leagues), 'error': ''}
+        for mid in changed:                       # цена закрытия для CLV — не чаще раза в минуту на матч
+            if now - self.pin.pin_written.get(mid, 0) < 60:
+                continue
+            self.pin.pin_written[mid] = now
+            for market, rows in self.pin.compact(mid).items():
+                if rows:
+                    self.con.execute('INSERT INTO pin VALUES (?,?,?,?)',
+                                     (now, mid, market, json.dumps(rows, ensure_ascii=False)))
+        if changed:
+            self.con.commit()
 
     def restart_browser(self):
         try:
@@ -919,6 +1225,7 @@ class Collector:
                         'league': f"{lg.get('region', '')}: {lg.get('title', '')}",
                         'start': start.timestamp(), 'start_str': start.strftime('%d.%m %H:%M'),
                     }
+                    found[ev['id']]['home_en'], found[ev['id']]['away_en'] = en_names_of(ev)
             time.sleep(self.cfg['pause_between_requests'])
         if ok_dates == 0:
             raise RuntimeError('список матчей не получен ни за один день')
@@ -950,7 +1257,7 @@ class Collector:
     def interval_for(self, m, now):
         left = m['start'] - now
         base = 45 if left < 3 * 3600 else 120 if left < 12 * 3600 else 400
-        if m.get('no_pin', 0) >= 2:       # в этом матче нет Pinnacle — заглядываем редко
+        if m.get('no_pin', 0) >= 2 and m['id'] not in STATE.pin_fair:   # нет честной цены — заглядываем редко
             base = 1800
         return base
 
@@ -1044,6 +1351,7 @@ class Collector:
             log(f'рассчитано бумажных ставок: {n}')
 
     def poll_feeds(self):
+        self.poll_pin()
         now = time.time()
         for f in self.feeds:
             if f.page is None or now - f.last_poll < self.cfg.get('direct_poll_sec', 5):
@@ -1077,7 +1385,7 @@ class Collector:
                 continue
             matched += 1
             cover.add(mid)
-            fair = pinnacle_fair(odds_data.get(mid, {}))
+            fair = fair_for(mid, odds_data.get(mid, {}))
             if not fair:
                 continue
             for key, bo in f.odds_of(ev['id']).items():
@@ -1181,8 +1489,11 @@ class Collector:
         new_vals = {}
         any_pin = False
         marg = []
+        with STATE.lock:
+            fair_ext = STATE.pin_fair.get(mid)
         for market, data in datas.items():
-            vals, pin_rows = values_from_rates(data)
+            vals, pin_rows = values_from_rates(data, fair_ext=fair_ext, market=market)
+            pin_rows = pin_rows or (1 if fair_ext else 0)
             marg += [(bk, market, mg) for bk, mg in margins_from_rates(data)]
             if pin_rows:
                 any_pin = True
@@ -1194,8 +1505,9 @@ class Collector:
                     if pin:
                         compact.append([[(o or {}).get('name') for o in (r.get('outcomes') or [])],
                                         [o.get('value') for o in sorted(pin.get('odds') or [], key=lambda x: x.get('outcome', 0))]])
-                self.con.execute('INSERT INTO pin VALUES (?,?,?,?)',
-                                 (time.time(), mid, market, json.dumps(compact, ensure_ascii=False)))
+                if compact:
+                    self.con.execute('INSERT INTO pin VALUES (?,?,?,?)',
+                                     (time.time(), mid, market, json.dumps(compact, ensure_ascii=False)))
             for v in vals:
                 if v['ev'] <= 0:
                     continue
