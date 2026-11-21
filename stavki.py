@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-16"
+VERSION = "2026.11.21-17"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -144,8 +144,49 @@ def margins_from_rates(data):
 
 # Фонбет и PARI работают на одной платформе: одинаковые коды ставок (проверено разведкой 21.11).
 F_1X2 = (921, 922, 923)
-F_TOTALS = [(930, 931), (940, 941), (1848, 1849), (1696, 1697), (1727, 1728), (1730, 1731), (1733, 1734),
-            (1736, 1737), (1739, 1791), (1793, 1794), (1796, 1797), (1799, 1800), (1802, 1803), (1805, 1806)]
+# пары кодов «больше/меньше» и «фора 1/фора 2» из каталога Фонбета (factorsCatalog/tables, разведка 21.11);
+# линия = p/100 у первого кода (у форы — фора первой команды). Подсобытия «1-й тайм» и «угловые» — те же коды.
+F_TOTALS = [(930, 931), (940, 941), (1848, 1849), (1696, 1697), (1727, 1728), (1730, 1731), (1733, 1734), (1736, 1737), (1739, 1791), (1793, 1794), (1796, 1797), (1799, 1800), (1802, 1803), (1805, 1806), (15442, 15443), (15463, 15464), (15484, 15485), (15505, 15506), (15526, 15527), (17249, 17250)]
+F_AH = [(1851, 1852), (910, 912), (927, 928), (937, 938), (989, 991), (1569, 1572), (1672, 1675), (1677, 1678), (1680, 1681), (1683, 1684), (1686, 1687), (1689, 1690), (1692, 1718), (1723, 1724), (1845, 1846), (16211, 16212), (16214, 16215), (16217, 16218), (16220, 16221), (16223, 16224), (16226, 16227), (16229, 16230), (16232, 16233), (15436, 15437), (15457, 15458), (15478, 15479), (15499, 15500), (15520, 15521), (17243, 17244)]
+F_TT1 = [(974, 976), (1809, 1810), (1812, 1813), (1815, 1816), (1818, 1819), (1821, 1822), (1824, 1825), (1827, 1828), (1830, 1831), (2203, 2204), (15533, 15534), (15540, 15541), (15547, 15548), (15554, 15555), (15561, 15562), (17256, 17257)]
+F_TT2 = [(978, 980), (1854, 1871), (1873, 1874), (1880, 1881), (1883, 1884), (1886, 1887), (1893, 1894), (1896, 1897), (1899, 1900), (2209, 2210), (15536, 15537), (15543, 15544), (15550, 15551), (15557, 15558), (15564, 15565), (17259, 17260)]
+FB_PARTS = {'1-й тайм': 'h1_', 'угловые': 'c_'}
+MARKET_LABEL = {'1x2': '1Х2', 'total': 'Тотал', 'ah': 'Фора', 'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}
+PART_LABEL = {'': '', 'h1_': '1-й тайм: ', 'c_': 'Угловые: '}
+SETTLEABLE = {'1x2', 'total', 'ah', 'tt1', 'tt2'}     # рассчитываются по счёту матча → идут на бумагу
+
+
+def split_fam(fam):
+    for pre in ('h1_', 'c_'):
+        if fam.startswith(pre):
+            return pre, fam[len(pre):]
+    return '', fam
+
+
+def market_label(fam):
+    pre, base = split_fam(fam)
+    return PART_LABEL[pre] + MARKET_LABEL.get(base, base)
+
+
+def fmt_ln(x):
+    return '%+g' % x if x else '0'
+
+
+def outcome_names(fam, line):
+    """названия исходов по порядку цен: одинаковые у Pinnacle, Фонбета и в базе (по ним ищется цена закрытия)"""
+    base = split_fam(fam)[1]
+    if base == '1x2':
+        return ['П1', 'Х', 'П2']
+    if base == 'ah':
+        return [f'Ф1 ({fmt_ln(line)})', f'Ф2 ({fmt_ln(-line)})']
+    ln = '%g' % line
+    return [f'Больше ({ln})', f'Меньше ({ln})']
+
+
+def db_market(fam):
+    return {'1x2': 'match_winner', 'total': 'total_points'}.get(fam, fam)
+
+
 DIRECT_BOOKS = [
     # название как на odds.ru, сайт, адрес линии по умолчанию, scopeMarket
     {'name': 'Фонбет', 'site': 'https://fon.bet/', 'host': 'https://line-vk01-w.bk6bba-resources.ru',
@@ -200,7 +241,12 @@ CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих к�
 
 
 def event_of(v):
-    """событие = матч + рынок: все линии тотала одного матча — одно событие"""
+    """событие = матч + рынок: все линии тотала (форы, инд. тотала) одного матча — одно событие"""
+    m = v.get('market')
+    if m in ('match_winner', 'total_points'):
+        return '1x2' if m == 'match_winner' else 'total'
+    if m:
+        return m
     return '1x2' if v['market_name'] == '1Х2' else 'total'
 
 
@@ -320,6 +366,7 @@ class PinnacleFeed:
         self.match_map = {}         # id Pinnacle -> (id odds.ru, перевёрнуто ли) или None
         self.match_tried = {}
         self.fair = {}              # id odds.ru -> {ключ: (p, цены, когда)}
+        self.fair_parts = {}        # id odds.ru -> {лига: {ключ: ...}} (угловые приходят из отдельной лиги)
         self.pin_written = {}       # id odds.ru -> когда последний раз записали в базу
         self.fair_league = {}       # id odds.ru -> лига Pinnacle
         self.taken = {}             # id odds.ru -> id Pinnacle (один матч odds.ru — один матч Pinnacle)
@@ -496,40 +543,75 @@ class PinnacleFeed:
         for k in markets or []:
             if k.get('status', 'open') == 'open':
                 by.setdefault(k.get('matchupId'), []).append(k)
-        changed = []
-        had = {mid for mid, l in self.fair_league.items() if l == lid}
+        changed = set()
+        had = {mid for mid, parts in self.fair_parts.items() if lid in parts}
+        got_parts = {}
         for pid, ks in by.items():
             self.markets[pid] = ks
-            if pid not in self.regular:
+            if pid in self.regular:
+                base, pre_of = pid, {0: '', 1: 'h1_'}
+            elif (self.special.get(pid) or {}).get('units') == 'Corners':
+                base, pre_of = self.special[pid]['parent'], {0: 'c_'}
+            else:
                 continue
-            got = self.map_match(pid, matches)
+            if base not in self.regular:
+                continue
+            got = self.map_match(base, matches)
             if not got:
                 continue
             mid, swapped = got
-            fair = {}
+            fair = got_parts.setdefault(mid, {})
             for k in ks:
-                if k.get('period') != 0:
+                pre = pre_of.get(k.get('period'))
+                if pre is None:
                     continue
                 pr = {p.get('designation'): p for p in k.get('prices') or []}
                 try:
                     if k['type'] == 'moneyline' and {'home', 'away', 'draw'} <= set(pr):
-                        h, d, a = (am_to_dec(pr[s]['price']) for s in ('home', 'draw', 'away'))
+                        h, d, a = (am_to_dec(pr[x]['price']) for x in ('home', 'draw', 'away'))
                         po = [a, d, h] if swapped else [h, d, a]
-                        fair[('1x2', None)] = (fair_power(po), po, now)
+                        fair[(pre + '1x2', None)] = (fair_power(po), po, now)
                     elif k['type'] == 'total' and {'over', 'under'} <= set(pr):
                         po = [am_to_dec(pr['over']['price']), am_to_dec(pr['under']['price'])]
-                        fair[('total', float(pr['over']['points']))] = (fair_power(po), po, now)
+                        fair[(pre + 'total', float(pr['over']['points']))] = (fair_power(po), po, now)
+                    elif k['type'] == 'team_total' and {'over', 'under'} <= set(pr) and k.get('side') in ('home', 'away'):
+                        side = k['side'] if not swapped else ('away' if k['side'] == 'home' else 'home')
+                        po = [am_to_dec(pr['over']['price']), am_to_dec(pr['under']['price'])]
+                        fam = 'tt1' if side == 'home' else 'tt2'
+                        fair[(pre + fam, float(pr['over']['points']))] = (fair_power(po), po, now)
+                    elif k['type'] == 'spread' and {'home', 'away'} <= set(pr):
+                        hl = float(pr['home']['points'])
+                        h, a = am_to_dec(pr['home']['price']), am_to_dec(pr['away']['price'])
+                        if swapped:                       # хозяева odds.ru = гости Pinnacle
+                            fair[(pre + 'ah', -hl)] = (fair_power([a, h]), [a, h], now)
+                        else:
+                            fair[(pre + 'ah', hl)] = (fair_power([h, a]), [h, a], now)
                 except (KeyError, TypeError, ValueError, ZeroDivisionError):
                     continue
-            if fair:
-                self.fair[mid] = fair
+            if pid in self.regular:
                 self.fair_league[mid] = lid
-                changed.append(mid)
-        for mid in had - set(changed):                 # рынок закрыт или матч убран — цену не держим
-            self.fair.pop(mid, None)
-            self.fair_league.pop(mid, None)
-            self.removed.append(mid)
-        return changed
+        for mid, fair in got_parts.items():
+            if fair:
+                self.fair_parts.setdefault(mid, {})[lid] = fair
+                changed.add(mid)
+        for mid in had - changed:                       # рынок закрыт или матч убран — цену этой лиги не держим
+            self.fair_parts[mid].pop(lid, None)
+            changed.add(mid)
+        out = []
+        for mid in changed:
+            parts = self.fair_parts.get(mid) or {}
+            merged = {}
+            for d in parts.values():
+                merged.update(d)
+            if merged:
+                self.fair[mid] = merged
+                out.append(mid)
+            else:
+                self.fair.pop(mid, None)
+                self.fair_parts.pop(mid, None)
+                self.fair_league.pop(mid, None)
+                self.removed.append(mid)
+        return out
 
     def map_match(self, pid, matches):
         if pid in self.match_map and (self.match_map[pid] or time.time() - self.match_tried.get(pid, 0) < 600):
@@ -554,14 +636,10 @@ class PinnacleFeed:
         return res
 
     def compact(self, mid):
-        """для таблицы pin (цена закрытия): [[названия исходов], [кф]] по рынкам odds.ru"""
-        out = {'match_winner': [], 'total_points': []}
+        """для таблицы pin (цена закрытия): {рынок: [[названия исходов], [кф]]}"""
+        out = {}
         for key, (p, po, ts) in self.fair.get(mid, {}).items():
-            if key[0] == '1x2':
-                out['match_winner'].append([['П1', 'Х', 'П2'], po])
-            else:
-                ln = '%g' % key[1]
-                out['total_points'].append([[f'Больше ({ln})', f'Меньше ({ln})'], po])
+            out.setdefault(db_market(key[0]), []).append([outcome_names(key[0], key[1]), po])
         return out
 
 
@@ -653,6 +731,11 @@ class DirectFeed:
                 self.events[b['eventId']]['_blocked'] = b.get('state') == 'blocked'
         if j.get('packetVersion'):
             self.version = j['packetVersion']
+        kids = {}
+        for e in self.events.values():
+            if e.get('parentId') and e.get('name') in FB_PARTS and not e.get('_blocked'):
+                kids.setdefault(e['parentId'], []).append((e['id'], FB_PARTS[e['name']]))
+        self.kids = kids
 
     def poll(self):
         sc = self.book['scope']
@@ -688,20 +771,29 @@ class DirectFeed:
                 if e.get('level') == 1 and e.get('place') == 'line' and not e.get('_blocked')
                 and e.get('startTime', 0) > now + 60 and self.is_football(e.get('sportId'))]
 
-    def odds_of(self, eid):
-        fs = self.factors.get(eid, {})
-        out = {}
+    @staticmethod
+    def odds_one(fs, pre, out):
         v = [fs.get(k, {}).get('v') for k in F_1X2]
         if all(isinstance(x, (int, float)) and x > 1 for x in v):
-            out[('1x2', None)] = v
-        for a, b in F_TOTALS:
-            fa, fb = fs.get(a), fs.get(b)
-            if fa and fb and isinstance(fa.get('v'), (int, float)) and isinstance(fb.get('v'), (int, float)):
+            out[(pre + '1x2', None)] = v
+        for fam, plist in (('total', F_TOTALS), ('ah', F_AH), ('tt1', F_TT1), ('tt2', F_TT2)):
+            for a, b in plist:
+                fa, fb = fs.get(a), fs.get(b)
+                if not (fa and fb and isinstance(fa.get('v'), (int, float)) and isinstance(fb.get('v'), (int, float))):
+                    continue
+                if fa['v'] <= 1 or fb['v'] <= 1:
+                    continue
                 try:
                     ln = fa.get('p', 0) / 100
                 except TypeError:
                     continue
-                out[('total', ln)] = [fa['v'], fb['v']]
+                out[(pre + fam, ln)] = [fa['v'], fb['v']]
+
+    def odds_of(self, eid):
+        out = {}
+        self.odds_one(self.factors.get(eid, {}), '', out)
+        for cid, pre in getattr(self, 'kids', {}).get(eid, []):
+            self.odds_one(self.factors.get(cid, {}), pre, out)
         return out
 
     def match_to_oddsru(self, ev, matches):
@@ -723,12 +815,27 @@ class DirectFeed:
         return res
 
 
+def settle_ah(margin, hcap, odds):
+    """азиатская фора: margin — разница мячей своей команды, hcap — её фора; четверти делятся пополам"""
+    frac = round((abs(hcap) * 4) % 2)
+    parts = [hcap - 0.25, hcap + 0.25] if frac == 1 else [hcap]
+    total = 0.0
+    for h in parts:
+        x = margin + h
+        total += (odds - 1 if x > 0 else (0.0 if x == 0 else -1.0)) / len(parts)
+    return total
+
+
 def settle_one(market, outcome, line, odds, home, away):
     """Прибыль ставки в долях ставки (1 = ставка). Учитывает возврат и «азиатские» линии x.25/x.75."""
     if market == '1x2':
         res = 'П1' if home > away else ('П2' if away > home else 'Х')
         return odds - 1 if outcome == res else -1.0
-    goals = home + away
+    if market == 'ah':                         # line — фора хозяев
+        if outcome.startswith('Ф1'):
+            return settle_ah(home - away, line, odds)
+        return settle_ah(away - home, -line, odds)
+    goals = home if market == 'tt1' else away if market == 'tt2' else home + away
     over = outcome.startswith('Больше')
     frac = round((line * 4) % 4)
     lines = [line - 0.25, line + 0.25] if frac in (1, 3) else [line]
@@ -830,6 +937,10 @@ def db_open():
                 ' outcome TEXT, line REAL, start_ts REAL, first_seen REAL, odds REAL, fair REAL, ev REAL,'
                 ' pin_age REAL, closing_fair REAL, clv REAL, done INT DEFAULT 0,'
                 ' PRIMARY KEY (match_id, bookmaker, market_name, outcome))')
+    try:
+        con.execute('ALTER TABLE cand ADD COLUMN fam TEXT')
+    except sqlite3.OperationalError:
+        pass                                   # столбец уже есть
     con.commit()
     migrate_old_paper(con)
     return con
@@ -839,6 +950,8 @@ def pick_for_strategies(rows):
     """rows — строки «ставка в конторе»; возвращает [(способ, строка)]: по одной на событие и источник цены"""
     groups = {}
     for v in rows:
+        if event_of(v) not in SETTLEABLE:      # первый тайм и угловые — только в журнал CLV
+            continue
         groups.setdefault((v['match_id'], event_of(v), v['src']), []).append(v)
     out = []
     for vs in groups.values():
@@ -951,9 +1064,14 @@ function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTime
  const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
  const left=Math.round((ts*1000-n)/60000);const l=left<60?('через '+left+' мин'):('через '+Math.floor(left/60)+' ч '+left%60+' мин');
  return (dd===nd?'сегодня ':dd.slice(0,5)+' ')+hm+' · '+l}
-function betText(v){const t=(v.match||'').split(' — ');
- if(v.market_name==='1Х2'){if(v.outcome==='П1')return 'Победа: '+(t[0]||'хозяева');if(v.outcome==='П2')return 'Победа: '+(t[1]||'гости');return 'Ничья'}
- const m=v.outcome.match(/(Больше|Меньше) \(([\d.]+)\)/);if(m)return (m[1]==='Больше'?'Тотал больше ':'Тотал меньше ')+m[2];return v.market_name+': '+v.outcome}
+function betText(v){const t=(v.match||'').split(' — ');const mn=v.market_name||'';const i=mn.indexOf(': ');
+ const pre=i>=0?mn.slice(0,i)+': ':'';const base=i>=0?mn.slice(i+2):mn;
+ if(base==='1Х2'){if(v.outcome==='П1')return pre+'Победа: '+(t[0]||'хозяева');if(v.outcome==='П2')return pre+'Победа: '+(t[1]||'гости');return pre+'Ничья'}
+ const f=v.outcome.match(/Ф([12]) \(([-+\d.]+)\)/);if(f)return pre+'Фора '+(f[1]==='1'?(t[0]||'хозяев'):(t[1]||'гостей'))+' '+f[2];
+ const m=v.outcome.match(/(Больше|Меньше) \(([\d.]+)\)/);
+ if(m){const bm=m[1]==='Больше'?'больше ':'меньше ';if(base==='Инд. тотал хозяев')return pre+'Голы '+(t[0]||'хозяев')+' '+bm+m[2];
+  if(base==='Инд. тотал гостей')return pre+'Голы '+(t[1]||'гостей')+' '+bm+m[2];return pre+'Тотал '+bm+m[2]}
+ return mn+': '+v.outcome}
 async function tick(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
@@ -1420,8 +1538,10 @@ class Collector:
             if not v.get('start_ts') or v['start_ts'] < now + 60:
                 continue
             v = dict(v, src='сайт' if v.get('source') == 'сайт' else 'odds.ru')
-            v['line'] = line_of(v['outcome']) if event_of(v) == 'total' else None
-            if event_of(v) == 'total' and v['line'] is None:
+            fam = event_of(v)
+            if v.get('line') is None:
+                v['line'] = line_of(v['outcome']) if not fam.endswith('1x2') else None
+            if not fam.endswith('1x2') and v['line'] is None:
                 continue
             rows.append(v)
         cur = self.con.cursor()
@@ -1440,9 +1560,9 @@ class Collector:
             for v in rows:
                 if v['ev'] >= CAND_MIN_EV and v['odds'] <= 4.0:
                     cur.execute('INSERT OR IGNORE INTO cand (match_id, bookmaker, src, market_name, outcome, line,'
-                                ' start_ts, first_seen, odds, fair, ev, pin_age) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                                ' start_ts, first_seen, odds, fair, ev, pin_age, fam) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                 (v['match_id'], v['bookmaker'], v['src'], v['market_name'], v['outcome'], v['line'],
-                                 v['start_ts'], now, v['odds'], v['fair'], v['ev'], v.get('pin_age')))
+                                 v['start_ts'], now, v['odds'], v['fair'], v['ev'], v.get('pin_age'), event_of(v)))
         except Exception as e:
             add_error('бумажная ставка: ' + str(e)[:100])
         self.con.commit()
@@ -1450,7 +1570,7 @@ class Collector:
             log(f'бумажных ставок записано: {added}')
 
     def closing_fair(self, match_id, market, outcome, line, start_ts):
-        mk = 'match_winner' if market == '1x2' else 'total_points'
+        mk = db_market(market)
         row = self.con.execute('SELECT raw FROM pin WHERE match_id=? AND market=? AND ts<=? ORDER BY ts DESC LIMIT 1',
                                (match_id, mk, start_ts)).fetchone()
         if not row:
@@ -1478,10 +1598,11 @@ class Collector:
                              (st, pr, cf, clv, time.time(), pid))
             n += 1
         # журнал CLV: после начала матча последняя цена Pinnacle до старта уже известна
-        for mid, bk, mname, outcome, line, start_ts, odds in self.con.execute(
-                'SELECT match_id, bookmaker, market_name, outcome, line, start_ts, odds FROM cand'
+        for mid, bk, mname, outcome, line, start_ts, odds, fam in self.con.execute(
+                'SELECT match_id, bookmaker, market_name, outcome, line, start_ts, odds, fam FROM cand'
                 ' WHERE done=0 AND start_ts < ?', (time.time() - 120,)).fetchall():
-            cf = self.closing_fair(mid, '1x2' if mname == '1Х2' else 'total', outcome, line, start_ts)
+            fam = fam or ('1x2' if mname == '1Х2' else 'total')
+            cf = self.closing_fair(mid, fam, outcome, line, start_ts)
             self.con.execute('UPDATE cand SET closing_fair=?, clv=?, done=1 WHERE match_id=? AND bookmaker=?'
                              ' AND market_name=? AND outcome=?',
                              (cf, (odds / cf - 1) if cf else None, mid, bk, mname, outcome))
@@ -1533,17 +1654,16 @@ class Collector:
                 p, po, pts = fair[key]
                 if len(bo) != len(p):
                     continue
+                names = outcome_names(key[0], key[1])
+                market_name = market_label(key[0])
                 for i, odd in enumerate(bo):
                     ev_ = odd * p[i] - 1
                     if ev_ <= 0:
                         continue
-                    if key[0] == '1x2':
-                        outcome, market_name = ['П1', 'Х', 'П2'][i], '1Х2'
-                    else:
-                        ln = ('%g' % key[1])
-                        outcome, market_name = (f'Больше ({ln})' if i == 0 else f'Меньше ({ln})'), 'Тотал'
+                    outcome = names[i]
                     k = ('direct', f.name, mid, market_name, outcome)
-                    new[k] = {'bookmaker': f.name, 'match_id': mid, 'market': key[0], 'market_name': market_name,
+                    new[k] = {'bookmaker': f.name, 'match_id': mid, 'market': key[0], 'line': key[1],
+                              'market_name': market_name,
                               'outcome': outcome, 'odds': odd, 'fair': round(1 / p[i], 3), 'pin_odds': po[i],
                               'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full)}
                     if now - pts > 60 and ev_ >= 0.03:
@@ -1599,6 +1719,8 @@ class Collector:
             datas = {}
             for mk in self.cfg['markets']:
                 u = self.match_url(m['id'], mk)
+                if by_url[u].get('status') == 404:       # матча на odds.ru уже нет (перенесён, начался) — не ошибка
+                    continue
                 try:
                     datas[mk] = self.parse_api(by_url[u], u)
                 except Exception as e:
@@ -1999,7 +2121,14 @@ def set_tg(text, ok):
 
 def tg_text(v, code):
     t = (v.get('match') or '').split(' — ')
-    if v['market_name'] == '1Х2':
+    fam = event_of(v)
+    if fam == 'ah':
+        f = re.match(r'Ф([12]) \(([-+\d.]+)\)', v['outcome'])
+        bet = ('Фора ' + (t[0] if f.group(1) == '1' else t[-1]) + ' ' + f.group(2)) if f else v['outcome']
+    elif fam in ('tt1', 'tt2'):
+        bet = ('Голы ' + (t[0] if fam == 'tt1' else t[-1]) + ' ' + v['outcome'].replace('Больше', 'больше')
+               .replace('Меньше', 'меньше').replace('(', '').replace(')', ''))
+    elif v['market_name'] == '1Х2':
         bet = {'П1': 'Победа ' + (t[0] if t else 'хозяев'), 'П2': 'Победа ' + (t[1] if len(t) > 1 else 'гостей'),
                'Х': 'Ничья'}.get(v['outcome'], v['outcome'])
     else:
