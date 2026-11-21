@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-27"
+VERSION = "2026.11.21-28"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -216,7 +216,7 @@ def bet_info(v):
         side = out[:2]
         bet, sec = f"{side} ({fmt_ln(ln)}) · {home if side == 'Ф1' else away}", 'Форы'
     elif base in ('tt1', 'tt2'):
-        bet, sec = f"{home if base == 'tt1' else away}: Тотал {lns} {bm}", 'Инд. тоталы'
+        bet, sec = f"{home if base == 'tt1' else away} · {bm} {lns}", 'Инд. тоталы'   # «ИНД. ТОТАЛ» — в пометке
     else:
         bet, sec = f'Тотал {lns} {bm}', 'Тоталы'
     where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → '}[pre] + sec
@@ -1344,7 +1344,8 @@ main{padding:16px 20px}
 .r1{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
 .mh{font-size:15px;font-weight:700}.mh a{color:#cfe1ff;text-decoration:none}
 .var{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;align-items:baseline;padding:7px 0 6px;border-top:1px solid #26313d;margin-top:6px}
-.var .bet{font-size:16px}.var.best .bet{font-size:18px}
+.var>div:first-child{min-width:0}
+.bl{white-space:nowrap;overflow:hidden;font-size:16px}.var.best .bl{font-size:18px}.bl .bet,.bl .odd{font-size:1em}
 .star{color:#f2c230;font-size:12px;font-weight:700;margin-right:4px}
 .kind{display:inline-block;font-size:13px;font-weight:800;padding:2px 8px;border-radius:5px;margin-bottom:3px;color:#111;background:#4cd18a}
 .kind.h1{background:#5ab0ff}.kind.c{background:#f2c230}
@@ -1434,12 +1435,14 @@ async function tick(){
      +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
     vs.forEach((v,i)=>{
      const star=i===0&&vs.length>1&&main(v);
-     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
+     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><div class="bl"><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span></div>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
       +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
       +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
+  // ставка — одной строкой: длинная уменьшается, пока не поместится
+  for(const b of document.querySelectorAll('.bl')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
