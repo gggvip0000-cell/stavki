@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-26"
+VERSION = "2026.11.21-27"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -221,6 +221,17 @@ def bet_info(v):
         bet, sec = f'Тотал {lns} {bm}', 'Тоталы'
     where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → '}[pre] + sec
     return bet, where
+
+
+def bet_kind(fam):
+    """крупная пометка над ставкой — сразу видно, что это: «ГОЛЫ · ТОТАЛ», «1-Й ТАЙМ · ИСХОД», «УГЛОВЫЕ · ФОРА»"""
+    pre, base = split_fam(fam)
+    goals = pre != 'c_'
+    kind = {'1x2': 'ИСХОД', 'ah': 'ФОРА', 'total': 'ТОТАЛ ГОЛОВ' if goals else 'ТОТАЛ',
+            'tt1': 'ИНД. ТОТАЛ ГОЛОВ' if goals else 'ИНД. ТОТАЛ',
+            'tt2': 'ИНД. ТОТАЛ ГОЛОВ' if goals else 'ИНД. ТОТАЛ'}.get(base, base.upper())
+    part = {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}[pre]
+    return f'{part} · {kind}', {'': 'm', 'h1_': 'h1', 'c_': 'c'}[pre]
 
 
 def db_market(fam):
@@ -1181,7 +1192,7 @@ class State:
                                  pin_age=int(now - v['pin_ts']) if v.get('pin_ts') else None,
                                  bet=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[0],
                                  where=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[1],
-                                 part={'h1_': '1-й тайм', 'c_': 'Угловые'}.get(split_fam(event_of(v))[0], ''),
+                                 kind=bet_kind(event_of(v))[0], kc=bet_kind(event_of(v))[1],
                                  chance=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[0], 4),
                                  rel=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[1], 4)))
             tracked = len(self.matches)
@@ -1335,8 +1346,8 @@ main{padding:16px 20px}
 .var{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;align-items:baseline;padding:7px 0 6px;border-top:1px solid #26313d;margin-top:6px}
 .var .bet{font-size:16px}.var.best .bet{font-size:18px}
 .star{color:#f2c230;font-size:12px;font-weight:700;margin-right:4px}
-.part{display:inline-block;background:#f2c230;color:#111;font-size:13px;font-weight:800;padding:1px 7px;border-radius:5px;margin-right:6px;vertical-align:2px}
-.part.h1{background:#5ab0ff}
+.kind{display:inline-block;font-size:13px;font-weight:800;padding:2px 8px;border-radius:5px;margin-bottom:3px;color:#111;background:#4cd18a}
+.kind.h1{background:#5ab0ff}.kind.c{background:#f2c230}
 .ch{font-size:20px;font-weight:800;color:#fff;text-align:right;white-space:nowrap}
 .ch small{font-size:11px;color:#8696a6;font-weight:400;display:block;text-align:right}
 .var .ev{font-size:15px;text-align:right}
@@ -1423,7 +1434,7 @@ async function tick(){
      +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
     vs.forEach((v,i)=>{
      const star=i===0&&vs.length>1&&main(v);
-     h+='<div class="var'+(star?' best':'')+'"><div>'+(star?'<span class="star">★ лучший</span>':'')+(v.part?'<span class="part'+(v.part==='1-й тайм'?' h1':'')+'">'+v.part.toUpperCase()+'</span>':'')+'<span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
+     h+='<div class="var'+(star?' best':'')+'"><div><div>'+(v.kind?'<span class="kind '+v.kc+'">'+v.kind+'</span> ':'')+(star?'<span class="star">★ лучший</span>':'')+'</div><span class="bet">'+(v.bet||betText(v))+'</span><span class="odd">'+v.odds+'</span>'+(v.where?'<div class="sm">где на сайте: '+v.where+'</div>':'')+'</div>'
       +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
       +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
@@ -2647,9 +2658,7 @@ def set_tg(text, ok):
 
 def tg_text(v, code):
     bet, where = bet_info(v)
-    part = {'h1_': '1-й тайм', 'c_': 'УГЛОВЫЕ'}.get(split_fam(event_of(v))[0])
-    if part:
-        bet = f'{part} · {bet}'
+    bet = f'{bet_kind(event_of(v))[0]}: {bet}'
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
     return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\nгде на сайте: {where}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
