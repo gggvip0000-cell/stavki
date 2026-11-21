@@ -26,7 +26,8 @@
 - 21.11 ~19:00 МСК Pinnacle пропал с odds.ru (разведка 20:02: ни в одном ответе, ни в футболе, ни в хоккее/баскетболе;
   снимок владельца это подтвердил). Код odds.ru-Pinnacle оставлен запасным (`pinnacle_fair`), если вернётся.
 - pinnacle.com открывается у владельца через его VPN. Гостевой API сайта: `https://guest.api.arcadia.pinnacle.com/0.1`
-  с заголовком `x-api-key` (ключ берётся из запросов самой страницы при запуске, не зашит). Футбол = sport 29.
+  с заголовком `x-api-key` (ключ берётся из запросов самой страницы при запуске и сохраняется в config.json;
+  если скрытое окно цены не получило — сохранённый или открытый ключ сайта `PIN_PUBLIC_KEY`). Футбол = sport 29.
   `/sports/29/leagues?all=false` (271 лига), `/leagues/{id}/matchups`, `/leagues/{id}/markets/straight`.
   Цены американские (−120 → 1.833). Основной матч: type matchup, units Regular, без parentId; угловые/карточки —
   отдельные matchup с parentId и units Corners/Bookings. Рынки: moneyline (home/draw/away), total, spread,
