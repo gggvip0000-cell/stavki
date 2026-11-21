@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-49"
+VERSION = "2026.11.21-50"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2041,6 +2041,7 @@ def now_str():
 STATE = State()
 MY_BOOKMAKERS = []
 STATS_DB = None
+COLLECTOR = None     # работающий сборщик (для строки о Sofascore в окне и отчёта)
 STATS_STAKE = 100
 
 # ---------------------------------------------------------------- база для учёта (CLV потом)
@@ -2370,6 +2371,7 @@ async function tick(){
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
+  const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на Sofascore: найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
   te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
@@ -3618,6 +3620,10 @@ def paper_stats(con, stake_rub):
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
                             'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
+    sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
+    need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
+    out['sofa'] = {'found': sl[0] or 0, 'notfound': sl[1] or 0, 'need': need,
+                   'error': (getattr(COLLECTOR, 'ext', None) and COLLECTOR.ext.last_error) or ''}
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
     # для расчётов программы (владельцу не показываются): разрезы способа Б
@@ -3677,6 +3683,10 @@ def _no_secrets(x):
     return x
 
 
+def ExtStatsLastError():
+    return getattr(COLLECTOR, 'ext', None) and COLLECTOR.ext.last_error or ''
+
+
 def build_report(con):
     """«Отчёт для разработки» (владелец 21.11): всё, что программа считает для себя, — одним файлом .zip с report.json.
     Владелец присылает его в чат, разработка смотрит, держится ли перевес вживую."""
@@ -3694,7 +3704,8 @@ def build_report(con):
            'ext_scores': rows('SELECT * FROM ext_scores'),
            'bk_scores_parts': rows('SELECT part, COUNT(*) AS n FROM bk_scores GROUP BY part'),
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
-                      for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')}}
+                      for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
+           'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError()}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
@@ -3950,7 +3961,9 @@ def main():
             pass
     threading.Thread(target=update_checker, daemon=True).start()
     threading.Thread(target=stats_loop, daemon=True).start()
-    Collector(cfg, con).run()
+    global COLLECTOR
+    COLLECTOR = Collector(cfg, con)
+    COLLECTOR.run()
 
 
 if __name__ == '__main__':
