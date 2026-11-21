@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-51"
+VERSION = "2026.11.21-52"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2469,7 +2469,7 @@ function popBets(sel){
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
   h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
-   +(isLive&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
+   +(b.status==='open'&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
