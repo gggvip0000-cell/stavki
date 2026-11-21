@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-18"
+VERSION = "2026.11.21-19"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1196,7 +1196,7 @@ async function tick(){
      const star=i===0&&vs.length>1&&main(v);
      h+='<div class="var'+(star?' best':'')+'"><div>'+(star?'<span class="star">★ лучший</span>':'')+'<span class="bet">'+betText(v)+'</span><span class="odd">'+v.odds+'</span></div>'
       +'<div class="ch">'+Math.round(v.chance*100)+'%<small>шанс</small></div><div class="ev">+'+(v.ev*100).toFixed(1)+'%</div>'
-      +'<div class="need">брать, если кф не ниже <b>'+(v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
+      +'<div class="need">брать, если кф не ниже <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div></div>'});
     h+='<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(age)+' назад':'кф с odds.ru, '+fmt(age)+' назад — сверить')+(pin!=null?' · Pinnacle '+fmt(pin)+' назад':'')+'</div></div>'}
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
@@ -1667,7 +1667,12 @@ class Collector:
         try:
             fair, side, ln = {}, None, line
             for names, po in json.loads(row[0]):
-                po = [float(x) for x in po]
+                try:
+                    po = [float(x) for x in po]
+                    if any(x <= 1 for x in po):
+                        continue
+                except (TypeError, ValueError):
+                    continue
                 l = None if split_fam(market)[1] == '1x2' else line_of(names[0])
                 fair[(market, l)] = (fair_power(po), po, 0)
                 if outcome in names:
@@ -2240,7 +2245,7 @@ def tg_text(v, code):
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
     return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
-            f"брать, если кф не ниже {v['fair'] * 1.05:.2f}")
+            f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}")
 
 
 def save_config_keys(upd):
