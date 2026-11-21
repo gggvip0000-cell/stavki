@@ -57,6 +57,15 @@
 - Pinnacle при перевёрнутых хозяевах: 1x2 и фора разворачиваются, tt1↔tt2. Проверка 21.11: фора хозяев 0 у
   Ньюкасл—Арсенал 17.8% при П1/(П1+П2)=18.9%.
 
+## Статистика матчей и ссылки (версия -23)
+- football-data.co.uk, текущий сезон 22 лиг (`FD_DIVS`), свой поток раз в 6 ч → таблица `stats` (счёт тайма, угловые,
+  карточки, фолы, удары). По ней рассчитываются ставки на первый тайм и угловые (на бумагу они идут, только если
+  обе команды есть в статистике сезона — `stats_covered`). Сопоставление команд — `en_sim` по английским названиям.
+- В окне «Подробнее» — таблицы способа Б по виду ставки, кф, перевесу, времени до матча и CLV по видам ставок.
+- Карточки Фонбета/PARI: названия команд как у конторы, ссылка — страница матча у конторы:
+  `{сайт}sports/football/country/{routeAlias}/{segmentId}/{eventId}` (routeAlias из `/sportEvent/geoCategories`).
+  Номера событий у Фонбета и PARI одинаковые (одна платформа). У Винлайна ссылка пока на odds.ru.
+
 ## Источники цен (разведка 21.11.2026)
 - odds.ru: `/next-api/sports/events/ru/?sport=football&status=all&date=ГГГГ-ММ-ДД&source=default` — матчи дня;
   `/next-api/coefficients/rates/ru/?sport=football&matchId=…&metricId=full_time&periodId=full_time&marketId=match_winner|total_points&source=default`

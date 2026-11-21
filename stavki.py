@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-21"
+VERSION = "2026.11.21-23"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -338,7 +338,8 @@ EVENT_GROUP = {'ah': '1x2'}        # фора и исход — одна ста�
 
 
 def event_group(fam):
-    return EVENT_GROUP.get(fam, fam)
+    pre, base = split_fam(fam)
+    return pre + EVENT_GROUP.get(base, base)
 
 
 def event_of(v):
@@ -390,7 +391,9 @@ EN_DROP = {'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'sd', 'ud', 'fk', 'sk', 'club', 
            'futbol', 'clube', 'cp', 'sv', 'vfb', 'vfl', 'tsg', 'bk', 'if', 'ik', 'aik', 'ca', 'cs', 'as', 'ss', 'us',
            'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l'}
 EN_ALIAS = {'internazionale': 'inter', 'utd': 'united', 'st': 'saint', 'munchen': 'munich', 'monchengladbach': 'gladbach',
-            'koln': 'cologne', 'psg': 'paris'}
+            'koln': 'cologne', 'psg': 'paris', 'man': 'manchester', 'brom': 'bromwich', 'wolves': 'wolverhampton',
+            'peterboro': 'peterborough', 'hearts': 'heart', 'nottm': 'nottingham', 'nott': 'nottingham',
+            'spurs': 'tottenham', 'qpr': 'queens', 'sheff': 'sheffield', 'weds': 'wednesday', 'mgladbach': 'gladbach'}
 EN_MARK = {'women', 'w', 'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 'ii', 'b', 'reserves', 'res', 'youth', 'jong',
            'castilla', 'atletic', 'reserve', 'academy', 'u22'}
 EN_COMMON = {'united', 'city', 'town', 'county', 'athletic', 'atletico', 'sporting', 'olympique', 'racing', 'dynamo',
@@ -415,7 +418,9 @@ def am_to_dec(price):
 
 
 def en_tokens(name):
-    t = (name or '').lower().replace('-', ' ')
+    import unicodedata
+    t = (name or '').lower().replace('ß', 'ss').replace("'", '').replace('-', ' ')
+    t = ''.join(ch for ch in unicodedata.normalize('NFKD', t) if not unicodedata.combining(ch))
     t = re.sub(r'\(([^)]*)\)', r' \1 ', t)
     t = re.sub(r'[^a-z0-9 ]+', ' ', t)
     words = [EN_ALIAS.get(w, w) for w in t.split()]
@@ -842,7 +847,26 @@ class DirectFeed:
                 kids.setdefault(e['parentId'], []).append((e['id'], FB_PARTS[e['name']]))
         self.kids = kids
 
+    def load_geo(self):
+        """страны турниров (для ссылки на страницу матча): geoCategoryId → routeAlias"""
+        if getattr(self, 'geo', None) or time.time() - getattr(self, 'geo_try', 0) < 1800:
+            return
+        self.geo_try = time.time()
+        try:
+            j = self.fetch(f"/sportEvent/geoCategories?version=0&lang=ru&scopeMarket={self.book['scope']}")
+            self.geo = {str(g.get('id')): g.get('routeAlias') for g in (j.get('geoCategories') or []) if g.get('routeAlias')}
+        except Exception as e:
+            log(f'{self.name}: страны турниров не получены ({str(e).splitlines()[0][:80]}) — ссылки будут на odds.ru')
+
+    def event_url(self, ev):
+        sp = self.sports.get(ev.get('sportId')) or {}
+        alias = (getattr(self, 'geo', None) or {}).get(str(sp.get('geoCategoryId')))
+        if not alias:
+            return None
+        return f"{self.book['site']}sports/football/country/{alias}/{ev['sportId']}/{ev['id']}"
+
     def poll(self):
+        self.load_geo()
         sc = self.book['scope']
         if self.version is None or time.time() - self.last_full > 900:
             j = self.fetch(f'/events/list?lang=ru&version=0&scopeMarket={sc}')
@@ -991,12 +1015,12 @@ class State:
                 if m and m.get('start', 0) < now + 60:
                     continue
                 rows.append(dict(v, age=int(now - v['updated']), held=int(now - v['first_seen']),
-                                 match=m.get('title', ''), league=m.get('league', ''),
+                                 match=v.get('bk_title') or m.get('title', ''), league=m.get('league', ''),
                                  start=m.get('start_str', ''), start_ts=m.get('start', 0), url=m.get('url', ''),
                                  source=v.get('source', 'odds.ru'),
                                  pin_age=int(now - v['pin_ts']) if v.get('pin_ts') else None,
-                                 bet=bet_info(dict(v, match=m.get('title', '')))[0],
-                                 where=bet_info(dict(v, match=m.get('title', '')))[1],
+                                 bet=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[0],
+                                 where=bet_info(dict(v, match=v.get('bk_title') or m.get('title', '')))[1],
                                  chance=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[0], 4),
                                  rel=round(chance_rel(v['odds'], v['fair'], v.get('p_win'), v.get('p_push'))[1], 4)))
             tracked = len(self.matches)
@@ -1031,6 +1055,15 @@ def db_open():
                 ' PRIMARY KEY (match_id, market, outcome, bookmaker))')
     con.execute('CREATE TABLE IF NOT EXISTS matches (match_id INT PRIMARY KEY, title TEXT, league TEXT,'
                 ' start_ts REAL, url TEXT)')
+    for col in ('home_en', 'away_en'):
+        try:
+            con.execute(f'ALTER TABLE matches ADD COLUMN {col} TEXT')
+        except sqlite3.OperationalError:
+            pass
+    # статистика сыгранных матчей (football-data.co.uk): счёт тайма, угловые, карточки, фолы, удары
+    con.execute('CREATE TABLE IF NOT EXISTS stats (div TEXT, date TEXT, home TEXT, away TEXT, fthg INT, ftag INT,'
+                ' hthg INT, htag INT, hc INT, ac INT, hy INT, ay INT, hf INT, af INT, hs INT, as_ INT, hst INT, ast INT,'
+                ' PRIMARY KEY (div, date, home, away))')
     con.execute('CREATE TABLE IF NOT EXISTS results (match_id INT PRIMARY KEY, home INT, away INT, ts REAL)')
     # бумага с 21.11 (версия -8): одна ставка на событие (матч + рынок) для каждого способа отбора,
     # в конторе с лучшим кф; цены с сайта конторы и с odds.ru считаются раздельно
@@ -1060,8 +1093,9 @@ def pick_for_strategies(rows):
     """rows — строки «ставка в конторе»; возвращает [(способ, строка)]: по одной на событие и источник цены"""
     groups = {}
     for v in rows:
-        if event_of(v) not in SETTLEABLE:      # первый тайм и угловые — только в журнал CLV
-            continue
+        pre, base = split_fam(event_of(v))
+        if base not in SETTLEABLE or (pre and not v.get('stats_ok')):
+            continue                           # первый тайм и угловые — на бумагу, только если лига есть в статистике
         groups.setdefault((v['match_id'], event_group(event_of(v)), v['src']), []).append(v)
     out = []
     for vs in groups.values():
@@ -1215,7 +1249,7 @@ async function tick(){
     const v0=vs[0];const direct=v0.source==='сайт';
     const age=Math.max(...vs.map(v=>v.age));const pa=vs.map(v=>v.pin_age).filter(x=>x!=null);const pin=pa.length?Math.max(...pa):null;
     const old=age>180||(pin!=null&&pin>180);
-    h+='<div class="card'+(old?' stale':'')+'"><div class="mh"><a href="'+v0.url+'bet/" target="_blank">'+v0.match+'</a></div>'
+    h+='<div class="card'+(old?' stale':'')+'"><div class="mh"><a href="'+(v0.bk_url||(v0.url+'bet/'))+'" target="_blank" title="'+(v0.bk_url?'открыть матч на сайте конторы':'открыть на odds.ru')+'">'+v0.match+'</a></div>'
      +'<div class="sm">'+when(v0.start_ts)+' · '+v0.league+'</div>';
     vs.forEach((v,i)=>{
      const star=i===0&&vs.length>1&&main(v);
@@ -1228,6 +1262,7 @@ async function tick(){
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
+  const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
   te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
   document.getElementById('tgform').style.display=(tg.ok===true||(tg.text||'').startsWith('проверяю')||(tg.text||'').startsWith('ключ подходит'))?'none':'';
@@ -1250,7 +1285,13 @@ function renderPaper(p){
   +'<div class="st">Проверка перевеса (CLV по всем подходящим ставкам с сайта конторы): матчей '+c0.matches+', ставок '+c0.done+(c0.done?' · средний CLV '+sg(c0.clv,'%')+', лучше закрытия в '+c0.pos+'%':'')+'</div>'
   +'<details'+(wasOpen?' open':'')+'><summary class="st">все способы отбора и последние ставки</summary><table><tr><th>Способ</th><th>Цены</th><th>Ставок</th><th>Рассчитано</th><th>Выиграло</th><th>Возвр.</th><th>Итог, ₽</th><th>На ставку</th><th>Ср. кф</th><th>Ожидали</th><th>CLV</th></tr>';
  for(const g of p.strategies){if(!g.n)continue;h+='<tr><td><b>'+g.code+'</b> '+g.desc+'</td><td>'+(g.src==='сайт'?'с сайта конторы':'с odds.ru (не сверено)')+'</td><td>'+g.n+'</td><td>'+g.done+'</td><td>'+(g.w+g.l?g.w+' из '+(g.w+g.l)+' ('+g.winpct+'%)':'—')+'</td><td>'+g.push+'</td><td>'+sg(g.profit_rub)+'</td><td>'+sg(g.roi,'%')+'</td><td>'+(g.odds||'—')+'</td><td>'+sg(g.ev,'%')+'</td><td>'+sg(g.clv,'%')+'</td></tr>'}
- h+='</table><table><tr><th>Проверка перевеса (все подходящие ставки)</th><th>Ставок</th><th>Матчей</th><th>Средний CLV</th><th>Лучше закрытия</th></tr>';
+ h+='</table>';
+ for(const c of (p.cuts||[])){if(!c.rows.length)continue;h+='<table><tr><th>Способ Б по: '+c.title+'</th><th>Ставок</th><th>Рассчитано</th><th>Выиграло</th><th>Возвр.</th><th>Итог, ₽</th><th>На ставку</th><th>Ср. кф</th><th>Ожидали</th><th>CLV</th></tr>';
+  for(const g of c.rows)h+='<tr><td>'+g.val+'</td><td>'+g.n+'</td><td>'+g.done+'</td><td>'+(g.w+g.l?g.w+' из '+(g.w+g.l)+' ('+g.winpct+'%)':'—')+'</td><td>'+g.push+'</td><td>'+sg(g.profit_rub)+'</td><td>'+sg(g.roi,'%')+'</td><td>'+(g.odds||'—')+'</td><td>'+sg(g.ev,'%')+'</td><td>'+sg(g.clv,'%')+'</td></tr>';
+  h+='</table>'}
+ if((p.cand_fam||[]).length){h+='<table><tr><th>Проверка перевеса по видам ставок</th><th>Ставок</th><th>Рассчитано</th><th>Средний CLV</th><th>Лучше закрытия</th></tr>';
+  for(const x of p.cand_fam)h+='<tr><td>'+x.val+'</td><td>'+x.n+'</td><td>'+x.done+'</td><td>'+sg(x.clv,'%')+'</td><td>'+(x.pos==null?'—':x.pos+'%')+'</td></tr>';h+='</table>'}
+ h+='<table><tr><th>Проверка перевеса (все подходящие ставки)</th><th>Ставок</th><th>Матчей</th><th>Средний CLV</th><th>Лучше закрытия</th></tr>';
  for(const x of p.cand)h+='<tr><td>'+(x.src==='сайт'?'цены с сайта конторы':'цены с odds.ru (не сверено)')+'</td><td>'+x.done+' <span class="st">(ждут матча: '+x.wait+')</span></td><td>'+x.matches+'</td><td>'+sg(x.clv,'%')+'</td><td>'+(x.pos==null?'—':x.pos+'%')+'</td></tr>';
  h+='</table><table><tr><th>Когда</th><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Способы</th><th>Итог</th><th>CLV</th></tr>';
  for(const r of p.last){const t=new Date(r.created*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -1368,6 +1409,8 @@ class Collector:
         self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
         self.pin = PinnacleFeed()
         self.pin_start_try = 0
+        self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
+        self.covered_cache = {}
         # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
         self.batch_cur = cfg['batch_matches']
         self.extra_pause = 0.0
@@ -1617,8 +1660,9 @@ class Collector:
             STATE.status['events_updated'] = now_str()
         cur = self.con.cursor()
         for m in found.values():
-            cur.execute('INSERT OR REPLACE INTO matches VALUES (?,?,?,?,?)',
-                        (m['id'], m['title'], m['league'], m['start'], m['url']))
+            cur.execute('INSERT OR REPLACE INTO matches (match_id, title, league, start_ts, url, home_en, away_en)'
+                        ' VALUES (?,?,?,?,?,?,?)',
+                        (m['id'], m['title'], m['league'], m['start'], m['url'], m.get('home_en'), m.get('away_en')))
         self.con.commit()
         self.last_events = time.time()
         log(f'матчей в ближайшие {self.cfg["hours_ahead"]} ч: {len(found)}')
@@ -1642,6 +1686,40 @@ class Collector:
                     best, best_over = m, over
         return best, best_over
 
+    def stats_covered(self, m):
+        """обе команды матча есть в статистике сезона → тайм и угловые можно рассчитать"""
+        if not m or not m.get('home_en'):
+            return False
+        mid = m['id']
+        if mid in self.covered_cache:
+            return self.covered_cache[mid]
+        ts, teams = self.stats_teams
+        if time.time() - ts > 3600:
+            since = (datetime.datetime.now(MSK) - datetime.timedelta(days=200)).strftime('%Y-%m-%d')
+            teams = {r[0] for r in self.con.execute('SELECT home FROM stats WHERE date >= ? UNION SELECT away FROM stats'
+                                                    ' WHERE date >= ?', (since, since))}
+            self.stats_teams = (time.time(), teams)
+            self.covered_cache = {}
+        ok = any(en_sim(m['home_en'], t) >= 0.8 for t in teams) and any(en_sim(m['away_en'], t) >= 0.8 for t in teams)
+        self.covered_cache[mid] = ok
+        return ok
+
+    def stats_result(self, mid, start_ts):
+        """сыгранный матч в статистике → словарь с полями таблицы stats или None"""
+        row = self.con.execute('SELECT home_en, away_en FROM matches WHERE match_id=?', (mid,)).fetchone()
+        if not row or not row[0]:
+            return None
+        day = datetime.datetime.fromtimestamp(start_ts, MSK).date()
+        days = [(day + datetime.timedelta(days=k)).isoformat() for k in (-1, 0, 1)]
+        cols = ['home', 'away', 'fthg', 'ftag', 'hthg', 'htag', 'hc', 'ac']
+        best, best_s = None, 0
+        for r in self.con.execute(f"SELECT {', '.join(cols)} FROM stats WHERE date IN (?,?,?)", days):
+            d = dict(zip(cols, r))
+            sc = (en_sim(row[0], d['home']) + en_sim(row[1], d['away'])) / 2
+            if min(en_sim(row[0], d['home']), en_sim(row[1], d['away'])) >= 0.6 and sc > best_s:
+                best, best_s = d, sc
+        return best if best_s >= 0.75 else None
+
     def record_paper(self):
         now = time.time()
         rows = []
@@ -1656,6 +1734,10 @@ class Collector:
                 v['line'] = line_of(v['outcome']) if not fam.endswith('1x2') else None
             if not fam.endswith('1x2') and v['line'] is None:
                 continue
+            if split_fam(fam)[0]:
+                with STATE.lock:
+                    mm = STATE.matches.get(v['match_id'])
+                v['stats_ok'] = self.stats_covered(mm)
             rows.append(v)
         cur = self.con.cursor()
         added = 0
@@ -1717,12 +1799,26 @@ class Collector:
     def settle_paper(self):
         rows = self.con.execute("SELECT p.id, COALESCE(p.fam, p.event), p.outcome, p.line, p.odds, p.match_id, p.start_ts,"
                                 " r.home, r.away FROM paper2 p JOIN results r ON r.match_id = p.match_id"
-                                " WHERE p.status='open'").fetchall()
+                                " WHERE p.status='open' AND COALESCE(p.fam, p.event) NOT LIKE 'h1!_%' ESCAPE '!'"
+                                " AND COALESCE(p.fam, p.event) NOT LIKE 'c!_%' ESCAPE '!'").fetchall()
+        for pid, fam, outcome, line, odds, mid, start_ts in self.con.execute(
+                "SELECT id, fam, outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
+                " AND (fam LIKE 'h1!_%' ESCAPE '!' OR fam LIKE 'c!_%' ESCAPE '!') AND start_ts < ?",
+                (time.time() - 3 * 3600,)).fetchall():
+            d = self.stats_result(mid, start_ts)
+            if not d:
+                continue
+            pre, base = split_fam(fam)
+            h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
+            if h is None or a is None:
+                continue
+            rows.append((pid, base, outcome, line, odds, mid, start_ts, h, a))
         n = 0
+        fam_of = dict(self.con.execute("SELECT id, COALESCE(fam, event) FROM paper2 WHERE status='open'").fetchall())
         for pid, event, outcome, line, odds, mid, start_ts, home, away in rows:
             pr = settle_one(event, outcome, line, odds, home, away)
             st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
-            cf, clv = self.closing_fair(mid, event, outcome, line, start_ts, odds)
+            cf, clv = self.closing_fair(mid, fam_of.get(pid, event), outcome, line, start_ts, odds)
             self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=? WHERE id=?',
                              (st, pr, cf, clv, time.time(), pid))
             n += 1
@@ -1798,7 +1894,9 @@ class Collector:
                               'market_name': market_name,
                               'outcome': outcome, 'odds': odd, 'fair': round((1 - p_push) / p_win, 3),
                               'p_win': p_win, 'p_push': p_push, 'pin_odds': po[i],
-                              'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full)}
+                              'ev': ev_, 'source': 'сайт', 'pin_ts': pts, 'odds_ts': f.touched.get(ev['id'], f.last_full),
+                              'bk_url': f.event_url(ev),
+                              'bk_title': f"{ev.get('team1', '')} — {ev.get('team2', '')}" if ev.get('team1') else None}
                     if now - pts > 60 and ev_ >= 0.03:
                         urgent.append(mid)
         with STATE.lock:
@@ -2117,7 +2215,29 @@ def paper_stats(con, stake_rub):
                 'ev': round(100 * ev, 1) if ev is not None else None,
                 'odds': round(odds, 2) if odds else None,
                 'clv': round(100 * clv, 1) if clv is not None else None, 'nclv': nclv or 0}
-    out = {'stake_rub': stake_rub, 'strategies': [], 'cand': [], 'last': []}
+    out = {'stake_rub': stake_rub, 'strategies': [], 'cand': [], 'last': [], 'cuts': []}
+    # разрезы основного способа Б (цены с сайта конторы): вид ставки, кф, перевес, за сколько до матча найдена
+    cuts = [('Вид ставки', "COALESCE(fam, event)"),
+            ('Коэффициент', "CASE WHEN odds < 1.5 THEN 'до 1.5' WHEN odds < 2 THEN '1.5–2' WHEN odds < 3 THEN '2–3'"
+                            " ELSE '3–4' END"),
+            ('Перевес', "CASE WHEN ev < 0.07 THEN '5–7%' WHEN ev < 0.10 THEN '7–10%' ELSE 'от 10%' END"),
+            ('Найдена до матча', "CASE WHEN start_ts - created < 3600 THEN 'меньше часа'"
+                                 " WHEN start_ts - created < 6 * 3600 THEN '1–6 ч' ELSE 'больше 6 ч' END")]
+    for title, expr in cuts:
+        rows = []
+        for (val,) in con.execute(f"SELECT DISTINCT {expr} FROM paper2 WHERE strategy='Б' AND src='сайт'"):
+            a = agg(f"strategy='Б' AND src='сайт' AND {expr} = ?", (val,))
+            rows.append(dict(a, val=market_label(val) if title == 'Вид ставки' and val else val))
+        rows.sort(key=lambda r: -r['n'])
+        out['cuts'].append({'title': title, 'rows': rows})
+    # журнал CLV по видам ставок (все подходящие ставки с сайта конторы)
+    out['cand_fam'] = []
+    for fam, n, nd, clv, pos in con.execute("SELECT COALESCE(fam, CASE WHEN market_name='1Х2' THEN '1x2' ELSE 'total' END),"
+                                            " COUNT(*), COUNT(clv), AVG(clv), AVG(clv>0) FROM cand WHERE src='сайт'"
+                                            " GROUP BY 1 ORDER BY 2 DESC"):
+        out['cand_fam'].append({'val': market_label(fam), 'n': n, 'done': nd,
+                                'clv': round(100 * clv, 1) if clv is not None else None,
+                                'pos': round(100 * pos) if pos is not None else None})
     for code, desc, _c, _k in STRATEGIES:
         for src in ('сайт', 'odds.ru'):
             out['strategies'].append(dict(agg('strategy=? AND src=?', (code, src)), code=code, desc=desc, src=src))
@@ -2257,7 +2377,8 @@ def tg_text(v, code):
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
     return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\nгде на сайте: {where}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
-            f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}")
+            f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}"
+            + (f"\n{v['bk_url']}" if v.get('bk_url') else ''))
 
 
 def save_config_keys(upd):
@@ -2271,6 +2392,80 @@ def save_config_keys(upd):
 
 
 TG = None
+
+
+# ---------------------------------------------------------------- статистика матчей (football-data.co.uk)
+
+FD_DIVS = ['E0', 'E1', 'E2', 'E3', 'EC', 'SC0', 'SC1', 'SC2', 'SC3', 'D1', 'D2', 'I1', 'I2', 'SP1', 'SP2',
+           'F1', 'F2', 'N1', 'B1', 'P1', 'T1', 'G1']
+FD_URL = 'https://www.football-data.co.uk/mmz4281/{season}/{div}.csv'
+FD_COLS = ['FTHG', 'FTAG', 'HTHG', 'HTAG', 'HC', 'AC', 'HY', 'AY', 'HF', 'AF', 'HS', 'AS', 'HST', 'AST']
+
+
+def fd_season(dt):
+    y = dt.year if dt.month >= 7 else dt.year - 1
+    return f'{y % 100:02d}{(y + 1) % 100:02d}'
+
+
+def fd_parse(text, div):
+    """строки CSV football-data → кортежи для таблицы stats (дата — ГГГГ-ММ-ДД)"""
+    import csv
+    import io
+    out = []
+    for r in csv.DictReader(io.StringIO(text)):
+        try:
+            d = r.get('Date') or ''
+            dd, mm, yy = d.split('/')
+            yy = ('20' + yy) if len(yy) == 2 else yy
+            vals = []
+            for c in FD_COLS:
+                x = (r.get(c) or '').strip()
+                vals.append(int(float(x)) if x else None)
+            if vals[0] is None or not r.get('HomeTeam'):
+                continue
+            out.append((div, f'{yy}-{int(mm):02d}-{int(dd):02d}', r['HomeTeam'].strip(), r['AwayTeam'].strip(), *vals))
+        except (ValueError, KeyError, AttributeError):
+            continue
+    return out
+
+
+def stats_loop():
+    """раз в 6 часов скачивает таблицы текущего сезона 22 лиг; своя связь с базой (отдельный поток)"""
+    while True:
+        con = None
+        try:
+            con = sqlite3.connect(str(HERE / 'stavki.sqlite3'), timeout=30)
+            season = fd_season(datetime.datetime.now(MSK))
+            n, errs = 0, []
+            for div in FD_DIVS:
+                try:
+                    req = urllib.request.Request(FD_URL.format(season=season, div=div),
+                                                 headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=40) as r:
+                        raw = r.read()
+                    try:
+                        text = raw.decode('utf-8-sig')
+                    except UnicodeDecodeError:
+                        text = raw.decode('latin-1')
+                    rows = fd_parse(text, div)
+                    con.executemany('INSERT OR REPLACE INTO stats VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
+                    con.commit()
+                    n += len(rows)
+                except Exception as e:
+                    errs.append(f'{div}: {str(e).splitlines()[0][:60]}')
+                time.sleep(2)
+            total = con.execute('SELECT COUNT(*) FROM stats').fetchone()[0]
+            with STATE.lock:
+                STATE.status['stats'] = {'last_ok': time.time() if n else None, 'rows': total,
+                                         'error': '; '.join(errs[:3]) if errs else ''}
+            log(f'статистика матчей: загружено {n} строк из {len(FD_DIVS) - len(errs)} лиг, всего в базе {total}')
+        except Exception as e:
+            with STATE.lock:
+                STATE.status['stats'] = {'last_ok': None, 'rows': 0, 'error': str(e).splitlines()[0][:120]}
+        finally:
+            if con:
+                con.close()
+        time.sleep(6 * 3600)
 
 
 def load_config():
@@ -2309,6 +2504,7 @@ def main():
         except Exception:
             pass
     threading.Thread(target=update_checker, daemon=True).start()
+    threading.Thread(target=stats_loop, daemon=True).start()
     Collector(cfg, con).run()
 
 
