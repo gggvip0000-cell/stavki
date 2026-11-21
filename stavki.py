@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-33"
+VERSION = "2026.11.21-34"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1388,7 +1388,7 @@ main{padding:16px 20px}
 .src.ok{color:#5fd38d}.src.warn{color:#d8a657}
 .empty{padding:6px 14px 16px;color:#7d8b99;font-size:13px}
 .sec{display:flex;align-items:center;gap:12px;background:#1b2430;border-radius:10px;padding:10px 14px;margin:14px 0 10px;cursor:pointer;user-select:none}
-.sec:hover{background:#212c3a}.sec .ar{color:#8b98a5;width:16px}.sec .kind{font-size:14px;margin:0;padding:3px 10px}.sec .sn{color:#aab4be;font-size:14px}.sec .sn b{color:#fff}
+.sec:hover{background:#212c3a}.sec .bkn{min-width:26px;text-align:center;font-size:15px;font-weight:800;color:#fff;background:var(--c);border-radius:6px;padding:2px 7px}.sec .ar{color:#8b98a5;width:16px}.sec .kind{font-size:14px;margin:0;padding:3px 10px}.sec .sn{color:#aab4be;font-size:14px}.sec .sn b{color:#fff}
 .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.tl{min-width:0}
 .mh .th{color:#9be15d}.mh .ta{color:#c69cff}.mh .td{color:#6b7785}
 .lgl{display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap}
@@ -1399,7 +1399,7 @@ main{padding:16px 20px}
 .bet{background:#232a34;border-radius:8px;padding:6px 10px 8px;margin-top:10px;border:1px solid #2e3744}
 .mkt{font-size:11px;color:#7fd1b9;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
 a.btn{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#353c48;border-radius:6px;padding:8px 12px;margin-top:6px;border-left:4px solid #5d6876;text-decoration:none;color:#e6e6e6}
-a.btn:hover{background:#3d4553}a.btn.h{border-left-color:#9be15d}a.btn.a{border-left-color:#c69cff}a.btn.best{box-shadow:0 0 0 2px #5bc8ac inset}
+a.btn:hover{background:#3d4553}a.btn.h{border-left-color:#9be15d}a.btn.a{border-left-color:#c69cff}a.btn.best{box-shadow:0 0 0 2px #f2c230 inset}
 a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-decoration:underline;text-decoration-color:#ffffff33;text-underline-offset:3px}
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
@@ -1436,7 +1436,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
-const COLORS={'Фонбет':'#e8392f','PARI':'#f2c230','Винлайн':'#ff7a1a'};
+const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400'};   // цвета с сайтов контор (снимки разведки 21.11)
 function fmt(s){if(s==null)return '—';if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
 function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
  const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
@@ -1480,7 +1480,7 @@ async function tick(){
   const SECS=[['m','МАТЧ'],['h1','1-Й ТАЙМ'],['c','УГЛОВЫЕ']];
   for(const [sk,sn] of SECS){
    const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
-   h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок: <b>'+srows.length+'</b>'+(closed?' · свёрнуто':'')+'</span></div>';
+   h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+'</div>';
    if(closed)continue;
    h+='<div class="cols">';
    for(const b of bkCols){
