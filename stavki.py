@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-50"
+VERSION = "2026.11.21-51"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1032,10 +1032,12 @@ class ExtStats:
             self.pages.pop(key, None)          # страница сломалась — откроется заново
             return None
         if r.get('s') != 200:
+            self.last_http = f"{url.split('?')[0][-60:]} → ответ {r.get('s')}: {str(r.get('t'))[:80]}"
             return None
         try:
             return json.loads(r['t'])
         except ValueError:
+            self.last_http = f"{url.split('?')[0][-60:]} → не JSON: {str(r.get('t'))[:80]}"
             return None
 
     @staticmethod
@@ -1050,15 +1052,26 @@ class ExtStats:
     def find_sofa(self, home_en, away_en, start_ts):
         """матч на Sofascore по английским названиям и времени ±20 мин → (событие, та же ориентация) или (None, None)"""
         q_home, q_away = home_en.replace('-', ' '), away_en.replace('-', ' ')
+        log_ = {'home': home_en, 'away': away_en, 'start': start_ts, 'tries': []}
+        if not hasattr(self, 'sofa_log'):
+            self.sofa_log = []
+        self.sofa_log = (self.sofa_log + [log_])[-40:]
         for q in (f'{q_home} {q_away}', q_home, q_away):
-            j = self.get('sofascore', f'{SOFA_API}/search/events?q={urllib.parse.quote(q)}&page=0') or {}
-            for r in j.get('results') or []:
+            self.last_http = ''
+            j = self.get('sofascore', f'{SOFA_API}/search/events?q={urllib.parse.quote(q)}&page=0')
+            res = (j or {}).get('results') or []
+            near = sorted(((abs((r.get('entity') or {}).get('startTimestamp', 0) - start_ts),
+                            (r.get('entity') or {}).get('name', '')) for r in res))[:3]
+            log_['tries'].append({'q': q, 'ok': j is not None, 'http': self.last_http, 'n': len(res),
+                                  'nearest': [(round(dt / 60), nm) for dt, nm in near]})
+            for r in res:
                 e = r.get('entity') or {}
                 if abs((e.get('startTimestamp') or 0) - start_ts) > 20 * 60:
                     continue
                 same = self.pair((e.get('homeTeam') or {}).get('name', ''), (e.get('awayTeam') or {}).get('name', ''),
                                  home_en, away_en)
                 if same is not None:
+                    log_['found'] = e.get('name')
                     return e, same
         return None, None
 
@@ -1108,15 +1121,50 @@ class ExtStats:
             d = {k: (v[1], v[0]) if isinstance(v, tuple) else v for k, v in d.items()}
         return d
 
+    def fm_list(self, start_ts):
+        """матчи FotMob за день начала (и соседние сутки — сайт считает день по своему часовому поясу); кэш 30 мин"""
+        out = []
+        for dd in (-1, 0, 1):
+            day = (datetime.datetime.fromtimestamp(start_ts, MSK) + datetime.timedelta(days=dd)).strftime('%Y%m%d')
+            got = self.fm_days.get(day)
+            if not got or time.time() - got[0] > 1800:
+                j = self.get('fotmob', f'https://www.fotmob.com/api/data/matches?date={day}')
+                if j is None:
+                    continue                    # не ответил — не запоминать пустой день
+                got = (time.time(), [m for lg in j.get('leagues') or [] for m in lg.get('matches') or []])
+                self.fm_days[day] = got
+            out += got[1]
+        return out
+
+    def find_fotmob(self, home_en, away_en, start_ts):
+        for x in self.fm_list(start_ts):
+            if abs((x.get('timeTS') or 0) / 1000 - start_ts) > 20 * 60:
+                continue
+            same = self.pair((x.get('home') or {}).get('name', ''), (x.get('away') or {}).get('name', ''),
+                             home_en, away_en)
+            if same is not None:
+                return x, same
+        return None, None
+
+    def stats_page(self, browser, home_en, away_en, start_ts):
+        """страница матча со статистикой: FotMob (весь день одним запросом; /match/<id> — проверено разведкой 21.11:
+        владение, удары, удары в створ…), иначе Sofascore. None — ни один сайт не открылся, '' — матч не нашёлся."""
+        opened = False
+        if self.page(browser, 'fotmob', 'https://www.fotmob.com/') is not None:
+            opened = True
+            m, _ = self.find_fotmob(home_en, away_en, start_ts)
+            if m and m.get('id'):
+                return f"https://www.fotmob.com/match/{m['id']}"
+        if self.page(browser, 'sofascore', 'https://www.sofascore.com/ru/football') is not None:
+            opened = True
+            e, _ = self.find_sofa(home_en, away_en, start_ts)
+            if e and e.get('slug') and e.get('customId'):
+                return f"https://www.sofascore.com/ru/football/match/{e['slug']}/{e['customId']}"
+        return '' if opened else None
+
     def fotmob(self, home_en, away_en, start_ts):
-        day = datetime.datetime.fromtimestamp(start_ts, MSK).strftime('%Y%m%d')
-        got = self.fm_days.get(day)
-        if not got or time.time() - got[0] > 1800:
-            j = self.get('fotmob', f'https://www.fotmob.com/api/data/matches?date={day}') or {}
-            got = (time.time(), [m for lg in j.get('leagues') or [] for m in lg.get('matches') or []])
-            self.fm_days[day] = got
         m, same = None, None
-        for x in got[1]:
+        for x in self.fm_list(start_ts):
             if abs((x.get('timeTS') or 0) / 1000 - start_ts) > 20 * 60:
                 continue
             same = self.pair((x.get('home') or {}).get('name', ''), (x.get('away') or {}).get('name', ''),
@@ -2371,7 +2419,7 @@ async function tick(){
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
-  const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на Sofascore: найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
+  const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
   te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
@@ -2420,7 +2468,7 @@ function popBets(sel){
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
-  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на Sofascore':'страница матча на odds.ru (на Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
+  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
    +(isLive&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
@@ -2614,6 +2662,8 @@ class Collector:
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
         self.bk_known = dict(con.execute('SELECT event_id, match_id FROM bk_events').fetchall())
         self.ext = ExtStats()
+        con.execute("DELETE FROM sofa_link WHERE url = ''")      # не нашлись при прошлом запуске — искать заново
+        con.commit()
         self.ext_last = 0
         self.covered_cache = {}
         # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
@@ -3153,7 +3203,7 @@ class Collector:
         if not row:
             return
         mid, st, he, ae = row
-        url = self.ext.sofa_page(self.browser, he, ae, st)
+        url = self.ext.stats_page(self.browser, he, ae, st)
         if url is None:
             return                              # Sofascore не открылся — попробуем позже
         self.con.execute('INSERT INTO sofa_link VALUES (?,?,1,?) ON CONFLICT (match_id) DO UPDATE SET url=excluded.url,'
@@ -3623,7 +3673,8 @@ def paper_stats(con, stake_rub):
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
     need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
     out['sofa'] = {'found': sl[0] or 0, 'notfound': sl[1] or 0, 'need': need,
-                   'error': (getattr(COLLECTOR, 'ext', None) and COLLECTOR.ext.last_error) or ''}
+                   'error': (getattr(COLLECTOR, 'ext', None) and (COLLECTOR.ext.last_error
+                                                                   or getattr(COLLECTOR.ext, 'last_http', ''))) or ''}
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
     # для расчётов программы (владельцу не показываются): разрезы способа Б
@@ -3705,7 +3756,8 @@ def build_report(con):
            'bk_scores_parts': rows('SELECT part, COUNT(*) AS n FROM bk_scores GROUP BY part'),
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                       for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
-           'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError()}
+           'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError(),
+           'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', [])}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
