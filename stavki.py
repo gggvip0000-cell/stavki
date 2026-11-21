@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-37"
+VERSION = "2026.11.21-38"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -550,7 +550,7 @@ class PinnacleFeed:
                 self.fails += 1
                 self.last_error = str(e).splitlines()[0][:160]
                 if self.fails in (1, 5) or self.fails % 20 == 0:
-                    add_error('Pinnacle: ' + self.last_error)
+                    add_error('Pinnacle: ' + self.last_error, 'Pinnacle')
                 if self.fails >= 10:                 # напрямую не выходит — дальше через окно браузера
                     log('Pinnacle: напрямую не отвечает, перехожу на загрузку через браузер')
                     self.mode = 'browser'
@@ -680,6 +680,7 @@ class PinnacleFeed:
         lg = self.leagues.setdefault(lid, {'name': '', 'count': 0})
         lg['last'] = now
         lg['errors'] = 0
+        clear_error('Pinnacle')
         lg['next_start'] = min(starts) if starts else now + 86400
         by = {}
         for k in markets or []:
@@ -1665,10 +1666,29 @@ def log(msg):
         pass
 
 
-def add_error(msg):
+ERRLOG = []        # (источник или None, когда, текст) — ошибка пропадает, когда её источник снова заработал
+
+
+def _errors_publish():
+    now = time.time()
+    ERRLOG[:] = [e for e in ERRLOG if e[0] is not None or now - e[1] < 900][-20:]   # без источника — живёт 15 мин
+    STATE.status['errors'] = [e[2] for e in ERRLOG][-5:]
+
+
+def add_error(msg, key=None):
     log('ОШИБКА: ' + msg)
     with STATE.lock:
-        STATE.status['errors'] = (STATE.status['errors'] + [f'{now_str()} {msg}'])[-5:]
+        ERRLOG[:] = [e for e in ERRLOG if not (key is not None and e[0] == key)]   # от одного источника — последняя
+        ERRLOG.append((key, time.time(), f'{now_str()} {msg}'))
+        _errors_publish()
+
+
+def clear_error(key):
+    """источник снова работает — его ошибка больше не актуальна (владелец 21.11)"""
+    with STATE.lock:
+        if any(e[0] == key for e in ERRLOG) or ERRLOG:
+            ERRLOG[:] = [e for e in ERRLOG if e[0] != key]
+            _errors_publish()
 
 
 class Collector:
@@ -1718,7 +1738,7 @@ class Collector:
             try:
                 f.start(self.browser)
             except Exception as e:
-                add_error(f'{f.name}: сайт не открылся: {str(e).splitlines()[0][:120]}')
+                add_error(f'{f.name}: сайт не открылся: {str(e).splitlines()[0][:120]}', f.name)
         self.start_pin()
 
     def start_pin(self):
@@ -1740,7 +1760,7 @@ class Collector:
             self.pin.last_error = str(e).splitlines()[0][:160]
             with STATE.lock:
                 STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error}
-            add_error('Pinnacle: ' + self.pin.last_error)
+            add_error('Pinnacle: ' + self.pin.last_error, 'Pinnacle')
 
     def poll_pin(self):
         if self.pin.mode is None:
@@ -1766,7 +1786,7 @@ class Collector:
             with STATE.lock:
                 STATE.status['feeds'].setdefault('Pinnacle', {}).update(error=self.pin.last_error)
             if self.pin.fails in (1, 5) or self.pin.fails % 20 == 0:
-                add_error('Pinnacle: ' + self.pin.last_error)
+                add_error('Pinnacle: ' + self.pin.last_error, 'Pinnacle')
             if self.pin.fails % 10 == 0:
                 self.start_pin()
             return
@@ -1875,20 +1895,22 @@ class Collector:
             if d < now.date():
                 try:
                     data = self.get_json(f'/next-api/sports/events/ru/?sport=football&status=all&date={d.isoformat()}&source=default')
+                    clear_error('odds.ru результаты')
                     for lg in data.get('leagues', []):
                         for ev in lg.get('events', []):
                             if (ev.get('status') or {}).get('name') == 'completed':
                                 self.con.execute('INSERT OR REPLACE INTO results VALUES (?,?,?,?)',
                                                  (ev['id'], int(ev['home']['score']), int(ev['away']['score']), time.time()))
                 except Exception as e:
-                    add_error(f'результаты за {d.isoformat()}: {str(e).splitlines()[0][:100]}')
+                    add_error(f'результаты за {d.isoformat()}: {str(e).splitlines()[0][:100]}', 'odds.ru результаты')
                 continue
             try:
                 data = self.get_json(f'/next-api/sports/events/ru/?sport=football&status=all&date={d.isoformat()}&source=default')
             except Exception as e:
-                add_error(f'список матчей на {d.isoformat()}: {str(e).splitlines()[0][:120]}')
+                add_error(f'список матчей на {d.isoformat()}: {str(e).splitlines()[0][:120]}', 'odds.ru список ' + d.isoformat())
                 continue
             ok_dates += 1
+            clear_error('odds.ru список ' + d.isoformat())
             for lg in data.get('leagues', []):
                 if self.cfg['leagues_only'] and lg.get('id') not in self.cfg['leagues_only']:
                     continue
@@ -2136,14 +2158,17 @@ class Collector:
                     STATE.status['feeds'].setdefault(f.name, {}).update(error=f.last_error, fails=f.fails,
                                                                         page_url=f.page_url, host=f.host)
                 if f.fails in (3, 10) or f.fails % 20 == 0:     # единичный обрыв связи — не ошибка, следующий опрос через 5 с
-                    add_error(f'{f.name} (прямая линия): {str(e).splitlines()[0][:150]}')
+                    add_error(f'{f.name} (прямая линия): {str(e).splitlines()[0][:150]}', f.name)
                 if f.fails % 10 == 0:
                     f.version = None          # начать заново с полного снимка
                 continue
+            clear_error(f.name)
             try:
                 self.save_scores(f)
             except Exception as e:
-                add_error(f'{f.name}: счёт из лайва — {str(e)[:100]}')
+                add_error(f'{f.name}: счёт из лайва — {str(e)[:100]}', f.name + ' счёт')
+            else:
+                clear_error(f.name + ' счёт')
             self.direct_values_for(f)
 
     def save_scores(self, f):
@@ -2347,7 +2372,9 @@ class Collector:
                 self.extra_pause = max(0.0, self.extra_pause - 0.5)
         self.busy_log = [t for t in self.busy_log if now - t < 600]
         if errors:
-            add_error(f'{errors} из {len(urls)} запросов не удались (после повтора): {last_err}')
+            add_error(f'{errors} из {len(urls)} запросов не удались (после повтора): {last_err}', 'odds.ru пакет')
+        else:
+            clear_error('odds.ru пакет')
         return errors, len(urls)
 
     def apply_match(self, m, datas):
@@ -2532,7 +2559,9 @@ class Collector:
                 try:
                     self.ext_step()
                 except Exception as e:
-                    add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120])
+                    add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120], 'ext')
+                else:
+                    clear_error('ext')
                 ms = self.pick_batch(self.batch_cur)
                 if not ms:
                     time.sleep(1)
@@ -2558,9 +2587,10 @@ class Collector:
                         STATE.status['last_ok'] = now_str()
                     t_cycle, n_cycle = time.time(), 0
                 fails = 0
+                clear_error('цикл')
             except Exception as e:
                 fails += 1
-                add_error(str(e).splitlines()[0][:200])
+                add_error(str(e).splitlines()[0][:200], 'цикл')
                 if fails >= 3:                      # подряд — значит, беда не в одном матче
                     time.sleep(min(60, 5 * (fails - 2)))
                 if fails >= 3 and not self.ever_ok and self.cfg['headless']:
