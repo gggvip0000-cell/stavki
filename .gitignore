@@ -1,0 +1,7 @@
+config.json
+stavki.sqlite3
+log.txt
+restarting.flag
+stavki_new.py
+__pycache__/
+*.pyc
