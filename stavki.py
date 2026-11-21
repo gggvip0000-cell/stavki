@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-42"
+VERSION = "2026.11.21-43"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2056,10 +2056,20 @@ def db_open():
             con.execute(f'ALTER TABLE {t} ADD COLUMN fam TEXT')
         except sqlite3.OperationalError:
             pass                               # столбец уже есть
+    for col in ('tsec', 'tdir', 'tupd'):        # таймер матча из лайва Фонбета (timerSeconds/Direction/UpdateTimestampMsec)
+        try:
+            con.execute(f'ALTER TABLE bk_scores ADD COLUMN {col} REAL')
+        except sqlite3.OperationalError:
+            pass
+    for col in ('res_h', 'res_a'):             # фактический счёт, по которому рассчитана ставка (голы/тайм/угловые)
+        try:
+            con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} INT')
+        except sqlite3.OperationalError:
+            pass
     # счёт из лайва Фонбета/PARI (eventMiscs): матч, первый тайм, угловые — расчёт ставок любой лиги
     con.execute('CREATE TABLE IF NOT EXISTS bk_events (event_id INT PRIMARY KEY, match_id INT)')
     con.execute('CREATE TABLE IF NOT EXISTS bk_scores (match_id INT, part TEXT, s1 INT, s2 INT, comment TEXT,'
-                ' ts REAL, PRIMARY KEY (match_id, part))')
+                ' ts REAL, tsec REAL, tdir REAL, tupd REAL, PRIMARY KEY (match_id, part))')
     # Sofascore / FotMob: счёт основного времени, тайм, угловые — запасной источник для расчёта
     con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
                 ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
@@ -2167,7 +2177,7 @@ main{padding:16px 20px}
 .src.ok{color:#5fd38d}.src.warn{color:#d8a657}
 .empty{padding:6px 14px 16px;color:#7d8b99;font-size:13px}
 .sec{display:flex;align-items:center;gap:12px;background:#1b2430;border-radius:10px;padding:10px 14px;margin:14px 0 10px;cursor:pointer;user-select:none}
-.sec:hover{background:#212c3a}.sec .bkn{min-width:26px;text-align:center;font-size:15px;font-weight:800;color:#fff;background:var(--c);border-radius:6px;padding:2px 7px}.sec .ar{color:#8b98a5;width:16px}.sec .kind{font-size:14px;margin:0;padding:3px 10px}.sec .sn{color:#aab4be;font-size:14px}.sec .sn b{color:#fff}
+.sec:hover{background:#212c3a}.sec .bkn{min-width:26px;text-align:center;font-size:15px;font-weight:800;color:#fff;background:var(--c);border-radius:6px;padding:2px 7px}.sec .ar{color:#8b98a5;width:16px}.sec .kind{font-size:14px;margin:0;padding:3px 10px;min-width:96px;text-align:center;box-sizing:border-box}.sec .sn{color:#aab4be;font-size:14px}.sec .sn b{color:#fff}
 .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.tl{min-width:0}
 .mh .th{color:#9be15d}.mh .ta{color:#c69cff}.mh .td{color:#6b7785}
 .lgl{display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap}
@@ -2183,7 +2193,8 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
-.ptab td.clk{cursor:pointer;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab td.clk:hover{background:#2d3a4a!important}
+.ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
+.fact{font-size:12px;color:#aab4be;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
 #pop{display:none;position:fixed;inset:0;background:#000a;z-index:50;align-items:flex-start;justify-content:center;padding:40px 16px}
 .mbox{background:#131a22;border:1px solid #2e3744;border-radius:12px;max-width:1100px;width:100%;max-height:85vh;display:flex;flex-direction:column}
 .mhd{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #2a3542;font-size:16px}
@@ -2307,7 +2318,7 @@ async function tick(){
      h+='<div class="card'+(old?' stale':'')+'"><div class="top"><div class="tl"><div class="mh"><a href="'+url+'" target="_blank"><span class="th">'+esc(tm[0])+'</span> <span class="td">—</span> <span class="ta">'+esc(tm[tm.length-1])+'</span></a></div>'
       +'<div class="lgl"><span class="cty">'+esc(lg.length>1?lg[0]:'')+'</span>'+(lg.length>1?'<span class="lgn">'+esc(lg.slice(1).join(': '))+'</span>':'<span class="lgn">'+esc(lg[0])+'</span>')+'</div>'
       +'<div class="sm">'+when(v0.start_ts)+'</div></div>'
-      +(mo.some(x=>x)?'<div class="mo">'+o(0,'П1','h')+o(1,'Х','')+o(2,'П2','a')+o(3,'1Х','h')+o(4,'12','')+o(5,'Х2','a')+'</div>':'')+'</div>';
+      +(mo.some(x=>x)?'<div class="mo">'+o(0,'П1','h')+o(1,'Х','')+o(2,'П2','a')+(mo[3]||mo[4]||mo[5]?o(3,'1Х','h')+o(4,'12','')+o(5,'Х2','a'):'')+'</div>':'')+'</div>';
      for(const v of vs){
       const [,side,title]=vw(v);const star=best.has(v);
       h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
@@ -2355,11 +2366,29 @@ function popBets(sel){
  for(const b of L){const tm=(b.title||'').split(' — ');
   if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="7"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
   const dt=new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-  const left=b.start_ts>now?'<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>':'<div class="mu sm">сыгран</div>';
-  const res=b.status==='open'?'<span class="mu">ждём матч</span>':(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  let left;
+  if(b.start_ts>now)left='<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>';
+  else if(b.status==='open'){const mins=Math.floor((now-b.start_ts)/60);
+   if(mins<135||(b.live&&b.live.timer)){const lv=b.live||{},k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'&&lv.h1?'h1':'ft'),sc=lv[k];
+    left='<div class="livem">● '+matchClock(lv.timer,mins)+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
+   else left='<div class="mu sm">закончился, ждём результат</div>'}
+  else left='<div class="mu sm">сыгран</div>';
+  let res=b.status==='open'?'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>':(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
+   const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
+   const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
+   res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
   h+='<tr><td><span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span><div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
+// минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
+// timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
+function matchClock(t,mins){
+ if(!t||t.tsec==null)return 'идёт · '+mins+' мин от начала';
+ if(!t.tdir){if(t.tsec>=5400)return 'матч окончен';if(t.tsec>=2700&&t.ht)return 'перерыв';return 'таймер стоит · '+(Math.floor(t.tsec/60)+1)+'-я минута'}
+ const sec=t.tsec+(Date.now()-(t.tupd||Date.now()))/1000,m=Math.floor(sec/60)+1;
+ const half=(t.ht||m>45)?'2-й тайм':'1-й тайм';
+ return half+' · '+(half==='1-й тайм'&&m>45?'45+'+(m-45):(m>90?'90+'+(m-90):m))+'-я минута'}
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){document.getElementById('pop').style.display='none'}
@@ -2370,7 +2399,7 @@ function renderPaper(p){
  LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
  const z=x=>x?x:'·';
- const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+'"'+(v?' data-pop="'+sel+'|'+k+'"':'')+'>'+(cl==='n'?v:z(v))+'</td>';
+ const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
  const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
@@ -2379,7 +2408,7 @@ function renderPaper(p){
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
   const closed=!!PCOL[G.part];
-  h+='<tr class="grp" onclick="pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
+  h+='<tr class="grp" onclick="if(!event.target.closest(\'[data-pop]\'))pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
   if(!closed)for(const r of G.rows)h+='<tr class="sub"><td>'+(r.name||r.val)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>';
  }
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
@@ -2931,7 +2960,29 @@ class Collector:
         except Exception:
             return None, None
 
+    def score_for(self, fam, mid, start_ts):
+        """(хозяева, гости) для расчёта: основное время, 1-й тайм или угловые; None — пока неизвестно"""
+        pre = split_fam(fam)[0]
+        if not pre:
+            r = self.con.execute('SELECT COALESCE(x.ft1, r.home), COALESCE(x.ft2, r.away) FROM (SELECT ? AS m) q'
+                                 ' LEFT JOIN results r ON r.match_id = q.m'
+                                 ' LEFT JOIN ext_scores x ON x.match_id = q.m AND x.done = 1', (mid,)).fetchone()
+            return tuple(r) if r and r[0] is not None and r[1] is not None else None
+        for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid)):
+            if d:
+                h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
+                if h is not None and a is not None:
+                    return h, a
+        return None
+
     def settle_paper(self):
+        # у уже рассчитанных ставок без записанного счёта — дописать (для окна «что там было»)
+        for pid, fam, mid, st in self.con.execute(
+                "SELECT id, COALESCE(fam, event), match_id, start_ts FROM paper2 WHERE status IN"
+                " ('выигрыш','проигрыш','возврат') AND res_h IS NULL LIMIT 200").fetchall():
+            sc = self.score_for(fam, mid, st)
+            if sc:
+                self.con.execute('UPDATE paper2 SET res_h=?, res_a=? WHERE id=?', (sc[0], sc[1], pid))
         rows = self.con.execute("SELECT p.id, COALESCE(p.fam, p.event), p.outcome, p.line, p.odds, p.match_id, p.start_ts,"
                                 " COALESCE(x.ft1, r.home), COALESCE(x.ft2, r.away) FROM paper2 p"
                                 " LEFT JOIN results r ON r.match_id = p.match_id"
@@ -2960,8 +3011,8 @@ class Collector:
             pr = settle_one(event, outcome, line, odds, home, away)
             st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
             cf, clv = self.closing_fair(mid, fam_of.get(pid, event), outcome, line, start_ts, odds)
-            self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=? WHERE id=?',
-                             (st, pr, cf, clv, time.time(), pid))
+            self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?'
+                             ' WHERE id=?', (st, pr, cf, clv, time.time(), home, away, pid))
             n += 1
         self.con.execute("UPDATE paper2 SET status='нет данных', settled=? WHERE status='open' AND start_ts < ?",
                          (time.time(), time.time() - 2 * 86400))
@@ -3040,6 +3091,9 @@ class Collector:
                 self.con.execute('INSERT INTO bk_scores (match_id, part, s1, s2, comment, ts) VALUES (?,?,?,?,?,?)'
                                  ' ON CONFLICT (match_id, part) DO UPDATE SET s1=excluded.s1, s2=excluded.s2,'
                                  ' comment=excluded.comment, ts=excluded.ts', (mid, part, s1, s2, cm, now))
+            if isinstance(m.get('timerSeconds'), (int, float)):
+                self.con.execute('UPDATE bk_scores SET tsec=?, tdir=?, tupd=? WHERE match_id=? AND part=?',
+                                 (m['timerSeconds'], m.get('timerDirection'), m.get('timerUpdateTimestampMsec'), mid, 'ft'))
         self.con.commit()
 
     def ext_step(self):
@@ -3480,15 +3534,23 @@ def paper_stats(con, stake_rub):
     out['simple_total'] = agg("strategy='Б' AND src='сайт'")
     # сами ставки — для окна «что там было» по нажатию на цифру в таблице (владелец 21.11)
     out['bets'] = []
-    for pid, title, lg, st, bk, fam, oc, odds, ev, status, profit in con.execute(
-            "SELECT id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status, profit"
+    live = {}                                  # счёт идущих матчей из лайва Фонбета/PARI (свежее 3 мин)
+    for lmid, part, a1, a2, cm, tsec, tdir, tupd in con.execute(
+            'SELECT match_id, part, s1, s2, comment, tsec, tdir, tupd FROM bk_scores WHERE ts > ?', (time.time() - 180,)):
+        live.setdefault(lmid, {})[part] = [a1, a2]
+        if part == 'ft':
+            live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
+    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra in con.execute(
+            "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
+            " profit, res_h, res_a"
             " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
         pre = split_fam(fam or '')[0]
         out['bets'].append({'id': pid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
                             'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
                             'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
-                            'odds': odds, 'ev': ev, 'status': status,
+                            'odds': odds, 'ev': ev, 'status': status, 'res': [rh, ra] if rh is not None else None,
+                            'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
