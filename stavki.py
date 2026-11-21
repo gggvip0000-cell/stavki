@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-8"
+VERSION = "2026.11.21-9"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -427,7 +427,11 @@ class State:
                                  rel=round(chance_rel(v['odds'], v['fair'])[1], 4)))
             tracked = len(self.matches)
             fresh = sum(1 for m in self.matches.values() if m.get('last_update') and now - m['last_update'] < 300)
-            st = dict(self.status, tracked=tracked, fresh=fresh, now=now_str())
+            near = [now - m['last_update'] for m in self.matches.values()
+                    if m.get('last_update') and 0 < m.get('start', 0) - now < 3 * 3600 and not m.get('no_pin')]
+            st = dict(self.status, tracked=tracked, fresh=fresh, now=now_str(),
+                      near=len(near), near_age=int(sum(near) / len(near)) if near else None,
+                      near_max=int(max(near)) if near else None)
             marg = {}
             for (bk, market), (sm, n) in self.margins.items():
                 marg.setdefault(bk, {})[MARKET_NAMES.get(market, market)] = [round(100 * sm / n, 1), n]
@@ -625,7 +629,7 @@ async function tick(){
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
   renderPaper(d.paper);
-  let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
+  let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
   m+=s.razvedka?'<p class="st">Разведка контор: '+s.razvedka+'</p>':'<p><button class="lbtn" onclick="post(\'/api/razvedka\')">Разведка контор (≈4 мин)</button></p>';
   const bks=Object.keys(d.margins||{}).sort((a,b)=>(d.mine.includes(b)-d.mine.includes(a))||a.localeCompare(b));
@@ -710,6 +714,8 @@ class Handler(BaseHTTPRequestHandler):
 MARKET_NAMES = {'match_winner': '1Х2', 'total_points': 'Тотал', 'asian_handicap': 'Фора',
                 'both_teams_to_score': 'Обе забьют', 'double_chance': 'Двойной шанс'}
 
+BUSY_STATUSES = (429, 502, 503, 504, -1)
+
 FETCH_MANY_JS = """async (urls) => Promise.all(urls.map(async (url) => { const t0 = performance.now();
  try { const r = await fetch(url, {credentials: 'include', cache: 'no-store'});
  return {status: r.status, text: await r.text(), ms: performance.now() - t0}; }
@@ -749,6 +755,11 @@ class Collector:
         self.last_events = 0
         self.ever_ok = False
         self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
+        # odds.ru отвечает 502, когда запросов сразу слишком много: размер пакета подстраивается сам
+        self.batch_cur = cfg['batch_matches']
+        self.extra_pause = 0.0
+        self.ok_streak = 0
+        self.busy_log = []          # время каждого ответа «сервер занят» (502/503/504/429)
 
     # --- браузер
     def start_browser(self):
@@ -1104,7 +1115,15 @@ class Collector:
         urls = [self.match_url(m['id'], mk) for m in ms for mk in self.cfg['markets']]
         res = self.get_many(urls)
         by_url = dict(zip(urls, res))
+        busy = [u for u in urls if by_url[u].get('status') in BUSY_STATUSES]
+        if busy:                                    # один повтор через пару секунд, уже без толпы запросов
+            self.busy_log += [time.time()] * len(busy)
+            time.sleep(2)
+            for u, r in zip(busy, self.get_many(busy)):
+                by_url[u] = r
         errors = 0
+        last_err = ''
+        now = time.time()
         for m in ms:
             datas = {}
             for mk in self.cfg['markets']:
@@ -1115,9 +1134,26 @@ class Collector:
                     errors += 1
                     last_err = str(e).splitlines()[0][:200]
             self.apply_match(m, datas)
+            if not datas:                           # ничего не получили — вернуть матч в очередь через ~15 с
+                with STATE.lock:
+                    mm = STATE.matches.get(m['id'])
+                    if mm:
+                        mm['last_update'] = now - self.interval_for(mm, now) + 15
         self.con.commit()
+        still_busy = sum(1 for u in busy if by_url[u].get('status') in BUSY_STATUSES)
+        if still_busy:
+            self.batch_cur = max(2, self.batch_cur // 2)
+            self.extra_pause = min(5.0, self.extra_pause + 1.0)
+            self.ok_streak = 0
+        elif not errors:
+            self.ok_streak += 1
+            if self.ok_streak >= 10:
+                self.ok_streak = 0
+                self.batch_cur = min(self.cfg['batch_matches'], self.batch_cur + 1)
+                self.extra_pause = max(0.0, self.extra_pause - 0.5)
+        self.busy_log = [t for t in self.busy_log if now - t < 600]
         if errors:
-            add_error(f'{errors} из {len(urls)} запросов не удались: {last_err}')
+            add_error(f'{errors} из {len(urls)} запросов не удались (после повтора): {last_err}')
         return errors, len(urls)
 
     def apply_match(self, m, datas):
@@ -1296,7 +1332,7 @@ class Collector:
                     self.ever_ok = True
                 self.poll_feeds()
                 self.record_paper()
-                ms = self.pick_batch(self.cfg['batch_matches'])
+                ms = self.pick_batch(self.batch_cur)
                 if not ms:
                     time.sleep(1)
                     continue
@@ -1313,10 +1349,11 @@ class Collector:
                     raise RuntimeError('все запросы пакета не удались')
                 self.ever_ok = True
                 n_cycle += len(ms)
-                time.sleep(self.cfg['pause_between_requests'])
+                time.sleep(self.cfg['pause_between_requests'] + self.extra_pause)
                 if time.time() - t_cycle > 60:
                     with STATE.lock:
-                        STATE.status['cycle_info'] = f'обновлено матчей за минуту: {n_cycle}'
+                        STATE.status['cycle_info'] = (f'обновлено матчей за минуту: {n_cycle} · пакет {self.batch_cur}'
+                                                      f' · «сервер занят» за 10 мин: {len(self.busy_log)}')
                         STATE.status['last_ok'] = now_str()
                     t_cycle, n_cycle = time.time(), 0
                 fails = 0
