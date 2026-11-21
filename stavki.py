@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-11"
+VERSION = "2026.11.21-12"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -243,7 +243,21 @@ EN_DROP = {'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'sd', 'ud', 'fk', 'sk', 'club', 
            'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l'}
 EN_ALIAS = {'internazionale': 'inter', 'utd': 'united', 'st': 'saint', 'munchen': 'munich', 'monchengladbach': 'gladbach',
             'koln': 'cologne', 'psg': 'paris'}
-EN_MARK = {'women', 'w', 'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 'ii', 'b', 'reserves', 'res', 'youth'}
+EN_MARK = {'women', 'w', 'u17', 'u18', 'u19', 'u20', 'u21', 'u23', 'ii', 'b', 'reserves', 'res', 'youth', 'jong',
+           'castilla', 'atletic', 'reserve', 'academy', 'u22'}
+EN_COMMON = {'united', 'city', 'town', 'county', 'athletic', 'atletico', 'sporting', 'olympique', 'racing', 'dynamo',
+             'dinamo', 'inter', 'saint', 'san', 'santa', 'union', 'rovers', 'wanderers', 'albion', 'deportivo', 'young',
+             'boys', 'new', 'north', 'south', 'west', 'east', 'central', 'la', 'el', 'los', 'del', 'royal'}
+
+
+def pin_interval(start_ts, now):
+    left = start_ts - now
+    return 60 if left < 3 * 3600 else 180 if left < 12 * 3600 else 600
+
+
+def pin_fresh(start_ts, ts, now):
+    """цена Pinnacle годится, пока она не старше двух кругов опроса своей лиги (минимум 3 мин)"""
+    return now - ts <= max(180, 2 * pin_interval(start_ts, now))
 
 
 def am_to_dec(price):
@@ -270,7 +284,7 @@ def en_sim(a, b):
     r = difflib.SequenceMatcher(None, sa, sb).ratio()
     if set(ca) <= set(cb) or set(cb) <= set(ca):
         r = max(r, 0.9)
-    elif set(ca) & set(cb):
+    elif (set(ca) & set(cb)) - EN_COMMON:
         r = max(r, 0.75)
     return r
 
@@ -306,6 +320,9 @@ class PinnacleFeed:
         self.match_tried = {}
         self.fair = {}              # id odds.ru -> {ключ: (p, цены, когда)}
         self.pin_written = {}       # id odds.ru -> когда последний раз записали в базу
+        self.fair_league = {}       # id odds.ru -> лига Pinnacle
+        self.taken = {}             # id odds.ru -> id Pinnacle (один матч odds.ru — один матч Pinnacle)
+        self.removed = []           # id odds.ru, у которых рынок закрылся
         self.last_req = 0
         self.last_ok = None
         self.fails = 0
@@ -330,18 +347,28 @@ class PinnacleFeed:
         log('Pinnacle: сайт открыт, цены берутся напрямую')
 
     def get(self, path):
-        r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=30000)
+        r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=15000)
         if r.status != 200:
             raise RuntimeError(f'Pinnacle ответил {r.status} на {path[:60]}')
-        return json.loads(r.text())
+        j = json.loads(r.text())
+        if not isinstance(j, list):
+            raise RuntimeError(f'Pinnacle прислал не то на {path[:60]}')
+        return j
+
+    def hurry(self, mid):
+        """цена по матчу нужна срочно — его лигу опросить первой (не чаще раза в 30 с)"""
+        lid = self.fair_league.get(mid)
+        lg = self.leagues.get(lid)
+        if lg and time.time() - lg.get('last', 0) > 30:
+            lg['last'] = 0
 
     def pick_leagues(self, now, k):
         def interval(lg):
             ns = lg.get('next_start')
-            if ns is None:
-                return 1
-            left = ns - now
-            return 60 if left < 3 * 3600 else 180 if left < 12 * 3600 else 600
+            base = 1 if ns is None else pin_interval(ns, now)
+            if lg.get('errors'):                       # сбойная лига: ждать дольше с каждой ошибкой
+                base = max(base, min(600, 30 * 2 ** min(lg['errors'], 5)))
+            return base
         scored = sorted(self.leagues.items(), key=lambda kv: -(now - kv[1]['last']) / interval(kv[1]))
         return [lid for lid, lg in scored[:k] if now - lg['last'] >= interval(lg)]
 
@@ -358,11 +385,21 @@ class PinnacleFeed:
                     old = self.leagues.get(lg['id'], {'last': 0, 'next_start': None})
                     self.leagues[lg['id']] = dict(old, name=lg.get('name', ''), count=lg.get('matchupCount', 0))
             self.leagues_ts = now
-        changed = []
+        changed, errors, tried = [], [], 0
         for lid in self.pick_leagues(now, k):
-            mu = self.get(f'/leagues/{lid}/matchups')
-            mk = self.get(f'/leagues/{lid}/markets/straight')
+            tried += 1
+            try:
+                mu = self.get(f'/leagues/{lid}/matchups')
+                mk = self.get(f'/leagues/{lid}/markets/straight')
+            except Exception as e:
+                lg = self.leagues[lid]
+                lg['last'] = time.time()                 # сбойная лига ждёт свой круг, а не держит очередь
+                lg['errors'] = lg.get('errors', 0) + 1
+                errors.append(str(e).splitlines()[0][:120])
+                continue
             changed += self.ingest(lid, mu, mk, matches)
+        if tried and len(errors) == tried:
+            raise RuntimeError(errors[-1])
         self.last_ok = time.time()
         self.fails = 0
         return changed
@@ -390,12 +427,14 @@ class PinnacleFeed:
                 starts.append(st)
         lg = self.leagues.setdefault(lid, {'name': '', 'count': 0})
         lg['last'] = now
+        lg['errors'] = 0
         lg['next_start'] = min(starts) if starts else now + 86400
         by = {}
         for k in markets or []:
             if k.get('status', 'open') == 'open':
                 by.setdefault(k.get('matchupId'), []).append(k)
         changed = []
+        had = {mid for mid, l in self.fair_league.items() if l == lid}
         for pid, ks in by.items():
             self.markets[pid] = ks
             if pid not in self.regular:
@@ -421,7 +460,12 @@ class PinnacleFeed:
                     continue
             if fair:
                 self.fair[mid] = fair
+                self.fair_league[mid] = lid
                 changed.append(mid)
+        for mid in had - set(changed):                 # рынок закрыт или матч убран — цену не держим
+            self.fair.pop(mid, None)
+            self.fair_league.pop(mid, None)
+            self.removed.append(mid)
         return changed
 
     def map_match(self, pid, matches):
@@ -432,12 +476,16 @@ class PinnacleFeed:
         for m in matches.values():
             if not m.get('home_en') or abs(m['start'] - r['start']) > 20 * 60:
                 continue
+            if self.taken.get(m['id'], pid) != pid:
+                continue
             for swapped, (h, a) in ((False, (r['home'], r['away'])), (True, (r['away'], r['home']))):
                 s1, s2 = en_sim(h, m['home_en']), en_sim(a, m['away_en'])
                 sc = (s1 + s2) / 2
                 if min(s1, s2) >= 0.5 and sc > best_s:
                     best, best_s = (m['id'], swapped), sc
         res = best if best_s >= 0.7 else None
+        if res:
+            self.taken[res[0]] = pid
         self.match_map[pid] = res
         self.match_tried[pid] = time.time()
         return res
@@ -458,8 +506,12 @@ def fair_for(mid, odds_data):
     """честная цена матча: Pinnacle с его сайта (свежая, до 20 мин), иначе — как раньше, с odds.ru"""
     with STATE.lock:
         d = STATE.pin_fair.get(mid)
-    if d and any(time.time() - ts < 1200 for _p, _po, ts in d.values()):
-        return d
+        m = STATE.matches.get(mid)
+    if d and m:
+        now = time.time()
+        d = {k: v for k, v in d.items() if pin_fresh(m['start'], v[2], now)}
+        if d:
+            return d
     return pinnacle_fair(odds_data or {})
 
 
@@ -1093,8 +1145,13 @@ class Collector:
         now = time.time()
         with STATE.lock:
             for mid in changed:
-                STATE.pin_fair[mid] = self.pin.fair[mid]
-            for mid in [mid for mid in STATE.pin_fair if mid not in STATE.matches]:
+                if mid in self.pin.fair:
+                    STATE.pin_fair[mid] = self.pin.fair[mid]
+            for mid in self.pin.removed:
+                STATE.pin_fair.pop(mid, None)
+            self.pin.removed = []
+            for mid in [mid for mid in STATE.pin_fair if mid not in STATE.matches
+                        or not any(pin_fresh(STATE.matches[mid]['start'], v[2], now) for v in STATE.pin_fair[mid].values())]:
                 STATE.pin_fair.pop(mid)
             near = [m for m in STATE.matches.values() if m['id'] in STATE.pin_fair]
             STATE.status['feeds']['Pinnacle'] = {
@@ -1418,9 +1475,13 @@ class Collector:
                 v['updated'] = f.last_ok or now        # цена подтверждена последним опросом сайта
                 STATE.direct_values[k] = v
             for mid in urgent:                     # цену Pinnacle по таким матчам обновить первой очередью
+                if mid in self.pin.fair_league:
+                    continue
                 mm = STATE.matches.get(mid)
                 if mm:
                     mm['last_update'] = 0
+        for mid in urgent:
+            self.pin.hurry(mid)
             STATE.direct_cover[f.name] = cover
             STATE.status['feeds'][f.name] = {'last_ok': f.last_ok, 'events': len(evs), 'matched': matched,
                                              'host': f.host, 'error': '', 'fails': 0}
@@ -1489,8 +1550,7 @@ class Collector:
         new_vals = {}
         any_pin = False
         marg = []
-        with STATE.lock:
-            fair_ext = STATE.pin_fair.get(mid)
+        fair_ext = fair_for(mid, {}) or None
         for market, data in datas.items():
             vals, pin_rows = values_from_rates(data, fair_ext=fair_ext, market=market)
             pin_rows = pin_rows or (1 if fair_ext else 0)
