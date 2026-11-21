@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-31"
+VERSION = "2026.11.21-32"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1372,7 +1372,9 @@ main{padding:16px 20px}
 .pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
 .pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
 .ptab th:first-child,.ptab td:first-child{text-align:left}.ptab td:last-child{text-align:right;font-weight:700}.ptab th:last-child{text-align:right}
-.ptab tr:nth-child(odd) td{background:#17202a}
+.ptab tr.grp td{background:#1e2834;font-weight:700;cursor:pointer;border-top:1px solid #2f3b49}.ptab tr.grp:hover td{background:#243040}
+.ptab .chev{display:inline-block;width:18px;color:#8b98a5;font-size:13px}.ptab .gn{font-size:12px;color:#8b98a5;font-weight:400}
+.pp .ptab tr.sub td{background:#141b23;font-size:14px}.ptab tr.sub td:first-child{padding-left:34px;color:#cdd5dd}
 .ptab td.w{color:#5fd38d;font-weight:700}.ptab td.l{color:#ff6b6b;font-weight:700}.ptab td.p{color:#c9d1d9}
 .ptab td:nth-child(3),.ptab td:nth-child(4),.ptab td:nth-child(5),.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){box-shadow:inset 0 0 0 999px rgba(90,176,255,.06)}
 .ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(7),.ptab th:nth-child(7){border-left:2px solid #34414f}
@@ -1470,18 +1472,29 @@ async function tick(){
  }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
+let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
+function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
+let LASTP=null;
 function renderPaper(p){
+ LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
  const z=x=>x?x:'·';
- const row=(name,g,tot)=>'<tr'+(tot?' class="tot"':'')+'><td>'+name+'</td><td>'+g.n+'</td><td class="w">'+z(g.w)+'</td><td class="l">'+z(g.l)+'</td><td class="p">'+z(g.push)+'</td><td>'+z(g.n-g.done)+'</td><td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td></tr>';
+ const cells=g=>'<td>'+g.n+'</td><td class="w">'+z(g.w)+'</td><td class="l">'+z(g.l)+'</td><td class="p">'+z(g.push)+'</td><td>'+z(g.n-g.done)+'</td><td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
- for(const g of p.simple)h+=row((g.part?'<span class="kind ks '+g.kc+'">'+g.part+'</span> ':'')+(g.name||g.val),g,false);
- h+=row('Всего',p.simple_total,true)+'</table>';
+ const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
+ for(const G of groups){
+  const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
+  const closed=!!PCOL[G.part];
+  h+='<tr class="grp" onclick="pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s)+'</tr>';
+  if(!closed)for(const r of G.rows)h+='<tr class="sub"><td>'+(r.name||r.val)+'</td>'+cells(r)+'</tr>';
+ }
+ h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total)+'</tr></table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
 }
+
 
 
 async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
@@ -2510,8 +2523,12 @@ def paper_stats(con, stake_rub):
                     'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}.get(base, market_label(fam or '—'))
             out['simple'].append(dict(a, val=market_label(fam) if fam else '—', name=name,
                                       part={'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
-                                      kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm')))
-    out['simple'].sort(key=lambda r: -r['n'])
+                                      kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm'),
+                                      order=({'': 0, 'h1_': 1, 'c_': 2}.get(pre, 3),
+                                             ['1x2', 'total', 'ah', 'tt1', 'tt2'].index(base)
+                                             if base in ('1x2', 'total', 'ah', 'tt1', 'tt2') else 9)))
+    # группы как на сайте Фонбета: МАТЧ, 1-Й ТАЙМ, УГЛОВЫЕ; внутри — Исход, Тотал, Фора, Инд. тоталы
+    out['simple'].sort(key=lambda r: r['order'])
     out['simple_total'] = agg("strategy='Б' AND src='сайт'")
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
