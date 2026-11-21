@@ -25,7 +25,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-40"
+VERSION = "2026.11.21-41"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1413,9 +1413,12 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .mx{cursor:pointer;font-size:20px;color:#8b98a5;padding:0 6px}.mx:hover{color:#fff}.mbody{overflow:auto;padding:6px 12px 12px}
 .mt{width:100%;border-collapse:collapse;font-size:14px}.mt th{font-size:12px;color:#8b98a5;text-align:left;padding:6px 8px;border-bottom:1px solid #2a3542}
 .mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
+.mt tr.mg td{background:#1b2430;padding:6px 8px;border-bottom:none}.lft{color:#ffd400;font-weight:700;font-size:13px}
 .bt{font-weight:700}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
-.info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}.bad2{color:#ffb454;font-weight:700}
+.info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
+.info .loch{background:#e5484d;color:#fff;border-radius:5px;padding:0 6px;font-weight:700}.info .loch b{color:#fff}
+.info .midch{background:#2f3d4f;color:#c9d6e3;border-radius:5px;padding:0 6px}.bad2{color:#ffb454;font-weight:700}
 .newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
 @keyframes blink{50%{opacity:.45}}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
@@ -1532,7 +1535,7 @@ async function tick(){
       const [,side,title]=vw(v);const star=best.has(v);
       h+='<div class="bet"><div class="mkt">'+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
        +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
-       +'<div class="info"><span'+(v.chance>=0.55?' class="hich" title="шанс от 55% — как у способа В"':'')+'>шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
+       +'<div class="info"><span class="'+(v.chance>=0.55?'hich':(v.chance<0.40?'loch':'midch'))+'" title="шанс: до 40% — красная, 40–55% — спокойная, от 55% — жёлтая">шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
      h+='</div>'}
     h+='</div>'}
    h+='</div>'}
@@ -1568,11 +1571,20 @@ function popBets(sel){
  const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Начало</th><th>Итог</th></tr>';
+ // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
+ const now=Date.now()/1000,GR=['МАТЧ','1-Й ТАЙМ','УГЛОВЫЕ'];
+ L.sort((x,y)=>(GR.indexOf(x.part)-GR.indexOf(y.part))||((x.status==='open')-(y.status==='open'))*-1||(x.status==='open'?x.start_ts-y.start_ts:y.start_ts-x.start_ts));
+ let gp=null;
  for(const b of L){const tm=(b.title||'').split(' — ');
+  if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="7"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
+  const dt=new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const left=b.start_ts>now?'<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>':'<div class="mu sm">сыгран</div>';
   const res=b.status==='open'?'<span class="mu">ждём матч</span>':(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
-  h+='<tr><td><span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span><div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</td><td>'+res+'</td></tr>'}
+  h+='<tr><td><span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span><div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
+function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
+ return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){document.getElementById('pop').style.display='none'}
 document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
  if(ev.target.id==='pop')closePop()});
