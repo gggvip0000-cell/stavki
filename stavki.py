@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-47"
+VERSION = "2026.11.21-48"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1046,6 +1046,30 @@ class ExtStats:
         if min(en_sim(home_en, a), en_sim(away_en, h)) >= 0.6:
             return False
         return None
+
+    def find_sofa(self, home_en, away_en, start_ts):
+        """матч на Sofascore по английским названиям и времени ±20 мин → (событие, та же ориентация) или (None, None)"""
+        q_home, q_away = home_en.replace('-', ' '), away_en.replace('-', ' ')
+        for q in (f'{q_home} {q_away}', q_home, q_away):
+            j = self.get('sofascore', f'{SOFA_API}/search/events?q={urllib.parse.quote(q)}&page=0') or {}
+            for r in j.get('results') or []:
+                e = r.get('entity') or {}
+                if abs((e.get('startTimestamp') or 0) - start_ts) > 20 * 60:
+                    continue
+                same = self.pair((e.get('homeTeam') or {}).get('name', ''), (e.get('awayTeam') or {}).get('name', ''),
+                                 home_en, away_en)
+                if same is not None:
+                    return e, same
+        return None, None
+
+    def sofa_page(self, browser, home_en, away_en, start_ts):
+        """адрес страницы матча на Sofascore (формат проверен разведкой 21.11: /ru/football/match/<slug>/<customId>)"""
+        if self.page(browser, 'sofascore', 'https://www.sofascore.com/ru/football') is None:
+            return None
+        e, _ = self.find_sofa(home_en, away_en, start_ts)
+        if not e or not e.get('slug') or not e.get('customId'):
+            return ''
+        return f"https://www.sofascore.com/ru/football/match/{e['slug']}/{e['customId']}"
 
     def sofa(self, home_en, away_en, start_ts):
         q_home, q_away = home_en.replace('-', ' '), away_en.replace('-', ' ')
@@ -2077,6 +2101,7 @@ def db_open():
     # Sofascore / FotMob: счёт основного времени, тайм, угловые — запасной источник для расчёта
     con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
                 ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
+    con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -2393,7 +2418,7 @@ function popBets(sel){
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
-  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="страница матча на odds.ru">'+nm+'</a>':nm)
+  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на Sofascore':'страница матча на odds.ru (на Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
    +(isLive&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
@@ -3112,6 +3137,27 @@ class Collector:
                                  (m['timerSeconds'], m.get('timerDirection'), m.get('timerUpdateTimestampMsec'), mid, 'ft'))
         self.con.commit()
 
+    def sofa_link_step(self):
+        """страница матча на Sofascore для окна «что там было» (владелец 22.11: статистика — на Sofascore)"""
+        now = time.time()
+        if now - getattr(self, 'sofa_last', 0) < 15 or self.browser is None:
+            return
+        self.sofa_last = now
+        row = self.con.execute(
+            "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
+            " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE m.home_en IS NOT NULL AND p.strategy='Б'"
+            " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
+            " GROUP BY p.match_id ORDER BY ABS(p.start_ts - ?) LIMIT 1", (now - 3600, now)).fetchone()
+        if not row:
+            return
+        mid, st, he, ae = row
+        url = self.ext.sofa_page(self.browser, he, ae, st)
+        if url is None:
+            return                              # Sofascore не открылся — попробуем позже
+        self.con.execute('INSERT INTO sofa_link VALUES (?,?,1,?) ON CONFLICT (match_id) DO UPDATE SET url=excluded.url,'
+                         ' tries=tries+1, last_try=excluded.last_try', (mid, url, now))
+        self.con.commit()
+
     def ext_step(self):
         """один сыгранный матч с открытой бумажной ставкой → Sofascore/FotMob (раз в 10 с, до 5 попыток раз в 30 мин)"""
         now = time.time()
@@ -3465,6 +3511,7 @@ class Collector:
                 self.record_paper()
                 try:
                     self.ext_step()
+                    self.sofa_link_step()
                 except Exception as e:
                     add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120], 'ext')
                 else:
@@ -3557,6 +3604,7 @@ def paper_stats(con, stake_rub):
         if part == 'ft':
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
+    surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
     for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku in con.execute(
             "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
             " profit, res_h, res_a, bk_url"
@@ -3568,7 +3616,7 @@ def paper_stats(con, stake_rub):
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
                             'odds': odds, 'ev': ev, 'status': status, 'res': [rh, ra] if rh is not None else None,
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
-                            'url': murl.get(mid) or '', 'bk_url': bku or '',
+                            'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
                                 " AND status='нет данных'").fetchone()[0]
