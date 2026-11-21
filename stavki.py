@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-6"
+VERSION = "2026.11.21-7"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -529,7 +529,7 @@ async function tick(){
      +'<div class="m"><a href="'+v.url+'bet/" target="_blank">'+v.match+'</a></div>'
      +'<div class="sm">'+when(v.start_ts)+' · '+v.league+'</div>'
      +'<div class="need">брать, если кф не ниже <b>'+(v.fair*(1+thr)).toFixed(2)+'</b> <span class="st">(честная цена '+v.fair.toFixed(2)+')</span></div>'
-     +'<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, '+fmt(v.age)+' назад':'кф с odds.ru, '+fmt(v.age)+' назад — сверить')+(v.pin_age!=null?' · Pinnacle '+fmt(v.pin_age)+' назад':'')+'</div></div>'}
+     +'<div class="src '+(direct?'ok':'warn')+'">'+(direct?'кф с сайта конторы, проверен '+fmt(v.age)+' назад':'кф с odds.ru, '+fmt(v.age)+' назад — сверить')+(v.pin_age!=null?' · Pinnacle '+fmt(v.pin_age)+' назад':'')+'</div></div>'}
    h+='</div>'}
   document.getElementById('cols').innerHTML=h;
   renderPaper(d.paper);
@@ -970,7 +970,7 @@ class Collector:
             for k, v in new.items():
                 old = STATE.direct_values.get(k)
                 v['first_seen'] = old['first_seen'] if old else now
-                v['updated'] = max(v['odds_ts'], 0)
+                v['updated'] = f.last_ok or now        # цена подтверждена последним опросом сайта
                 STATE.direct_values[k] = v
             for mid in urgent:                     # цену Pinnacle по таким матчам обновить первой очередью
                 mm = STATE.matches.get(mid)
