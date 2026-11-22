@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-95"
+VERSION = "2026.11.21-96"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -5422,6 +5422,29 @@ def olimp_recon(browser, wait_ms=12000):
                         ugl = ugl or e.get('id')
         if ugl:
             fetch(f'https://www.olimp.bet/api/v4/0/line/events?vids%5B%5D={ugl}%3A&main=false', 'роспись «УГЛ»-матча')
+        # -96: где взять ВСЕ чемпионаты «<лига>. Статистика» (их нет в списке чемпионатов) — пробуем запросы, считаем,
+        # сколько «УГЛ»-матчей и «статистических» чемпионатов в каждом ответе (сами ответы не сохраняем — большие)
+        disc = []
+        for u in ('https://www.olimp.bet/api/v4/0/line/multigenerator/interval?quantity=500&minCoefficient=1.01',
+                  'https://www.olimp.bet/api/v4/0/line/sports-with-competitions-with-events?vids%5B%5D=1%3A',
+                  'https://www.olimp.bet/api/v4/0/line/top/sports-with-competitions-with-events?vids%5B%5D=',
+                  'https://www.olimp.bet/api/v4/0/line/sports-with-categories-with-competitions?vids%5B%5D=1%3A',
+                  'https://www.olimp.bet/api/v4/0/line/categories-with-competitions?vids%5B%5D=1%3A'):
+            try:
+                r = pg.evaluate(PAGE_FETCH_JS, u) or {}
+            except Exception as e:
+                disc.append({'url': u, 'error': str(e)[:150]})
+                continue
+            t = r.get('t') or ''
+            comps = {}
+            for m in re.finditer(r'"competitionId":"(\d+)"[^{}]{0,200}?"competitionName":"([^"]*Статистика[^"]*)"', t):
+                comps[m.group(1)] = m.group(2)
+            for m in re.finditer(r'"id":"(\d+)"[^{}]{0,120}?"names":\{"0":"([^"]*Статистика[^"]*)"', t):
+                comps.setdefault(m.group(1), m.group(2))
+            disc.append({'url': u, 'status': r.get('s'), 'len': len(t), 'ugl_events': len(re.findall(r'"name":"УГЛ ', t)),
+                         'events': len(re.findall(r'"team1Name"', t)), 'stat_comps': len(comps),
+                         'stat_sample': list(comps.items())[:15], 'head': t[:300]})
+        out['discover'] = disc
         # -94: полный ответ страницы чемпионата — образец для чтения цен Олимпа (проверка разбора на настоящих данных)
         if q:
             out['sample_comp'] = full[q[0]][:450000]
