@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-68"
+VERSION = "2026.11.21-69"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2509,18 +2509,35 @@ let LASTP=null;
 const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
 // только растут — если счёт уже больше линии, «Б» выиграна, «М» проиграна целиком (для любых линий, и с возвратом)
+// -60/-63/-69: тоталы и инд. тоталы только растут. Для «Больше» нынешний счёт — худший исход, для «Меньше» — лучший.
+// Линии с возвратом (целые, четвертные) считаются по половинкам. -69 (владелец 22.11: 1-й тайм Б 1 при 0:1 —
+// «тут уже не проиграл»): «✓ уже не проиграна» / «выиграть уже нельзя»; в 1-м тайме, пока он идёт, счёт тайма = счёт матча.
 function decided(b){
  if(b.status!=='open'||!b.live||!b.oc||b.start_ts>Date.now()/1000)return '';
- const k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft'),sc=b.live[k];if(!sc)return '';
+ const lv=b.live,t=lv.timer,k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft');
+ let sc=lv[k];
+ if(!sc&&k==='h1'&&lv.ft&&t&&t.tsec!=null&&!t.ht&&t.tsec<3600)sc=lv.ft;      // идёт 1-й тайм (до перерыва)
+ if(!sc)return '';
  const m=/\(([-\d.]+)\)/.exec(b.oc);if(!m)return '';const line=parseFloat(m[1]);
  const n=b.base==='total'?sc[0]+sc[1]:(b.base==='tt1'?sc[0]:(b.base==='tt2'?sc[1]:null));
  if(n==null)return '';
  const over=b.oc.startsWith('Больше');
- if(b.live.fin&&!(n>line)){                        // -63: матч окончен по FotMob — итог уже известен, расчёт вот-вот
-  if(n===line)return '<span>↩ возврат</span><div class="mu sm">ровно '+n+', расчёт скоро</div>';
-  return (over?'<span class="neg">✗ проиграна</span>':'<span class="pos">✓ выиграна</span>')+'<div class="mu sm">'+n+' меньше '+line+', расчёт скоро</div>'}
- if(!(n>line))return '';
- return over?'<span class="pos">✓ уже выиграна</span><div class="mu sm">'+n+' больше '+line+'</div>':'<span class="neg">✗ уже проиграна</span><div class="mu sm">'+n+' больше '+line+'</div>';
+ const parts=(Math.round(Math.abs(line)*4)%2===1)?[line-0.25,line+0.25]:[line];
+ let r=parts.map(L=>n>L?1:(n===L?0:-1));if(!over)r=r.map(v=>-v);
+ const all=v=>r.every(x=>x===v),has=v=>r.includes(v),sub=x=>'<div class="mu sm">'+x+'</div>',now='сейчас '+n+', линия '+line;
+ const fin=lv.fin||(k==='h1'&&!!lv.h1);
+ if(fin){const tail=', расчёт скоро';
+  if(all(1))return '<span class="pos">✓ выиграна</span>'+sub(now+tail);
+  if(all(-1))return '<span class="neg">✗ проиграна</span>'+sub(now+tail);
+  if(all(0))return '<span>↩ возврат</span>'+sub(now+tail);
+  return (has(1)?'<span class="pos">✓ полвыигрыша</span>':'<span class="neg">✗ полпроигрыша</span>')+sub('половина — возврат · '+now+tail)}
+ if(over){
+  if(all(1))return '<span class="pos">✓ уже выиграна</span>'+sub(n+' больше '+line);
+  if(!has(-1))return '<span class="pos">✓ уже не проиграна</span>'+sub((has(1)?'минимум полвыигрыша':'минимум возврат')+' · '+now);
+  return ''}
+ if(all(-1))return '<span class="neg">✗ уже проиграна</span>'+sub(n+' больше '+line);
+ if(!has(1))return '<span class="neg">выиграть уже нельзя</span>'+sub((has(-1)?'максимум полвозврата':'максимум возврат')+' · '+now);
+ return '';
 }
 let POPSEL=null;
 function popBets(sel){
