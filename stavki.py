@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-54"
+VERSION = "2026.11.21-55"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2158,6 +2158,8 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
                 ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
     con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
+    # счёт и угловые идущих матчей с FotMob — когда у Фонбета в лайве угловых нет (владелец 22.11: «на FotMob вижу, в программе нет»)
+    con.execute('CREATE TABLE IF NOT EXISTS ext_live (match_id INT PRIMARY KEY, ft1 INT, ft2 INT, c1 INT, c2 INT, ts REAL)')
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -3197,6 +3199,40 @@ class Collector:
                                  (m['timerSeconds'], m.get('timerDirection'), m.get('timerUpdateTimestampMsec'), mid, 'ft'))
         self.con.commit()
 
+    def fotmob_live_step(self):
+        """идущие матчи с открытыми бумажными ставками: счёт и угловые с FotMob (matchDetails), раз в 8 с один матч,
+        каждый матч не чаще раза в 90 с"""
+        now = time.time()
+        if now - getattr(self, 'fml_last', 0) < 8 or self.browser is None:
+            return
+        self.fml_last = now
+        row = self.con.execute(
+            "SELECT p.match_id, l.url, m.home_en, m.away_en FROM paper2 p JOIN sofa_link l ON l.match_id = p.match_id"
+            " JOIN matches m ON m.match_id = p.match_id LEFT JOIN ext_live x ON x.match_id = p.match_id"
+            " WHERE p.status='open' AND p.start_ts < ? AND p.start_ts > ? AND l.url LIKE '%fotmob.com/match/%'"
+            " AND (x.ts IS NULL OR x.ts < ?) GROUP BY p.match_id ORDER BY COALESCE(x.ts, 0) LIMIT 1",
+            (now, now - 150 * 60, now - 90)).fetchone()
+        if not row or self.ext.page(self.browser, 'fotmob', 'https://www.fotmob.com/') is None:
+            return
+        mid, url, he, ae = row
+        fid = url.rstrip('/').split('/')[-1]
+        j = self.ext.get('fotmob', f'https://www.fotmob.com/api/data/matchDetails?matchId={fid}') or {}
+        teams = (j.get('header') or {}).get('teams') or []
+        if len(teams) != 2:
+            return
+        same = self.ext.pair(teams[0].get('name', ''), teams[1].get('name', ''), he or '', ae or '')
+        ft = [teams[0].get('score'), teams[1].get('score')]
+        c = None
+        for g in ((((j.get('content') or {}).get('stats') or {}).get('Periods') or {}).get('All') or {}).get('stats') or []:
+            for it in g.get('stats') or []:
+                if it.get('key') == 'corners' and isinstance(it.get('stats'), list) and len(it['stats']) == 2:
+                    c = list(it['stats'])
+        if same is False:
+            ft, c = ft[::-1], (c[::-1] if c else None)
+        self.con.execute('INSERT OR REPLACE INTO ext_live VALUES (?,?,?,?,?,?)',
+                         (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now))
+        self.con.commit()
+
     def sofa_link_step(self):
         """страница матча на Sofascore для окна «что там было» (владелец 22.11: статистика — на Sofascore)"""
         now = time.time()
@@ -3572,6 +3608,7 @@ class Collector:
                 try:
                     self.ext_step()
                     self.sofa_link_step()
+                    self.fotmob_live_step()
                 except Exception as e:
                     add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120], 'ext')
                 else:
@@ -3663,6 +3700,13 @@ def paper_stats(con, stake_rub):
         live.setdefault(lmid, {})[part] = [a1, a2]
         if part == 'ft':
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
+    for lmid, f1, f2, c1, c2 in con.execute('SELECT match_id, ft1, ft2, c1, c2 FROM ext_live WHERE ts > ?',
+                                             (time.time() - 300,)):
+        d = live.setdefault(lmid, {})
+        if 'c' not in d and c1 is not None and c2 is not None:
+            d['c'] = [c1, c2]                  # угловых нет в лайве конторы — берём FotMob
+        if 'ft' not in d and f1 is not None and f2 is not None:
+            d['ft'] = [f1, f2]
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
     surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
     for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair in con.execute(
