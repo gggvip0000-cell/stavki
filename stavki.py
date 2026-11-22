@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-72"
+VERSION = "2026.11.21-73"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2330,7 +2330,8 @@ td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd4
 .mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
 .mt tr.mg td{background:#1b2430;padding:6px 8px;border-bottom:none}.lft{color:#ffd400;font-weight:700;font-size:13px}
 .bt{font-weight:700}.mlink{text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}
-a.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:#fff;background:var(--c);border-radius:5px;padding:1px 7px;text-decoration:none;vertical-align:1px}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
+.mt td.bcell{white-space:nowrap}.mt td.rcell{width:120px;max-width:140px;font-size:13px}.mt .bkbtn{margin-left:0}
+a.bkbtn,span.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:#fff;background:var(--c);border-radius:5px;padding:1px 7px;text-decoration:none;vertical-align:1px}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
 .info .loch{background:#e5484d;color:#fff;border-radius:5px;padding:0 6px;font-weight:700}.info .loch b{color:#fff}
@@ -2589,7 +2590,8 @@ function popBets(sel){
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
   h+='<tr'+(isChg('b:'+b.id)?' class="chg" data-ck="b:'+b.id+'"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
-   +(b.status==='open'&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
+   +'<div class="sm">'+e(b.league)+'</div></td><td class="bcell"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'
+   +(b.bk_url?'<a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'<span class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'">'+e(b.bk)+'</span>')+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td class="rcell">'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex';watchChg()}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
