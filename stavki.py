@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-111"
+VERSION = "2026.11.21-112"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -5202,9 +5202,14 @@ class BasketMeasure:
             if 'start' not in m or abs(m['start'] - ev.get('startTime', 0)) > 15 * 60:
                 continue
             for swapped, (h, a) in ((False, (m['home'], m['away'])), (True, (m['away'], m['home']))):
+                # -112 (штурм 22.11: «Калгари Хитмен — Свифт Каррент» ↔ «Laval — Calgary Wranglers», «Брно U23 — Свитави» ↔
+                # «Ostrava — KP Brno» — пара проходила по одному совпавшему городу): каждая команда ≥0.6, пометки (U23, 2, B…) равны
+                if team_marks(lat_key(ev.get('team1'))) != team_marks(lat_key(h)) or \
+                        team_marks(lat_key(ev.get('team2'))) != team_marks(lat_key(a)):
+                    continue
                 s1, s2 = lat_sim(ev.get('team1'), h), lat_sim(ev.get('team2'), a)
                 sc = (s1 + s2) / 2
-                if min(s1, s2) >= 0.45 and sc > best_s:
+                if min(s1, s2) >= 0.6 and sc > best_s:
                     best, best_s = (pid, swapped), sc
         res = best if best_s >= 0.6 else None
         self.map[eid], self.map_try[eid] = res, time.time()
