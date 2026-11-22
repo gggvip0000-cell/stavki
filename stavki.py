@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-80"
+VERSION = "2026.11.21-81"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2256,7 +2256,7 @@ def migrate_old_paper(con):
 PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ставки — можно ставить сейчас</title>
 <style>
 *{box-sizing:border-box}
-body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#0f1419;color:#e6e6e6}
+body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#0f1419;color:#e6e6e6;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 header{position:sticky;top:0;z-index:40;padding:12px 20px;background:#151c24;border-bottom:1px solid #253040;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 h1{font-size:20px;margin:0}
 .st{font-size:12px;color:#8696a6}
@@ -2339,7 +2339,7 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
  .pp{padding:8px!important}.pp .ptab th,.pp .ptab td{padding:5px 2px}.ptab .chev{width:12px}
  .ptab tr.sub td:first-child{padding-left:8px;white-space:nowrap}.ptab tr.grp td:first-child{white-space:nowrap}
  .ptab tr.grp .kind.ks{font-size:10px;padding:2px 4px;min-width:0!important}
- header{position:static}header h1{font-size:16px}header .st{font-size:11px}
+ header{position:static}.livebtn{margin-left:8px}header h1{font-size:16px}header .st{font-size:11px}
 }
 /* -80: телефон — три колонки контор, короткие карточки */
 .mcols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;align-items:start;margin-bottom:6px}
@@ -2355,7 +2355,7 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .mcol a.bet.mb.nbet{box-shadow:0 0 0 2px #ffd400 inset,0 0 8px #ffd40088}
 .mk{font-size:9px;font-weight:800;color:#7fd1b9;letter-spacing:.2px;white-space:nowrap;overflow:hidden}.mk .star{font-size:10px;margin:0}
 .mr{display:flex;justify-content:space-between;align-items:baseline;gap:4px}
-.mbt{font-size:14px;font-weight:700;white-space:nowrap}.mb.h .mbt{color:#9be15d}.mb.a .mbt{color:#c69cff}.mod{font-size:14px;font-weight:800;color:#fff}
+.mbt{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;min-width:0}.mod{flex:none}.mb.h .mbt{color:#9be15d}.mb.a .mbt{color:#c69cff}.mod{font-size:14px;font-weight:800;color:#fff}
 .mi{display:flex;gap:4px;align-items:center;font-size:11px;margin-top:1px}.mi .evx{color:#5fd38d;font-weight:800}.mi .chp{padding:0 4px;font-size:10px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
@@ -2525,14 +2525,14 @@ async function tick(){
   try{localStorage.setItem('seen',JSON.stringify(SEEN));localStorage.setItem('newk',JSON.stringify(NEWK));localStorage.setItem('newv',JSON.stringify(NEWV))}catch(e){}
   document.getElementById('cols').innerHTML=h;watchNew();
   // ставка — одной строкой: длинная уменьшается, пока не поместится
-  for(const b of document.querySelectorAll('.bl,.btn .nm')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
+  for(const b of document.querySelectorAll('.bl,.btn .nm,.mcol .mbt,.mcol .mtm span')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
   const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.noname?', без английских названий (искать не по чему) '+sf.noname:'')+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const ph=s.prohod||{},pe=document.getElementById('phst');
-  pe.innerHTML=ph.sost==='работает'?'<span class="pos">работает</span> · ссылку пришлёт бот на слово «сайт»'+(ph.link?' · <span class="mu">'+ph.link+'</span>':'')+' · <a href="#" onclick="document.getElementById(\'phform\').style.display=\'\';return false">сменить пароль</a>'
+  pe.innerHTML=ph.sost==='работает'?'<span class="pos">работает</span> · ссылку пришлёт бот по команде /site'+(ph.link?' · <span class="mu">'+ph.link+'</span>':'')+' · <a href="#" onclick="document.getElementById(\'phform\').style.display=\'\';return false">сменить пароль</a>'
    :((ph.sost||'выключен')+(ph.why?' — '+ph.why:''));
   if(ph.sost==='работает'&&!PHEDIT)document.getElementById('phform').style.display='none';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
@@ -2723,6 +2723,13 @@ function trackChg(p){
  for(const k in CHV)if(!CHG[k]&&now-CHV[k]>600000)delete CHV[k];
  saveChg();
 }
+// -81 (владелец 22.11, снимок с телефона: «не влезла таблица» — у него крупнее шрифт и двузначные числа): на телефоне
+// таблица, если шире места, уменьшается целиком (zoom), пока не влезет — при любом размере шрифта в браузере
+function fitTable(el){if(!isPhone())return;const t=el.querySelector('.ptab');if(!t)return;
+ t.style.zoom='';const p=t.parentElement,cs=getComputedStyle(p);
+ const w=p.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
+ if(t.scrollWidth>w+1)t.style.zoom=Math.max(0.55,(w-1)/t.scrollWidth).toFixed(3)}
+window.addEventListener('resize',()=>{const el=document.getElementById('paper');if(el)fitTable(el)});
 // -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
 function renderPaper(p){
@@ -2748,6 +2755,7 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
+ fitTable(el);
  const pe=document.getElementById('pop');
  if(pe&&pe.style.display==='flex'&&POPSEL){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
  watchChg();
@@ -2758,7 +2766,7 @@ function renderPaper(p){
 let PHEDIT=false;
 async function phset(){const p=document.getElementById('phpass').value;const m=document.getElementById('phmsg');
  try{const r=await fetch('/api/phone_pass',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({p})});const d=await r.json();
-  m.innerHTML=d.ok?'<span class="pos">сохранён — через минуту бот пришлёт ссылку на слово «сайт»</span>':'<span class="bad">'+(d.why||'не сохранился')+'</span>';
+  m.innerHTML=d.ok?'<span class="pos">сохранён — через минуту бот пришлёт ссылку по команде /site</span>':'<span class="bad">'+(d.why||'не сохранился')+'</span>';
   if(d.ok)document.getElementById('phpass').value=''}catch(e){m.textContent='не сохранился'}}
 async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
  try{await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:k})})}catch(e){}}
@@ -4757,6 +4765,11 @@ def bk_stats_recon(browser, con, wait_ms=20000):
             pass
 
 
+# -81: команды бота через «/» (имена — только латиница, так требует Telegram); слова «статус»/«сайт» работают как раньше
+BOT_COMMANDS = [{'command': 'status', 'description': 'как работает программа: цены, бумага'},
+                {'command': 'site', 'description': 'ссылка на сайт программы для телефона'}]
+
+
 class Watchdog:
     """-78, пункт 1 после Совета (владелец 22.11 «согласен»): программа сама сообщает в Telegram, что жива и что сломалось.
     - при запуске: «🔄 Программа запущена» (так видно и перезапуск после обновления/падения/сна);
@@ -4764,7 +4777,7 @@ class Watchdog:
     - тревога, если Pinnacle молчит 15 мин («проверьте VPN») или контора — 10 мин; повтор не чаще раза в час;
       «✅ Починилось», когда вернулось;
     - цикл программы стоял > 5 мин (ноутбук спал) — «💤 Программа стояла с … до …»;
-    - на сообщение боту «статус» — та же сводка в ответ.
+    - на /status (или «статус») боту — та же сводка в ответ; /site — ссылка на сайт для телефона.
     Окно не трогает. Не даёт Windows уснуть от бездействия (SetThreadExecutionState), пока программа работает;
     закрытую крышку это не отменяет — это настройка Windows."""
     SUMMARY_AT = ('07:30', '19:30')
@@ -4777,6 +4790,7 @@ class Watchdog:
         self.sent_summary = set()
         self.upd_offset = None
         self.last_poll = 0
+        self.cmds_set = False
         self.started = time.time()
         flag, by_update = HERE / 'restart_update.flag', False
         try:
@@ -4836,6 +4850,9 @@ class Watchdog:
             return
         self.last_poll = now
         try:
+            if not self.cmds_set:      # -81 (владелец 22.11: «сделай через / команды в боте») — меню команд у поля ввода
+                r = self.tg.api('setMyCommands', {'commands': BOT_COMMANDS}, timeout=15)
+                self.cmds_set = bool(r.get('ok'))
             if self.upd_offset is None:                       # старые сообщения пропускаем
                 r = self.tg.api('getUpdates', {'offset': -1, 'timeout': 0}, timeout=15)
                 res = r.get('result') or []
@@ -4845,13 +4862,16 @@ class Watchdog:
             for u in r.get('result') or []:
                 self.upd_offset = u['update_id'] + 1
                 txt = ((u.get('message') or {}).get('text') or '').lower()
-                if 'статус' in txt or 'status' in txt:
+                if txt.startswith('/start') or txt.startswith('/help'):
+                    self.tg.send('Команды (кнопка «Меню» слева от поля ввода):\n'
+                                 + '\n'.join(f"/{c['command']} — {c['description']}" for c in BOT_COMMANDS))
+                elif 'статус' in txt or 'status' in txt:
                     self.tg.send(self.summary(now))
                 elif 'сайт' in txt or 'ссылк' in txt or 'site' in txt:
                     pr = PROHOD
                     if pr and pr.link:
                         self.tg.send(f'Сайт программы с телефона: {pr.link}\nПароль — тот, что вы задали в «Подробнее». '
-                                     'Ссылка меняется после перезапуска программы — тогда напишите «сайт» снова.')
+                                     'Ссылка меняется после перезапуска программы — тогда снова /site.')
                     else:
                         self.tg.send('Сайт с телефона пока не работает: ' + ((pr and pr.why) or 'проход ещё не поднят') +
                                      '. Пароль задаётся на ноутбуке: «Подробнее» → «Вход с телефона».')
