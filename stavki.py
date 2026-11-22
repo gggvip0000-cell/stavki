@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-82"
+VERSION = "2026.11.21-83"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2530,6 +2530,7 @@ async function tick(){
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
   const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.noname?', без английских названий (искать не по чему) '+sf.noname:'')+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
+  if(s.nbk&&s.nbk.length)m+='<p class="st">Проверка контор (пускает ли сайт программу): '+s.nbk.map(x=>'<b>'+x[0]+'</b> — '+x[1]).join(' · ')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const ph=s.prohod||{},pe=document.getElementById('phst');
   pe.innerHTML=ph.sost==='работает'?'<span class="pos">работает</span> · ссылку пришлёт бот по команде /site'+(ph.link?' · <span class="mu">'+ph.link+'</span>':'')+' · <a href="#" onclick="document.getElementById(\'phform\').style.display=\'\';return false">сменить пароль</a>'
@@ -4159,14 +4160,25 @@ class Collector:
                         self.watch.step()
                     except Exception as e:
                         add_error('сообщения о работе (Telegram): ' + str(e).splitlines()[0][:120], 'watch')
-                    if getattr(self, 'nbk_ts', None) is None:
-                        self.nbk_ts = time.time() - 12 * 3600 + 600            # разведка новых контор — через 10 мин, потом раз в 12 ч
-                    if time.time() - self.nbk_ts > 12 * 3600 and self.browser is not None:
+                    # -83: разведка контор — по одной за раз (иначе цикл стоит минутами): первая через 5 мин после запуска,
+                    # дальше раз в 3 мин; весь круг — раз в 12 ч; не пустившие больше не пробуются
+                    if getattr(self, 'nbk_queue', None) is None:
+                        self.nbk_queue, self.nbk_ts, self.nbk_round = list(NEW_BK_SITES), time.time() - 180 + 300, time.time()
+                        self.new_bk = {'made': None, 'sites': []}
+                    if not self.nbk_queue and time.time() - self.nbk_round > 12 * 3600:
+                        shut = {x['bk'] for x in self.new_bk['sites'] if 'не пускает' in x.get('verdict', '')}
+                        self.nbk_queue, self.nbk_round = [x for x in NEW_BK_SITES if x[0] not in shut], time.time()
+                    if self.nbk_queue and time.time() - self.nbk_ts > 180 and self.browser is not None:
                         self.nbk_ts = time.time()
+                        site = self.nbk_queue.pop(0)
                         try:
-                            self.new_bk = new_bk_recon(self.browser)
+                            r = new_bk_recon(self.browser, wait_ms=12000, sites=[site])['sites']
                         except Exception as e:
-                            self.new_bk = {'error': str(e).splitlines()[0][:200]}
+                            r = [{'bk': site[0], 'home': site[1], 'error': str(e).splitlines()[0][:200], 'verdict': 'ошибка разведки'}]
+                        self.new_bk['sites'] = [x for x in self.new_bk['sites'] if x['bk'] != site[0]] + r
+                        self.new_bk['made'] = now_str()
+                        with STATE.lock:
+                            STATE.status['nbk'] = [[x['bk'], x.get('verdict', '')] for x in self.new_bk['sites']]
                     if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
@@ -4911,16 +4923,39 @@ class Watchdog:
             self.tg.send('✅ Починилось: ' + ('цены Pinnacle снова идут.' if k == 'pin' else f'цены {k[5:]} снова идут.'))
 
 
-NEW_BK_SITES = (('BetBoom', 'https://betboom.ru/'), ('Лига Ставок', 'https://www.ligastavok.ru/'))
+# -83 (владелец 22.11: BetBoom и Лига Ставок не пускают программу — защита Qrator; обходить её не делаем; «проверь вообще
+# все доступные бк, посмотрим, что открывается»): легальные конторы из списка ФНС (bookmaker-ratings.ru, 22.11) кроме
+# уже подключённых (Фонбет, PARI, Винлайн), не пустивших (BetBoom, Лига Ставок), не принимающих ставки (Тенниси с 01.09.2026,
+# Спортбет — не онлайн). Адреса сайтов — по памяти, НЕ проверены: что открылось — видно в отчёте (final_url, текст).
+# Программа заходит как есть: если сайт закрыт защитой — записываем «не пускает» и дальше не пробуем.
+NEW_BK_SITES = (('Мелбет', 'https://melbet.ru/'), ('Бетсити', 'https://betcity.ru/'), ('Олимп', 'https://www.olimp.bet/'),
+                ('Марафон', 'https://www.marathonbet.ru/'), ('Леон', 'https://leon.ru/'), ('BETTERY', 'https://bettery.ru/'),
+                ('Бет-М', 'https://betm.ru/'), ('Зенит', 'https://zenit.win/'), ('Балтбет', 'https://baltbet.ru/'))
+BLOCK_MARKS = ('qrator', 'доступ запрещён', 'доступ запрещен', 'заблокирован системой защиты', 'just a moment',
+               'checking your browser', 'ddos-guard', 'attention required', 'access denied', 'вы не робот')
 
 
-def new_bk_recon(browser, wait_ms=25000):
+def bk_verdict(site):
+    """что вышло: не пускает / открылся, есть ли данные о коэффициентах (json или websocket)"""
+    if site.get('error'):
+        return 'не открылся: ' + site['error'][:80]
+    txt = (site.get('page_text') or '').lower()
+    urls = ' '.join(r.get('url', '') for r in site.get('responses') or []).lower()
+    if any(m in txt for m in BLOCK_MARKS) or '__qrator' in urls or any(str(r.get('status')) in ('401', '403')
+                                                                       and r.get('url', '').rstrip('/') == site.get('home', '').rstrip('/')
+                                                                       for r in site.get('responses') or []):
+        return 'не пускает программу (защита)'
+    js = sum(1 for r in site.get('responses') or [] if r.get('len'))
+    return f"открылся: ответов с данными {js}, websocket {len(site.get('websockets') or [])}"
+
+
+def new_bk_recon(browser, wait_ms=25000, sites=None):
     """-78, пункт 2 после Совета (владелец 22.11: оставить PARI, вместо Фонбета — новая независимая контора;
     проверить BetBoom и Лигу Ставок). Разведка: открыть сайт, перейти на футбол, 25 с записывать, откуда страница берёт
     коэффициенты: адреса ответов (json), куски больших ответов, websocket и первые кадры, текст страницы. Ничего не
     нажимает, кроме перехода по ссылке «Футбол». Только в отчёт."""
     out = []
-    for name, home in NEW_BK_SITES:
+    for name, home in (sites if sites is not None else NEW_BK_SITES):
         resp, wss = [], []
         pg = browser.new_page(locale='ru-RU')
         try:
@@ -4965,8 +5000,10 @@ def new_bk_recon(browser, wait_ms=25000):
                 text = 'текст не получен: ' + str(x)[:80]
             out.append({'bk': name, 'home': home, 'football_url': foot, 'final_url': pg.url, 'responses': resp,
                         'websockets': wss, 'page_text': text})
+            out[-1]['verdict'] = bk_verdict(out[-1])
         except Exception as x:
             out.append({'bk': name, 'home': home, 'error': str(x).splitlines()[0][:200], 'responses': resp[:50]})
+            out[-1]['verdict'] = bk_verdict(out[-1])
         finally:
             try:
                 pg.close()
