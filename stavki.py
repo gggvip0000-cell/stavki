@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-79"
+VERSION = "2026.11.21-80"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2336,7 +2336,27 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
  .mt td{display:inline-block;border:0!important;padding:2px 6px!important;vertical-align:middle}
  .mt td:first-child,.mt td.bcell,.mt td.rcell{display:block;width:auto;max-width:none}.mt tr.mg td{display:block}
  .bet .bl{font-size:14px}.mo{font-size:11px}
+ .pp{padding:8px!important}.pp .ptab th,.pp .ptab td{padding:5px 2px}.ptab .chev{width:12px}
+ .ptab tr.sub td:first-child{padding-left:8px;white-space:nowrap}.ptab tr.grp td:first-child{white-space:nowrap}
+ .ptab tr.grp .kind.ks{font-size:10px;padding:2px 4px;min-width:0!important}
+ header{position:static}header h1{font-size:16px}header .st{font-size:11px}
 }
+/* -80: телефон — три колонки контор, короткие карточки */
+.mcols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;align-items:start;margin-bottom:6px}
+.mcol{min-width:0}
+.mch{font-size:13px;font-weight:800;color:var(--c);border-bottom:3px solid var(--c);padding:0 2px 3px;margin-bottom:5px;white-space:nowrap;overflow:hidden}
+.mem{font-size:11px;color:#6b7785;padding:4px 2px}
+.mc{background:#1a232d;border-radius:7px;padding:6px 5px 5px;margin-bottom:5px}.mc.stale{opacity:.55}
+.mtm{display:block;text-decoration:none;font-size:12px;font-weight:700;line-height:15px}
+.mtm span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mtm .th{color:#9be15d}.mtm .ta{color:#c69cff}
+.mw{font-size:10px;color:#8696a6;margin:1px 0 2px}
+.mcol a.bet.mb{display:block;background:#353c48;border-radius:6px;padding:3px 5px 4px;margin:4px 0 0;border:0;border-left:3px solid #5d6876;text-decoration:none;color:#e6e6e6;font-size:inherit;font-weight:400}
+.mcol a.bet.mb.h{border-left-color:#9be15d}.mcol a.bet.mb.a{border-left-color:#c69cff}.mcol a.bet.mb.best{box-shadow:0 0 0 2px #f2c230 inset}
+.mcol a.bet.mb.nbet{box-shadow:0 0 0 2px #ffd400 inset,0 0 8px #ffd40088}
+.mk{font-size:9px;font-weight:800;color:#7fd1b9;letter-spacing:.2px;white-space:nowrap;overflow:hidden}.mk .star{font-size:10px;margin:0}
+.mr{display:flex;justify-content:space-between;align-items:baseline;gap:4px}
+.mbt{font-size:14px;font-weight:700;white-space:nowrap}.mb.h .mbt{color:#9be15d}.mb.a .mbt{color:#c69cff}.mod{font-size:14px;font-weight:800;color:#fff}
+.mi{display:flex;gap:4px;align-items:center;font-size:11px;margin-top:1px}.mi .evx{color:#5fd38d;font-weight:800}.mi .chp{padding:0 4px;font-size:10px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
@@ -2463,10 +2483,12 @@ async function tick(){
    const fresh=closed&&keys.some(k=>!(SEEN[sk]||[]).includes(k));
    h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+(fresh?'<span class="newb">НОВОЕ</span>':'')+'</div>';
    if(closed)continue;
-   h+='<div class="cols">';
+   const PH=isPhone();
+   h+=PH?'<div class="mcols">':'<div class="cols">';
    for(const b of bkCols){
     const c=COLORS[b]||'#7fb6ff';const rs=srows.filter(v=>v.bookmaker===b);
     const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
+    if(PH){h+=phoneCol(b,c,rs,byM,best,s.feeds[b]);continue}
     // -62 (владелец 22.11: «порядок по их появлению: появилась — осталась сверху»): свежие сверху — и карточки, и ставки в них
     // (held — сколько секунд ставка держится; после перезапуска программы у всех одинаково — тогда по надёжности)
     const hcmp=(a,b)=>Math.abs(a-b)<5?0:a-b;
@@ -2524,6 +2546,37 @@ async function tick(){
   document.getElementById('more').innerHTML=m;
  }catch(e){document.getElementById('st').innerHTML=UPDT?'<span class="st">программа перезапускается после обновления — окно вернётся само</span>':'<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
+// -80 (владелец 22.11): на телефоне конторы — тремя колонками, карточки короче и ближе к квадрату:
+// команды, начало, вид ставки, ставка, кф, перевес, шанс. Нажатие на ставку — матч на сайте конторы.
+const isPhone=()=>window.matchMedia&&matchMedia('(max-width:700px)').matches;
+function whenS(ts){const d=new Date(ts*1000),n=new Date();const left=Math.round((ts*1000-n)/60000);
+ if(left<120)return 'через '+left+' мин';
+ const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
+ const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
+ return (dd===nd?'':dd.slice(0,5)+' ')+hm}
+const shortBet=o=>String(o||'').replace(/^Больше \(([-\d.]+)\)$/,'Б $1').replace(/^Меньше \(([-\d.]+)\)$/,'М $1');
+function phoneCol(b,c,rs,byM,best,f){
+ const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const vw=v=>v.view||['m','',v.market_name||'',9];
+ const hcmp=(a,b)=>Math.abs(a-b)<5?0:a-b;
+ const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>hcmp(x.held||0,y.held||0)||(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>hcmp(Math.min(...x.map(v=>v.held||0)),Math.min(...y.map(v=>v.held||0)))||(Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel))));
+ const live=f&&f.last_ok&&(Date.now()/1000-f.last_ok)<90;
+ let h='<div class="mcol" style="--c:'+c+'"><div class="mch">'+b+(live?'':' <span class="bad2" title="цены с odds.ru, могут отставать — сверить на сайте конторы">⚠</span>')+'</div>';
+ if(!cards.length)h+='<div class="mem">нет ставок</div>';
+ const KN=['ИСХОД','ТОТАЛ','ФОРА','ИНД. ТОТАЛ','ИНД. ТОТАЛ'];
+ for(const vs of cards){
+  const v0=vs[0];const tm=(v0.match||'').split(' — ');const url=v0.bk_url||(v0.url+'bet/');
+  const age=Math.max(...vs.map(v=>v.age));const pa=vs.map(v=>v.pin_age).filter(x=>x!=null);const pin=pa.length?Math.max(...pa):null;
+  const old=age>180||(pin!=null&&pin>180);
+  h+='<div class="mc'+(old?' stale':'')+'"><a class="mtm" href="'+url+'" target="_blank"><span class="th">'+esc(tm[0])+'</span><span class="ta">'+esc(tm[tm.length-1])+'</span></a><div class="mw">'+whenS(v0.start_ts)+'</div>';
+  for(const v of vs){
+   const [,side,,ord]=vw(v);const star=best.has(v);const nw=isNew(v);const ok=okMark(v);
+   h+='<a class="bet mb '+side+(star?' best':'')+(nw?' nbet':'')+'" href="'+url+'" target="_blank"'+(nw?' data-nk="'+esc(nkey(v)).replace(/"/g,'&quot;')+'"':'')+' title="'+esc(v.bet||betText(v))+'">'
+    +'<div class="mk">'+(KN[ord]||esc(vw(v)[2]))+(star?' <span class="star">★</span>':'')+'</div>'
+    +'<div class="mr"><span class="mbt">'+esc(shortBet(v.outcome))+'</span><span class="mod">'+Number(v.odds).toFixed(2)+'</span></div>'
+    +'<div class="mi"><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span class="chp '+(v.chance>=0.55?'hich':(v.chance<0.40?'loch':'midch'))+'">'+Math.round(v.chance*100)+'%</span>'+(ok.indexOf('⚠')>=0?'<span class="bad2" title="'+esc(ok.replace(/<[^>]+>/g,''))+'">⚠</span>':'')+'</div></a>'}
+  h+='</div>'}
+ return h+'</div>'}
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
 let NEWK={};try{NEWK=JSON.parse(localStorage.getItem('newk')||'{}')}catch(e){}
@@ -2543,10 +2596,14 @@ function watchNew(){
   setTimeout(()=>dropNew(k),Math.max(0,3000-(Date.now()-NEWV[k])));NOBS.unobserve(e.target)}},{threshold:0.5});
  for(const el of document.querySelectorAll('.bet.nbet'))NOBS.observe(el)}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchNew()});
-let SCOL={};try{SCOL=JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
-function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
-let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
-function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
+// -80 (владелец 22.11: «когда с телефона открываю — всё в свёрнутом виде, что надо, разверну»): на телефоне при каждом
+// открытии страницы разделы и группы таблицы свёрнуты; развёрнутое держится, пока страница открыта
+const PHONE0=isPhone();
+let SCOL={};try{SCOL=PHONE0?{m:true,h1:true,c:true}:JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
+function scol(k){SCOL[k]=!SCOL[k];if(!PHONE0)try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
+let PCOL={};try{PCOL=PHONE0?{}:JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
+const pclosed=g=>(g in PCOL)?!!PCOL[g]:PHONE0;
+function pcol(g){PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
 const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча','live':'матчи идут сейчас'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
@@ -2666,6 +2723,8 @@ function trackChg(p){
  for(const k in CHV)if(!CHG[k]&&now-CHV[k]>600000)delete CHV[k];
  saveChg();
 }
+// -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
+const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
 function renderPaper(p){
  LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
@@ -2673,7 +2732,7 @@ function renderPaper(p){
  const z=x=>x?x:'·';
  const ck=(sel,k)=>{const key='c:'+sel+'|'+k;return isChg(key)?' chg" data-ck="'+key.replace(/"/g,'&quot;'):''};
  const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
- const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
+ const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  const nl=(p.bets||[]).filter(isLiveBet).length;
@@ -2682,9 +2741,9 @@ function renderPaper(p){
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
-  const closed=!!PCOL[G.part];
+  const closed=pclosed(G.part);
   h+='<tr class="grp" onclick="if(!event.target.closest(\'[data-pop]\'))pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
-  if(!closed)for(const r of G.rows)h+='<tr class="sub"><td>'+(r.name||r.val)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>';
+  if(!closed)for(const r of G.rows){const nm=r.name||r.val;const sn=SHN[nm];h+='<tr class="sub"><td>'+(sn?'<span class="lg">'+nm+'</span><span class="sh">'+sn+'</span>':nm)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>'}
  }
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
