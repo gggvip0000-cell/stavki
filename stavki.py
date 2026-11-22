@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-103"
+VERSION = "2026.11.21-104"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -390,6 +390,15 @@ STRATEGIES = [
      lambda v: v['ev'] >= 0.08 and v['odds'] <= 4.0, 'rel'),
     ('Д', 'только угловые: перевес от 3%, кф до 4, лучший по надёжности (проверка)',
      lambda v: v['ev'] >= 0.03 and v['odds'] <= 4.0 and split_fam(event_of(v))[0] == 'c_', 'rel'),
+    # -104 (владелец 22.11: «золотая середина между Б и В… а можно эти все добавить?»): на прошлых матчах держались на обеих
+    # половинах — Е: перевес от 5% и шанс от 45% (~53% выигрышей, CLV +7.5%); Ж: «надёжность» от 0.05 (CLV +7.7%);
+    # З: «надёжность» от 0.08 (CLV +12.5%, ставок мало). Только для проверки, владельцу не показываются.
+    ('Е', 'перевес от 5% и шанс от 45%, кф до 4, лучший по надёжности (проверка)',
+     lambda v: v['ev'] >= 0.05 and v['chance'] >= 0.45 and v['odds'] <= 4.0, 'rel'),
+    ('Ж', 'надёжность от 0.05, кф до 4 (проверка)',
+     lambda v: v['rel'] >= 0.05 and v['odds'] <= 4.0, 'rel'),
+    ('З', 'надёжность от 0.08, кф до 4 (проверка)',
+     lambda v: v['rel'] >= 0.08 and v['odds'] <= 4.0, 'rel'),
 ]
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
@@ -2481,10 +2490,12 @@ def pick_for_strategies(rows):
     return out
 
 
-def backfill_new_strategies(con, codes=('Г', 'Д')):
+def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З')):
     """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
     для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
-    if con.execute(f"SELECT COUNT(*) FROM paper2 WHERE strategy IN ({','.join('?' * len(codes))})", codes).fetchone()[0]:
+    have = {c for (c,) in con.execute('SELECT DISTINCT strategy FROM paper2')}
+    codes = tuple(c for c in codes if c not in have)       # заполняется задним числом только способ, у которого ещё пусто
+    if not codes:
         return
     meta = {m: (t, lg) for m, t, lg in con.execute('SELECT match_id, title, league FROM matches')}
     rows = []
@@ -2512,7 +2523,7 @@ def backfill_new_strategies(con, codes=('Г', 'Д')):
                           v['odds'], v['fair'], v['ev'], v['rel'], v.get('pin_age'), event_of(v))).rowcount
     con.commit()
     if n:
-        log(f'способы Г/Д: по журналу записано задним числом {n} ставок')
+        log(f'способы {"/".join(codes)}: по журналу записано задним числом {n} ставок')
 
 
 def migrate_old_paper(con):
