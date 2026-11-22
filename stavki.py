@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-109"
+VERSION = "2026.11.21-110"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2175,7 +2175,8 @@ class OlimpFeed:
         self.cev = {}           # id «УГЛ»-события → событие
         self.comp_ts = {}       # id чемпионата → когда обновлён
         self.comp_start = {}    # id чемпионата → ближайшее начало матча
-        self.stat = {'full_bytes': 0, 'full_events': 0, 'comp_fetches': 0}
+        self.cdet, self.cdet_ts, self.cdet_try = {}, {}, {}   # -110: роспись «УГЛ»-события, когда получена, когда пробовали
+        self.stat = {'full_bytes': 0, 'full_events': 0, 'comp_fetches': 0, 'corner_details': 0}
 
     def start(self, browser):
         self.page = browser.new_page(locale='ru-RU')
@@ -2238,9 +2239,30 @@ class OlimpFeed:
                 self.comp_ts[cid] = now
                 self.take(olimp_events(json.loads(self.get(f'competitions-with-events?vids%5B%5D={cid}%3A'))), now)
                 self.stat['comp_fetches'] += 1
-        for d in (self.ev, self.cev):
+            # -110 (владелец 22.11 «да»): инд. тоталы угловых есть только в росписи «УГЛ»-события (~6–20 КБ) — по 2 за опрос:
+            # матч в ближайший час — раз в 60 с, 3 ч — 90 с, 12 ч — 10 мин
+            cdue = []
+            for uid, e in self.cev.items():
+                left = (e.get('startDateTime') or 0) - now
+                if left <= 60:
+                    continue
+                every = 60 if left < 3600 else (90 if left < 3 * 3600 else (600 if left < 12 * 3600 else None))
+                if every and now - self.cdet_try.get(uid, 0) > every:
+                    cdue.append((left, uid))
+            for _, uid in sorted(cdue)[:2]:
+                self.cdet_try[uid] = now
+                for e in olimp_events(json.loads(self.get(f'events?vids%5B%5D={uid}%3A&main=false'))):
+                    if str(e.get('id')) == uid:
+                        self.cdet[uid], self.cdet_ts[uid] = e, time.time()
+                        if e.get('parentId'):
+                            self.touched[str(e['parentId'])] = now
+                self.stat['corner_details'] += 1
+        for d in (self.ev, self.cev, self.cdet):
             for eid in [k for k, e in d.items() if (e.get('startDateTime') or 0) < now - 3 * 3600]:
                 d.pop(eid, None)
+        for uid in [k for k in self.cdet_try if k not in self.cev and k not in self.cdet]:
+            self.cdet_try.pop(uid, None)
+            self.cdet_ts.pop(uid, None)
         self.last_ok = now
         self.fails = 0
 
@@ -2257,9 +2279,13 @@ class OlimpFeed:
 
     def odds_of(self, eid):
         out = olimp_markets(self.ev.get(eid) or {})
-        c = self.cev.get(self.kid.get(eid))
+        uid = self.kid.get(eid)
+        c = self.cev.get(uid)
         if c:
             out.update(olimp_markets(c))
+        d = self.cdet.get(uid)            # -110: роспись угловых — только свежая (не старше OLIMP_MAX_AGE), иначе цены не берём
+        if d and time.time() - self.cdet_ts.get(uid, 0) <= OLIMP_MAX_AGE:
+            out.update(olimp_markets(d))
         return out
 
     def match_odds(self, ev):
