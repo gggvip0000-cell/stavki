@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-69"
+VERSION = "2026.11.21-70"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2315,6 +2315,8 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+.updon{background:#ffd400;color:#111;font-weight:700;padding:6px 12px;border-radius:8px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
+.updok{background:#3fae5a;color:#fff;font-weight:700;padding:6px 12px;border-radius:8px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
@@ -2389,14 +2391,27 @@ function okMark(v){const p=[];
  if(v.source!=='сайт')p.push('кф с odds.ru — сверить');else if(v.age>180)p.push('кф не обновлялся '+fmt(v.age));
  if(v.pin_age==null)p.push('нет цены Pinnacle');else if(v.pin_age>180)p.push('Pinnacle '+fmt(v.pin_age)+' назад');
  return p.length?'<span class="bad2">⚠ '+p.join(' · ')+'</span>':'<span class="okm" title="кф с сайта конторы и цена Pinnacle свежие">✓</span>'}
+// -70 (владелец 22.11: «нажимаю на кнопку — не понимаю, запустилось обновление или нет»): сразу после нажатия — жёлтая
+// мигающая надпись с секундомером; пока программа перезапускается, надпись остаётся; после — 20 с зелёное «✓ Обновлено».
+let UPDT=0;try{UPDT=+localStorage.getItem('updt')||0}catch(e){}
+function startUpdate(v){UPDT=Date.now();try{localStorage.setItem('updt',UPDT);localStorage.setItem('updto',v)}catch(e){}
+ showUpdating();post('/api/update')}
+function showUpdating(){const u=document.getElementById('upd');const sec=Math.round((Date.now()-UPDT)/1000);
+ u.innerHTML='<span class="updon">⏳ Обновление запущено · '+sec+' с · программа перезапускается, окно обновится само (обычно до минуты)</span>'}
 async function tick(){
+ const updating=UPDT&&Date.now()-UPDT<5*60000;
+ if(updating)showUpdating();
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
-  if(s.version!==PAGE_VERSION){location.reload();return}
+  if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
   const u=document.getElementById('upd');
-  if(s.restarting)u.innerHTML='<span class="st">Обновляюсь… окно вернётся само примерно через минуту</span>';
-  else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="post(\'/api/update\')">Обновить до версии '+s.update_available+'</button>';
+  let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
+  if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено до версии '+s.version+'</span>';
+   setTimeout(()=>{try{localStorage.removeItem('updok')}catch(e){}},20000)}
+  else if(s.restarting||updating)showUpdating();
+  else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="startUpdate(\''+s.update_available+'\')">Обновить до версии '+s.update_available+'</button>';
   else u.innerHTML='<span class="ver">версия '+s.version+'</span> <button class="lbtn" onclick="post(\'/api/check_update\');this.textContent=\'проверяю…\'">проверить обновления</button>';
+  if(!s.restarting&&!updating&&UPDT){UPDT=0;try{localStorage.removeItem('updt')}catch(e){}}
   let st='обновлено '+s.now+' · матчей в работе '+s.tracked;
   const pf=s.feeds&&s.feeds['Pinnacle'];
   if(pf&&pf.last_ok&&(Date.now()/1000-pf.last_ok)<120)st+=' · <span class="pos">честная цена: Pinnacle с его сайта, сопоставлено матчей '+pf.matched+'</span>';
@@ -2480,7 +2495,7 @@ async function tick(){
    for(const b of bks){const x=d.margins[b];const c=y=>y?y[0]+'% <span class="st">('+y[1]+')</span>':'—';m+='<tr><td>'+(d.mine.includes(b)?'<b>'+b+'</b>':b)+'</td><td>'+c(x['1Х2'])+'</td><td>'+c(x['Тотал'])+'</td></tr>'}
    m+='</table>'}
   document.getElementById('more').innerHTML=m;
- }catch(e){document.getElementById('st').innerHTML='<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
+ }catch(e){document.getElementById('st').innerHTML=UPDT?'<span class="updon">программа перезапускается после обновления — окно вернётся само</span>':'<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
