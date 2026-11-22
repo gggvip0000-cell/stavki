@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-58"
+VERSION = "2026.11.21-59"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3276,13 +3276,17 @@ class Collector:
             return
         self.sofa_last = now
         rows = []
-        for mid, st, he, ae, url in self.con.execute(
-                "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en, m.url FROM paper2 p"
+        for mid, st, he, ae, url, lg in self.con.execute(
+                "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en, m.url, MAX(p.league) FROM paper2 p"
                 " LEFT JOIN matches m ON m.match_id = p.match_id"
                 " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy='Б'"
                 " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
                 " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)):
             he, ae = en_names_any(he, ae, url)
+            if he and 'женск' in (lg or '').lower() and not (en_tokens(he)[1] & {'w', 'women'}):
+                # 22.11: «Мельбурн Виктори — Перт Глори», лига «Женская W-лига» — в адресе odds.ru пометки нет,
+                # на FotMob «Melbourne Victory (W)»; без пометки en_sim даёт 0
+                he, ae = he + '-w', ae + '-w'
             if he:
                 rows.append((mid, st, he, ae))
         if not rows:
@@ -3875,6 +3879,7 @@ def build_report(con):
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                       for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
            'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError(),
+           'bet_matches': rows('SELECT * FROM matches WHERE match_id IN (SELECT match_id FROM paper2)'),
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     buf = io.BytesIO()
