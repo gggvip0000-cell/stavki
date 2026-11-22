@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-83"
+VERSION = "2026.11.21-84"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -283,9 +283,21 @@ def norm_team(t):
     return ' '.join(words)
 
 
+# -84 (пункт 3, Совет 22.11: «Зенит-2» ⊃ «Зенит» давало 0.9): вторая команда, дубль, молодёжь — разные команды.
+# Пометку «женщины» здесь не сравниваем: у odds.ru в названии её нет, пол проверяется по турниру (is_women).
+TEAM_MARK = {'2', '3', 'ii', 'iii', 'b', 'б', 'мол', 'молодежь', 'молодежная', 'дубль', 'рез', 'резерв', 'reserves',
+             'res', 'u17', 'u18', 'u19', 'u20', 'u21', 'u22', 'u23', 'youth', 'jong'}
+
+
+def team_marks(t):
+    return {w for w in t.split() if w in TEAM_MARK}
+
+
 def team_sim(a, b):
     a, b = norm_team(a), norm_team(b)
     if not a or not b:
+        return 0.0
+    if team_marks(a) != team_marks(b):
         return 0.0
     if a == b:
         return 1.0
@@ -468,6 +480,16 @@ def en_tokens(name):
     marks = {w for w in words if w in EN_MARK}
     core = [w for w in words if w not in EN_DROP and w not in EN_MARK]
     return core or words, marks
+
+
+def is_women(league):
+    """женский турнир: у odds.ru «Женская …»/«…, женщины», у Pinnacle «… Women»"""
+    return bool(re.search(r'женск|женщ|women', league or '', re.I))
+
+
+def no_w(name):
+    """название без пометки «женщины» (W, Women, -w) — для сравнения внутри уже проверенного женского турнира"""
+    return re.sub(r'(?:^|[\s(\-])(?:w|women)(?:\)|$|(?=[\s\-]))', ' ', name or '', flags=re.I).strip()
 
 
 def en_sim(a, b):
@@ -778,13 +800,24 @@ class PinnacleFeed:
             return self.match_map[pid]
         r = self.regular[pid]
         best, best_s = None, 0.0
+        # -84 (пункт 3, «Зенит-2 ⊃ Зенит»): женский матч — только с женским. 22.11 Мельбурн Виктори — Перт Глори (женская
+        # W-лига): цена Pinnacle за 9 ч до начала сдвинулась на 52% (1.40 → 2.13) — похоже на чужой матч. У odds.ru в адресе
+        # пометки «женщины» нет, у Pinnacle она в названии лиги/команд; сравниваем пол турнира, а названия — без пометки
+        p_lg = (self.leagues.get(r.get('league')) or {}).get('name', '')
+        p_w = is_women(p_lg) or bool((en_tokens(r['home'])[1] | en_tokens(r['away'])[1]) & {'w', 'women'})
         for m in matches.values():
             if not m.get('home_en') or abs(m['start'] - r['start']) > 20 * 60:
                 continue
             if self.taken.get(m['id'], pid) != pid:
                 continue
+            o_w = is_women(m.get('league'))
+            if o_w != p_w:
+                continue
             for swapped, (h, a) in ((False, (r['home'], r['away'])), (True, (r['away'], r['home']))):
-                s1, s2 = en_sim(h, m['home_en']), en_sim(a, m['away_en'])
+                if o_w:
+                    s1, s2 = en_sim(no_w(h), no_w(m['home_en'])), en_sim(no_w(a), no_w(m['away_en']))
+                else:
+                    s1, s2 = en_sim(h, m['home_en']), en_sim(a, m['away_en'])
                 sc = (s1 + s2) / 2
                 if min(s1, s2) >= 0.5 and sc > best_s:
                     best, best_s = (m['id'], swapped), sc
@@ -2180,6 +2213,11 @@ def db_open():
         con.execute('ALTER TABLE paper2 ADD COLUMN bk_url TEXT')
     except sqlite3.OperationalError:
         pass
+    for t in ('cand', 'paper2'):               # -84: когда снята цена закрытия Pinnacle (насколько она свежая к началу)
+        try:
+            con.execute(f'ALTER TABLE {t} ADD COLUMN close_ts REAL')
+        except sqlite3.OperationalError:
+            pass
     for col in ('res_h', 'res_a'):             # фактический счёт, по которому рассчитана ставка (голы/тайм/угловые)
         try:
             con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} INT')
@@ -3251,15 +3289,26 @@ class Collector:
                 'last_ok': self.pin.last_ok, 'events': len(self.pin.regular), 'matched': len(STATE.pin_fair),
                 'leagues': len(self.pin.leagues), 'mode': self.pin.mode,
                 'error': self.pin.last_error if self.pin.fails else ''}
-            rows = {mid: self.pin.compact(mid, now - 120) for mid in changed if mid in self.pin.fair}
-        for mid, comp in rows.items():            # цена закрытия для CLV — не чаще раза в минуту на матч
-            if now - self.pin.pin_written.get(mid, 0) < 60:
-                continue
+            # -84 (пункт 3, проверка отчёта 22.11 10:00): цена закрытия пишется не чаще раза в минуту на матч, а изменение
+            # внутри этой минуты раньше терялось совсем — если оно было последним до начала, CLV считался по старой цене.
+            # Теперь изменение ждёт своей минуты и записывается, даже если новых изменений больше не было.
+            unw = self.pin.__dict__.setdefault('pin_unwritten', {})
+            for mid in changed:
+                if mid in self.pin.fair:
+                    unw[mid] = (unw.get(mid, (now, now))[0], now)        # (первое незаписанное изменение, последнее)
+            rows = {}
+            for mid, (t0, t1) in list(unw.items()):
+                if now - self.pin.pin_written.get(mid, 0) < 60:
+                    continue
+                unw.pop(mid, None)
+                if mid in self.pin.fair:
+                    rows[mid] = (t1, self.pin.compact(mid, t0 - 120))
+        for mid, (t1, comp) in rows.items():
             self.pin.pin_written[mid] = now
             for market, rr in comp.items():
-                if rr:
+                if rr:                             # время записи — когда цена такой стала (важно у самого начала матча)
                     self.con.execute('INSERT INTO pin VALUES (?,?,?,?)',
-                                     (now, mid, market, json.dumps(rr, ensure_ascii=False)))
+                                     (t1, mid, market, json.dumps(rr, ensure_ascii=False)))
         if changed:
             self.con.commit()
 
@@ -3512,10 +3561,12 @@ class Collector:
 
     def closing_fair(self, match_id, market, outcome, line, start_ts, odds=None):
         """последняя цена Pinnacle до начала → (честная цена, CLV = перевес нашей цены против неё)"""
-        row = self.con.execute('SELECT raw FROM pin WHERE match_id=? AND market=? AND ts<=? ORDER BY ts DESC LIMIT 1',
+        self.close_ts = None
+        row = self.con.execute('SELECT raw, ts FROM pin WHERE match_id=? AND market=? AND ts<=? ORDER BY ts DESC LIMIT 1',
                                (match_id, db_market(market), start_ts)).fetchone()
         if not row:
             return None, None
+        self.close_ts = row[1]
         try:
             fair, side, ln = {}, None, line
             for names, po in json.loads(row[0]):
@@ -3592,8 +3643,9 @@ class Collector:
             pr = settle_one(event, outcome, line, odds, home, away)
             st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
             cf, clv = self.closing_fair(mid, fam_of.get(pid, event), outcome, line, start_ts, odds)
-            self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?'
-                             ' WHERE id=?', (st, pr, cf, clv, time.time(), home, away, pid))
+            self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?,'
+                             ' close_ts=? WHERE id=?', (st, pr, cf, clv, time.time(), home, away,
+                                                        self.close_ts if cf else None, pid))
             n += 1
         self.con.execute("UPDATE paper2 SET status='нет данных', settled=? WHERE status='open' AND start_ts < ?",
                          (time.time(), time.time() - 2 * 86400))
@@ -3603,9 +3655,9 @@ class Collector:
                 ' WHERE done=0 AND start_ts < ?', (time.time() - 120,)).fetchall():
             fam = fam or ('1x2' if mname == '1Х2' else 'total')
             cf, clv = self.closing_fair(mid, fam, outcome, line, start_ts, odds)
-            self.con.execute('UPDATE cand SET closing_fair=?, clv=?, done=1 WHERE match_id=? AND bookmaker=?'
+            self.con.execute('UPDATE cand SET closing_fair=?, clv=?, done=1, close_ts=? WHERE match_id=? AND bookmaker=?'
                              ' AND market_name=? AND outcome=?',
-                             (cf, clv, mid, bk, mname, outcome))
+                             (cf, clv, self.close_ts if cf else None, mid, bk, mname, outcome))
         self.con.commit()
         if n:
             log(f'рассчитано бумажных ставок: {n}')
@@ -3739,7 +3791,7 @@ class Collector:
                 " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
                 " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)):
             he, ae = en_names_any(he, ae, url)
-            if he and 'женск' in (lg or '').lower() and not (en_tokens(he)[1] & {'w', 'women'}):
+            if he and is_women(lg) and not (en_tokens(he)[1] & {'w', 'women'}):
                 # 22.11: «Мельбурн Виктори — Перт Глори», лига «Женская W-лига» — в адресе odds.ru пометки нет,
                 # на FotMob «Melbourne Victory (W)»; без пометки en_sim даёт 0
                 he, ae = he + '-w', ae + '-w'
@@ -3789,7 +3841,7 @@ class Collector:
         if not row:
             return
         mid, start_ts, home_en, away_en, lg = row
-        if 'женск' in (lg or '').lower() and not (en_tokens(home_en)[1] & {'w', 'women'}):
+        if is_women(lg) and not (en_tokens(home_en)[1] & {'w', 'women'}):
             # -78 (владелец 22.11: Мельбурн Виктори (ж) — FotMob «окончен», а расчёта нет): как в поиске ссылок (-59),
             # в адресе odds.ru пометки «женщины» нет, а на FotMob «(W)» — без неё матч не находился и итог не приходил
             home_en, away_en = home_en + '-w', away_en + '-w'
@@ -5088,6 +5140,27 @@ def build_report(con):
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
     rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
+    # -84, пункт 3: где цена Pinnacle к началу сдвинулась больше чем на 15% — история её цены и с каким матчем Pinnacle
+    # он сопоставлен (22.11: Мельбурн Виктори 1.40 → 2.13 — проверить, не чужой ли матч)
+    try:
+        jumps = rows('SELECT DISTINCT match_id, COALESCE(fam, CASE WHEN market_name = \'1Х2\' THEN \'1x2\' ELSE \'total\' END)'
+                     ' AS fam FROM cand WHERE closing_fair > 0 AND fair > 0 AND ABS(fair / closing_fair - 1) > 0.15 LIMIT 40')
+        pm = {}
+        pin = getattr(COLLECTOR, 'pin', None)
+        if pin is not None:
+            for pid, mm in list(pin.match_map.items()):
+                if mm:
+                    r = pin.regular.get(pid) or {}
+                    pm[mm[0]] = {'pin_id': pid, 'home': r.get('home'), 'away': r.get('away'), 'swapped': mm[1],
+                                 'league': (pin.leagues.get(r.get('league')) or {}).get('name')}
+        for j in jumps:
+            j['pin_match'] = pm.get(j['match_id'])
+            j['history'] = [[t, raw[:600]] for t, raw in con.execute(
+                'SELECT ts, raw FROM pin WHERE match_id=? AND market=? ORDER BY ts DESC LIMIT 25',
+                (j['match_id'], db_market(j['fam'])))]
+        rep['pin_jumps'] = jumps
+    except Exception as e:
+        rep['pin_jumps'] = {'error': str(e)[:200]}
     for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
         sm = getattr(COLLECTOR, attr, None)
         if sm is not None:
