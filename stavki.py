@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-97"
+VERSION = "2026.11.21-98"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2958,7 +2958,10 @@ function popBets(sel){
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
 // timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
 function matchClock(t,mins){
- if(!t||t.tsec==null)return 'идёт · '+mins+' мин от начала';
+ // -98 (владелец 22.11, Монтана — Добруджа «102 мин от начала»: «о смотри, доп время»): таймера конторы нет — минута
+ // примерно по времени начала: перерыв ~15 мин и добавленное к 1-му тайму ~2 мин, со значком «≈»
+ if(!t||t.tsec==null){if(mins<=47)return '1-й тайм · ≈'+Math.max(1,mins)+'-я минута';if(mins<=62)return '≈ перерыв';
+  const m2=mins-17;return m2<=97?'2-й тайм · ≈'+(m2>90?'90+'+(m2-90):m2)+'-я минута':'≈ матч окончен ('+mins+' мин от начала)'}
  if(!t.tdir){if(t.tsec>=5400)return 'матч окончен';if(t.tsec>=2700&&t.ht)return 'перерыв';return 'таймер стоит · '+Math.floor(t.tsec/60)+'-я минута'}
  const sec=t.tsec+(Date.now()-(t.tupd||Date.now()))/1000,m=Math.floor(sec/60);   // как часы на сайте конторы: 30:56 → 30
  // -76 (владелец 22.11: у PARI 1-й тайм 45:23, у нас «2-й тайм · 46-я минута»): 2-й тайм — только по отметке перерыва (ht);
