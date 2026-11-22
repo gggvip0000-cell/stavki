@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-106"
+VERSION = "2026.11.21-107"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2664,13 +2664,9 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .mbt{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;min-width:0}.mod{flex:none}.mb.h .mbt{color:#9be15d}.mb.a .mbt{color:#c69cff}.mod{font-size:14px;font-weight:800;color:#fff}
 .mi{display:flex;gap:4px;align-items:center;font-size:11px;margin-top:1px}.mi .evx{color:#5fd38d;font-weight:800}.mi .chp{padding:0 4px;font-size:10px}
 tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
-td.chg{--cc:#ffd400;position:relative;background:color-mix(in srgb,var(--cc) 16%,transparent)!important;box-shadow:inset 0 0 0 2px var(--cc)!important;animation:chgc 1.2s ease-in-out infinite}@keyframes chgc{50%{background:color-mix(in srgb,var(--cc) 34%,transparent)}}
-td.chg.src{background:transparent!important;box-shadow:none!important;outline:2px dashed var(--cc);outline-offset:-4px;animation:none}
-td.chg[data-dl]::after{content:attr(data-dl);position:absolute;top:1px;right:4px;font-size:10px;font-weight:800;color:var(--cc);text-shadow:0 0 2px #000}
-.rch{margin-top:10px;border-top:1px solid #2a3540;padding-top:8px;font-size:13px}.rchh{font-weight:700;margin-bottom:6px}.rchh span{font-weight:400;color:#8b97a3;font-size:12px}
-.rcr{display:grid;grid-template-columns:44px 1fr;gap:2px 6px;padding:4px 0;border-bottom:1px solid #1e2830}.rct{color:#8b97a3;grid-row:span 2}.rcm{color:#aab4be}
-.rcl{border:1.5px solid;border-radius:4px;padding:0 6px;font-weight:700;white-space:nowrap}
-.chleg{font-size:12px;color:#aab4be;margin-top:6px;display:flex;flex-wrap:wrap;gap:6px 14px}.chleg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+td.dch{background:#ffd4001f!important;box-shadow:inset 0 0 0 2px #ffd400!important}td.dch.dneg{background:transparent!important;box-shadow:none!important;outline:2px dashed #ffd400;outline-offset:-3px}
+.dl{font-size:11px;font-weight:800;color:#ffd400;margin-left:4px;white-space:nowrap;text-shadow:0 0 2px #000}
+@media(max-width:700px){.dl{display:block;margin-left:0;font-size:10px;line-height:1.1}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
 .fact{font-size:12px;color:#aab4be;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
@@ -2765,7 +2761,7 @@ async function tick(){
  if(updating)showUpdating();
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
-  if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
+  if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}NORESET=true;location.reload();return}
   const u=document.getElementById('upd');
   let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
   if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено</span>';
@@ -2925,7 +2921,7 @@ let SCOL={};try{SCOL=PHONE0?{m:true,h1:true,c:true}:JSON.parse(localStorage.getI
 function scol(k){SCOL[k]=!SCOL[k];if(!PHONE0)try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=PHONE0?{}:JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 const pclosed=g=>(g in PCOL)?!!PCOL[g]:PHONE0;
-function pcol(g){PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
+function pcol(g){if(!pclosed(g))resetBase(k=>{const s=k.split('|');return s[0]===g&&s[1]!=='*'});PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
 const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча','live':'матчи идут сейчас','settle':'матч окончен, ждут расчёта'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
@@ -3043,18 +3039,20 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // -65 (владелец 22.11: «когда цифра меняется — пусть подсвечивается: новая ставка, смена статуса; и в раскрывающемся так же»):
 // PV — прошлые значения ячеек, PB — прошлые статусы ставок; изменилось — CHG[ключ]=когда. Подсветка снимается через 3 с
 // после того, как ячейка/строка впервые видна на экране (как «НОВАЯ»), или через 10 мин, если так и не показалась.
-let PV=null,PB=null,CHG={},CHV={},CHGI={},PBC=null;
-try{PV=JSON.parse(localStorage.getItem('pv')||'null');PB=JSON.parse(localStorage.getItem('pb')||'null');CHG=JSON.parse(localStorage.getItem('pchg')||'{}');CHV=JSON.parse(localStorage.getItem('pchv')||'{}');CHGI=JSON.parse(localStorage.getItem('pchi')||'{}');PBC=JSON.parse(localStorage.getItem('pbc')||'null')}catch(e){}
-// -105 (владелец 22.11: «все клеточки, где изменение, одним цветом — надо, чтобы я понимал, из какой клетки в какую
-// „перепрыгнула“ цифра»): у каждого перехода ставки свой цвет; клетка, откуда ушла, — пунктир и «−1», куда пришла — сплошная
-// рамка и «+1»; под таблицей — расшифровка цветов. CHGI[ключ клетки] = {c: цвет, d: «+1»/«−1», src, lab}; PBC — прошлые места ставок.
-const CNAME={open:'Ждут',live:'Идут',settle:'Расчёт','выигрыш':'✓ Выиграно','проигрыш':'✗ Проиграно','возврат':'↩ Возврат'};
-const TCOL={'open>live':'#5aa9ff','live>settle':'#ffb020','open>settle':'#ffb020','выигрыш':'#4cd97b','проигрыш':'#ff5c5c','возврат':'#b8c4d0',new:'#ffd400'};
-let RECENT=[];try{RECENT=JSON.parse(localStorage.getItem('prec')||'[]')}catch(e){}
-function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
+let PB=null,CHG={},CHV={},BASE={},CUR={},NORESET=false;
+try{PB=JSON.parse(localStorage.getItem('pb')||'null');CHG=JSON.parse(localStorage.getItem('pchg')||'{}');CHV=JSON.parse(localStorage.getItem('pchv')||'{}');BASE=JSON.parse(localStorage.getItem('pbase')||'{}')}catch(e){}
+// -107 (владелец 22.11: «рядом с числом в той же клеточке — + или − то число, на которое оно изменилось с моего последнего
+// открытия; когда открыл — выделяются все новые и не гаснут, когда закрыл — пропадает»): BASE[клетка] — значение на момент,
+// когда владелец в последний раз ушёл с окна (вкладка скрыта/закрыта) или свернул группу; CUR — нынешние значения.
+// Разница ≠ 0 — в клетке «+N»/«−N» и рамка (сплошная — прибавилось, пунктир — убыло). Пока окно открыто — не гаснет.
 const isChg=k=>!!CHG[k]&&!(CHV[k]&&Date.now()-CHV[k]>3000);
-function saveChg(){try{localStorage.setItem('pv',JSON.stringify(PV));localStorage.setItem('pb',JSON.stringify(PB));localStorage.setItem('pchg',JSON.stringify(CHG));localStorage.setItem('pchv',JSON.stringify(CHV));localStorage.setItem('pchi',JSON.stringify(CHGI));localStorage.setItem('pbc',JSON.stringify(PBC))}catch(e){}}
-function dropChg(k){delete CHG[k];delete CHGI[k];saveChg();for(const el of document.querySelectorAll('.chg[data-ck]'))if(el.dataset.ck===k)el.classList.remove('chg')}
+function saveChg(){try{localStorage.setItem('pb',JSON.stringify(PB));localStorage.setItem('pchg',JSON.stringify(CHG));localStorage.setItem('pchv',JSON.stringify(CHV));localStorage.setItem('pbase',JSON.stringify(BASE))}catch(e){}}
+function resetBase(f){for(const k in CUR)if(!f||f(k))BASE[k]=CUR[k];saveChg()}
+const dlt=k=>(k in CUR)?(CUR[k]||0)-(BASE[k]||0):0;
+function leavePage(){if(!NORESET&&Object.keys(CUR).length)resetBase()}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')leavePage()});
+window.addEventListener('pagehide',leavePage);
+function dropChg(k){delete CHG[k];saveChg();for(const el of document.querySelectorAll('.chg[data-ck]'))if(el.dataset.ck===k)el.classList.remove('chg')}
 let COBS=null;
 function watchChg(){
  if(COBS)COBS.disconnect();if(!('IntersectionObserver' in window))return;
@@ -3064,32 +3062,18 @@ function watchChg(){
  for(const el of document.querySelectorAll('.chg[data-ck]'))COBS.observe(el)}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchChg()});
 function trackChg(p){
- const now=Date.now(),cur={},first=PV===null;
- const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se-lv;cur[sel+'|live']=lv;cur[sel+'|settle']=se;const mo=moneyOf(p,pa,na);cur[sel+'|итог']=g.done?mo.t:null;cur[sel+'|выиграл']=mo.w;cur[sel+'|проиграл']=mo.l};
+ const now=Date.now(),cur={};
+ const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se-lv;cur[sel+'|live']=lv;cur[sel+'|settle']=se;const mo=moneyOf(p,pa,na);cur[sel+'|итог']=g.done?mo.t:0;cur[sel+'|выиграл']=mo.w;cur[sel+'|проиграл']=mo.l};
  const groups={};for(const g of p.simple||[]){put(g.part+'|'+g.name,g);const G=groups[g.part]=groups[g.part]||{n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const k in G)G[k]+=g[k]||0}
  for(const part in groups)put(part+'|*',groups[part]);
  if(p.simple_total)put('*|*',p.simple_total);
- if(!first)for(const k in cur)if(k in PV&&PV[k]!==cur[k]&&!CHG['c:'+k]){CHG['c:'+k]=now;delete CHV['c:'+k]}
- PV=cur;
- const bc={},acc={};for(const b of p.bets||[])bc[b.id]=catOf(b);
- if(PBC!==null)for(const b of p.bets||[]){const to=bc[b.id],fr=PBC[b.id];if(fr===to)continue;
-  const res=['выигрыш','проигрыш','возврат'].includes(to);
-  const tk=fr===undefined?'new':(res?to:fr+'>'+to),col=TCOL[tk]||'#ffd400',lab=fr===undefined?'новая ставка':(CNAME[fr]||fr)+' → '+(CNAME[to]||to);
-  RECENT.unshift({t:now,part:b.part,name:b.name,lab:lab,c:col,title:b.title||'',bet:b.bet||'',pr:to==='выигрыш'||to==='проигрыш'?b.profit_rub:null});
-  for(const sel of [b.part+'|'+b.name,b.part+'|*','*|*']){
-   const add=(k,dl,src)=>{const key='c:'+sel+'|'+k,a=acc[key]=acc[key]||{c:col,n:0,src:src,lab:lab};a.n+=dl;if(a.c!==col){a.c='#e8eef5';a.lab=''}a.src=src};
-   if(fr===undefined)add('all',1,false);else add(fr,-1,true);
-   add(to,1,false);
-   if(to==='выигрыш')add('выиграл',1,false);if(to==='проигрыш')add('проиграл',1,false);if(to==='выигрыш'||to==='проигрыш')add('итог',1,false)}}
- for(const key in acc){const a=acc[key];if(!a.n&&!a.src)continue;CHG[key]=now;delete CHV[key];
-  CHGI[key]={c:a.c,src:a.src&&a.n<0,lab:a.lab,d:/\|(выиграл|проиграл|итог)$/.test(key)?'':(a.n>0?'+'+a.n:(a.n<0?'−'+(-a.n):''))}}
- PBC=bc;
- RECENT=RECENT.filter(r=>now-r.t<30*60000).slice(0,30);try{localStorage.setItem('prec',JSON.stringify(RECENT))}catch(e){}
+ // новая клетка (новый вид ставки) — от нуля, чтобы её ставки тоже были видны как «+N»
+ const fresh=!Object.keys(BASE).length;for(const k in cur)if(!(k in BASE))BASE[k]=fresh?cur[k]:0;
+ CUR=cur;
  const bs={};for(const b of p.bets||[])bs[b.id]=b.status;
  if(PB!==null)for(const id in bs)if(PB[id]!==bs[id]&&!CHG['b:'+id]){CHG['b:'+id]=now;delete CHV['b:'+id]}
  PB=bs;
  for(const k in CHG)if(now-CHG[k]>600000||(CHV[k]&&now-CHV[k]>3000))delete CHG[k];
- for(const k in CHGI)if(!CHG[k])delete CHGI[k];
  for(const k in CHV)if(!CHG[k]&&now-CHV[k]>600000)delete CHV[k];
  saveChg();
 }
@@ -3107,11 +3091,11 @@ function renderPaper(p){
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
  trackChg(p);
  const z=x=>x?x:'·';
- const ck=(sel,k)=>{const key='c:'+sel+'|'+k;if(!isChg(key))return '';const i=CHGI[key];
-  return ' chg'+(i&&i.src?' src':'')+'"'+(i?' style="--cc:'+i.c+'"'+(i.d?' data-dl="'+i.d+'"':''):'')+' data-ck="'+key.replace(/"/g,'&quot;')};
- const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
- const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na),mo=moneyOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se-lv,'',sel,'open')+c(lv,'lvc',sel,'live')+c(se,'stl',sel,'settle')+mcell(mo.w,'mw',sel,'выиграл','выигрыш')+mcell(mo.l,'ml',sel,'проиграл','проигрыш')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(mo.t,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>'};
- const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+'</td>';
+ const ck=(sel,k)=>{const d=dlt(sel+'|'+k);return d?' dch'+(d<0?' dneg':''):''};
+ const dl=(sel,k)=>{const d=Math.round(dlt(sel+'|'+k));return d?'<span class="dl">'+(d>0?'+':'−')+Math.abs(d)+'</span>':''};
+ const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+dl(sel,k)+'</td>';
+ const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na),mo=moneyOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se-lv,'',sel,'open')+c(lv,'lvc',sel,'live')+c(se,'stl',sel,'settle')+mcell(mo.w,'mw',sel,'выиграл','выигрыш')+mcell(mo.l,'ml',sel,'проиграл','проигрыш')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(mo.t,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+dl(sel,'итог')+'</td>'};
+ const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+dl(sel,k)+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
@@ -3126,14 +3110,6 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr>';
  const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
- // -106 (владелец 22.11: «по такой подсветке всё равно не понимаю, из какой категории матч в какую перешёл»): список
- // «Последние изменения» — каждая ставка строкой: когда, раздел · вид, откуда → куда (цветом, как рамка клетки), матч, ставка
- {const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;'),now=Date.now(),rs=RECENT.filter(r=>now-r.t<30*60000).slice(0,12);
-  if(rs.length){h+='<div class="rch"><div class="rchh">Последние изменения <span>· за 30 мин, свежие сверху · цвет — как рамка клетки в таблице: пунктир — откуда ушла, сплошная — куда пришла</span></div>';
-   for(const r of rs){const d=new Date(r.t),tm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-    const pr=r.pr==null?'':' <b style="white-space:nowrap;color:'+(r.pr>=0?'#4cd97b':'#ff5c5c')+'">'+(r.pr>=0?'+':'−')+Math.abs(Math.round(r.pr))+' ₽</b>';
-    h+='<div class="rcr"><span class="rct">'+tm+'</span><span class="rcw"><b>'+esc(r.part==='1-Й ТАЙМ'?'1-й тайм':(r.part||'').charAt(0)+(r.part||'').slice(1).toLowerCase())+' · '+esc(r.name||'')+'</b>: <span class="rcl" style="border-color:'+r.c+';color:'+r.c+'">'+esc(r.lab)+'</span>'+pr+'</span><span class="rcm">'+esc(r.title)+(r.bet?' · '+esc(r.bet):'')+'</span></div>'}
-   h+='</div>'}}
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
  fitTable(el);
