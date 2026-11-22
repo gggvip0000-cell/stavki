@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-101"
+VERSION = "2026.11.21-102"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2908,7 +2908,7 @@ async function manSc(id,mid,part){const h=document.getElementById('mh'+id),a=doc
 function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts>now)return false;
  const lv=b.live||{},t=lv.timer;if(lv.fin)return false;
  if(t&&t.tsec!=null)return !(!t.tdir&&t.tsec>=5400);
- return now-b.start_ts<135*60}
+ return now-b.start_ts<115*60}   // -102: как «≈ матч окончен» в matchClock (2-й тайм до 90+7 = 114 мин от начала)
 // -87 (владелец 22.11: «после „Ждут“ — колонка „Расчёт“, туда все ставки, которые ждут расчёт»): матч уже окончен
 // (не до матча и не идёт — как в isLiveBet), а итога ещё нет
 function isSettleBet(b){return b.status==='open'&&b.start_ts<=Date.now()/1000&&!isLiveBet(b)}
