@@ -4231,6 +4231,13 @@ class Collector:
                         self.new_bk['made'] = now_str()
                         with STATE.lock:
                             STATE.status['nbk'] = [[x['bk'], x.get('verdict', '')] for x in self.new_bk['sites']]
+                    # -85 (пункт 3, Совет: «правила угловых не сверены»): правила контор прочитать один раз — через 15 мин
+                    # после запуска, по одной странице раз в 3 мин (сайты Фонбета/PARI/Винлайна программу пускают)
+                    if getattr(self, 'rules_q', None) is None:
+                        self.rules_q, self.rules_ts, self.rules = list(RULES_PAGES), time.time() + 720, []
+                    if self.rules_q and time.time() - self.rules_ts > 180 and self.browser is not None:
+                        self.rules_ts = time.time()
+                        self.rules.append(rules_recon(self.browser, *self.rules_q.pop(0)))
                     if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
@@ -4845,6 +4852,39 @@ def winline_event_recon(browser, wl, n=2, wait_ms=15000):
     return {'made': now_str(), 'events': out}
 
 
+# адреса страниц правил — по памяти, не проверены: что открылось — видно в отчёте (final_url, длина текста)
+RULES_PAGES = (('Фонбет', 'https://fon.bet/rules'), ('PARI', 'https://www.pari.ru/rules'), ('Винлайн', 'https://winline.ru/rules'))
+RULES_WORDS = r'углов|corner|основное время|дополнительн|овертайм|не пробит|перепод|переигр|трансляци|прерван|источник'
+
+
+def rules_recon(browser, name, url, wait_ms=8000):
+    """-85: текст страницы правил конторы → куски вокруг слов про угловые и время матча (сверка с правилами Pinnacle:
+    угловые назначенные, но не поданные — не считаются, перебитый — один, время для угловых не указано).
+    Только читает страницу, ничего не нажимает. Только в отчёт."""
+    pg = browser.new_page(locale='ru-RU')
+    try:
+        pg.goto(url, wait_until='domcontentloaded', timeout=60000)
+        pg.wait_for_timeout(wait_ms)
+        txt = pg.inner_text('body')
+        links = pg.eval_on_selector_all('a[href]', 'as => as.map(a => [a.href, (a.innerText || "").trim()])'
+                                        '.filter(x => /правил|rules|\\.pdf/i.test(x[0] + x[1])).slice(0, 60)')
+        bits = []
+        for m in re.finditer(RULES_WORDS, txt, re.I):
+            a = max(0, m.start() - 300)
+            if bits and a < bits[-1][1]:
+                continue
+            bits.append((a, m.end() + 500))
+        return {'bk': name, 'url': url, 'final_url': pg.url, 'len': len(txt), 'head': txt[:1500],
+                'bits': [txt[a:b] for a, b in bits[:40]], 'links': links}
+    except Exception as e:
+        return {'bk': name, 'url': url, 'error': str(e).splitlines()[0][:200]}
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
 def bk_stats_recon(browser, con, wait_ms=20000):
     """-76 (владелец 22.11: «у PARI есть статистика на этот матч — угловые, карточки, офсайды, — а тут она не появляется»).
     Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у Фонбета/PARI, где у нас открыта ставка, 20 с записывать
@@ -5200,6 +5240,7 @@ def build_report(con):
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
+    rep['rules_recon'] = getattr(COLLECTOR, 'rules', None)
     rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
     # -84, пункт 3: где цена Pinnacle к началу сдвинулась больше чем на 15% — история её цены и с каким матчем Pinnacle
     # он сопоставлен (22.11: Мельбурн Виктори 1.40 → 2.13 — проверить, не чужой ли матч)
