@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-75"
+VERSION = "2026.11.21-76"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2600,8 +2600,10 @@ function matchClock(t,mins){
  if(!t||t.tsec==null)return 'идёт · '+mins+' мин от начала';
  if(!t.tdir){if(t.tsec>=5400)return 'матч окончен';if(t.tsec>=2700&&t.ht)return 'перерыв';return 'таймер стоит · '+Math.floor(t.tsec/60)+'-я минута'}
  const sec=t.tsec+(Date.now()-(t.tupd||Date.now()))/1000,m=Math.floor(sec/60);   // как часы на сайте конторы: 30:56 → 30
- const half=(t.ht||m>45)?'2-й тайм':'1-й тайм';
- return half+' · '+(half==='1-й тайм'&&m>=45?'45+'+(m-45):(m>=90?'90+'+(m-90):m))+'-я минута'}
+ // -76 (владелец 22.11: у PARI 1-й тайм 45:23, у нас «2-й тайм · 46-я минута»): 2-й тайм — только по отметке перерыва (ht);
+ // без неё до 60-й минуты таймера — добавленное время 1-го тайма
+ const half=(t.ht||m>=60)?'2-й тайм':'1-й тайм';
+ return half+' · '+(half==='1-й тайм'&&m>45?'45+'+(m-45):(m>90?'90+'+(m-90):m))+'-я минута'}
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){document.getElementById('pop').style.display='none'}
@@ -3817,6 +3819,17 @@ class Collector:
                                 sm.err = 'шаг: ' + str(e).splitlines()[0][:150]
                     except Exception as e:
                         add_error('замер баскетбола/хоккея: ' + str(e).splitlines()[0][:120], 'замер')
+                    if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
+                        try:
+                            r = bk_stats_recon(self.browser, self.con)
+                            if r is not None:                 # нашёлся идущий матч — следующая разведка через 3 ч
+                                self.bk_stats = r
+                                self.bksr_ts = time.time()
+                            else:
+                                self.bksr_ts = time.time() - 3 * 3600 + 600     # идущего матча нет — проверить через 10 мин
+                        except Exception as e:
+                            self.bk_stats = {'error': str(e).splitlines()[0][:200]}
+                            self.bksr_ts = time.time()
                     wl = next((x for x in self.feeds if x.name == 'Винлайн'), None)
                     if wl is not None and wl.page is not None and wl.line.pm_events:
                         if getattr(self, 'wlr_ts', None) is None:
@@ -4359,6 +4372,56 @@ def winline_event_recon(browser, wl, n=2, wait_ms=15000):
     return {'made': now_str(), 'events': out}
 
 
+def bk_stats_recon(browser, con, wait_ms=20000):
+    """-76 (владелец 22.11: «у PARI есть статистика на этот матч — угловые, карточки, офсайды, — а тут она не появляется»).
+    Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у Фонбета/PARI, где у нас открыта ставка, 20 с записывать
+    ответы сайта (адрес, начало тела, если в нём есть угловые/статистика) и текст страницы — чтобы найти, откуда виджет
+    статистики берёт угловые. Ничего не нажимает. Только в отчёт."""
+    now = time.time()
+    row = con.execute("SELECT bk_url, title FROM paper2 WHERE status='open' AND bk_url LIKE 'http%' AND bookmaker IN ('Фонбет','PARI')"
+                      " AND start_ts < ? AND start_ts > ? ORDER BY (fam LIKE 'c_%') DESC, start_ts DESC LIMIT 1",
+                      (now - 10 * 60, now - 100 * 60)).fetchone()
+    if not row:
+        return None
+    url, title = row
+    seen, hits = [], []
+    pg = browser.new_page(locale='ru-RU')
+    try:
+        def on_resp(r):
+            try:
+                u = r.url
+                if len(seen) < 300:
+                    seen.append(u[:200])
+                ct = (r.headers or {}).get('content-type', '')
+                if 'json' not in ct and 'text' not in ct:
+                    return
+                body = r.text()
+                low = body[:200000].lower()
+                if any(w in low for w in ('corner', 'угл', 'statist', 'yellow', 'offside')) and len(hits) < 40:
+                    k = max(0, min(low.find(w) for w in ('corner', 'угл', 'statist', 'yellow', 'offside') if w in low) - 300)
+                    hits.append({'url': u[:300], 'len': len(body), 'part': body[k:k + 2500]})
+            except Exception:
+                pass
+        pg.on('response', on_resp)
+        ws_urls = []
+        pg.on('websocket', lambda ws: ws_urls.append(ws.url[:200]))
+        pg.goto(url, wait_until='domcontentloaded', timeout=60000)
+        pg.wait_for_timeout(wait_ms)
+        try:
+            text = pg.inner_text('body')[:8000]
+        except Exception as x:
+            text = 'текст не получен: ' + str(x)[:80]
+        return {'made': now_str(), 'match': title, 'url': url, 'responses': seen, 'websockets': ws_urls, 'hits': hits,
+                'page_text': text}
+    except Exception as x:
+        return {'made': now_str(), 'match': title, 'url': url, 'error': str(x).splitlines()[0][:200]}
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
 def sports_recon(col):
     """-62, пункт «замер других видов спорта» (владелец 22.11 «давай дальше»), шаг 1 — разведка: какие виды спорта и
     рынки есть в линии Фонбета (коды ставок, примеры событий) и у Pinnacle (виды спорта и число матчей). Только в отчёт."""
@@ -4429,6 +4492,7 @@ def build_report(con):
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
+    rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
     for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
         sm = getattr(COLLECTOR, attr, None)
         if sm is not None:
