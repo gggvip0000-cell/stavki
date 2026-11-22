@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-96"
+VERSION = "2026.11.21-97"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2063,6 +2063,212 @@ class WinlineFeed:
     match_to_oddsru = DirectFeed.match_to_oddsru
 
 
+# -97, пункт 2 (владелец 22.11: «давай подключим» Олимп вместо Фонбета): цены Олимпа с его сайта — ПОКА ТОЛЬКО В ЖУРНАЛ
+# CLV (`cand`), не в окно и не на бумагу (`JOURNAL_ONLY`): сначала проверить, совпадают ли цены и есть ли перевес.
+# Разведка 22.11 16:53: вся линия футбола одним запросом изнутри страницы сайта
+# /api/v4/0/line/sports-with-competitions-with-events?vids[]=1: (~17 МБ, ~1930 матчей, основные исходы, 381 «УГЛ»-матч);
+# чемпионат — /api/v4/0/line/competitions-with-events?vids[]=<id>: . marketId сверены по разведке 16:07/16:31.
+OL_MK = {1: ('1x2', 'res'), 5: ('total', 'tot'), 166: ('total', 'tot'), 4: ('ah', 'ah'), 168: ('ah', 'ah'),
+         7: ('tt1', 'tot'), 8: ('tt2', 'tot'), 2412: ('tt1', 'tot'), 2413: ('tt2', 'tot'),
+         10: ('h1_1x2', 'res'), 12: ('h1_total', 'tot'), 171: ('h1_total', 'tot'), 169: ('h1_ah', 'ah'),
+         43: ('h1_tt1', 'tot'), 44: ('h1_tt2', 'tot')}
+JOURNAL_ONLY = {'Олимп'}
+
+
+def olimp_markets(ev):
+    """исходы события Олимпа → {(семейство, линия): [кф по порядку outcome_names]}; «УГЛ»-матч → рынки c_…"""
+    is_c = bool(ev.get('parentId')) and str(ev.get('name', '')).startswith('УГЛ ')
+    if ev.get('parentId') and not is_c:
+        return {}
+    acc = {}
+    for o in ev.get('outcomes') or []:
+        mk = OL_MK.get(o.get('marketId'))
+        try:
+            k = float(o.get('probability'))
+        except (TypeError, ValueError):
+            continue
+        if not mk or k <= 1:
+            continue
+        fam, kind = mk
+        if is_c and fam.startswith('h1_'):
+            continue
+        fam = ('c_' if is_c else '') + fam
+        sn, un = o.get('shortName') or '', (o.get('unprocessedName') or '').lower()
+        try:
+            if kind == 'res':
+                i = {'П1': 0, 'Х': 1, 'П2': 2, 'Т1П1': 0, 'Т1Н': 1, 'Т1П2': 2}.get(sn)
+                if i is None:
+                    continue
+                acc.setdefault((fam, None), [None] * 3)[i] = k
+            elif kind == 'tot':
+                ln = float(o.get('param'))
+                i = 0 if un.endswith(' бол') else (1 if un.endswith(' мен') else None)
+                if i is None:
+                    continue
+                acc.setdefault((fam, ln), [None, None])[i] = k
+            else:                     # фора: param — фора своей команды; ключ — фора хозяев; сторона — 5-я часть basketId
+                ln = float(o.get('param'))
+                bid = str(o.get('basketId') or '').split(':')
+                side = {'1': 0, '2': 1}.get(bid[4] if len(bid) > 4 else '')
+                if side is None:
+                    continue
+                acc.setdefault((fam, ln if side == 0 else -ln), [None, None])[side] = k
+        except (TypeError, ValueError):
+            continue
+    return {key: v for key, v in acc.items() if all(v)}
+
+
+def olimp_events(data):
+    """все события (словари с outcomes и team1Name) из ответа Олимпа любой формы"""
+    out, st = [], [data]
+    while st:
+        x = st.pop()
+        if isinstance(x, dict):
+            if 'team1Name' in x and 'outcomes' in x and x.get('id'):
+                out.append(x)
+                continue
+            st.extend(x.values())
+        elif isinstance(x, list):
+            st.extend(x)
+    return out
+
+
+class OlimpFeed:
+    """Олимп напрямую: страница линии футбола в браузере программы, запросы — изнутри неё (как делает сам сайт).
+    Вся линия — раз в 20 мин; чемпионаты с матчами в ближайшие 3 ч — раз в 90 с, 12 ч — раз в 6 мин (по 2 за опрос).
+    Интерфейс как у DirectFeed (для direct_values_for). Капча на странице — стоп навсегда (обходить не делаем)."""
+    name = 'Олимп'
+    SITE = 'https://www.olimp.bet/line/futbol-1'
+    API = 'https://www.olimp.bet/api/v4/0/line/'
+
+    def __init__(self):
+        self.page = None
+        self.host = 'www.olimp.bet'
+        self.page_url = ''
+        self.last_poll = self.last_full = 0
+        self.last_ok = None
+        self.fails = 0
+        self.version = None
+        self.last_error = ''
+        self.blocked = False
+        self.match_map, self.match_tried = {}, {}
+        self.events, self.miscs, self.factors, self.touched = {}, {}, {}, {}
+        self.ev = {}            # id → основное событие Олимпа
+        self.kid = {}           # id основного → id «УГЛ»-события
+        self.cev = {}           # id «УГЛ»-события → событие
+        self.comp_ts = {}       # id чемпионата → когда обновлён
+        self.comp_start = {}    # id чемпионата → ближайшее начало матча
+        self.stat = {'full_bytes': 0, 'full_events': 0, 'comp_fetches': 0}
+
+    def start(self, browser):
+        self.page = browser.new_page(locale='ru-RU')
+        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=90000)
+        self.page.wait_for_timeout(4000)
+        self.page_url = self.page.url
+        if re.search(r'не робот|капч|captcha', self.page.inner_text('body')[:5000], re.I):
+            self.blocked = True
+            raise RuntimeError('сайт Олимпа показал проверку «вы не робот» — Олимп не читаем')
+        log('Олимп: сайт открыт')
+
+    def get(self, path):
+        r = self.page.evaluate(PAGE_FETCH_JS, self.API + path) or {}
+        if r.get('s') != 200:
+            raise RuntimeError(f"Олимп ответил {r.get('s')}: {str(r.get('t'))[:80]}")
+        return r.get('t') or ''
+
+    def take(self, evs, now):
+        for e in evs:
+            eid = str(e['id'])
+            if e.get('parentId'):
+                if str(e.get('name', '')).startswith('УГЛ '):
+                    self.cev[eid] = e
+                    self.kid[str(e['parentId'])] = eid
+                    self.touched[str(e['parentId'])] = now
+                continue
+            self.ev[eid] = e
+            self.touched[eid] = now
+
+    def poll(self):
+        if self.blocked:
+            raise RuntimeError('Олимп не читаем: сайт показал проверку «вы не робот»')
+        now = time.time()
+        self.last_poll = now
+        if now - self.last_full > 20 * 60:
+            t = self.get('sports-with-competitions-with-events?vids%5B%5D=1%3A')
+            evs = olimp_events(json.loads(t))
+            self.ev, self.kid, self.cev = {}, {}, {}
+            self.take(evs, now)
+            self.last_full = now
+            self.stat.update(full_bytes=len(t), full_events=len(evs), full_at=now_str())
+            for e in evs:
+                self.comp_ts[str(e.get('competitionId') or '')] = now
+        else:
+            self.comp_start = {}                   # ближайшее начало матча в каждом чемпионате (и «статистическом»)
+            for e in list(self.ev.values()) + list(self.cev.values()):
+                st, cid = e.get('startDateTime') or 0, str(e.get('competitionId') or '')
+                if cid and st > now:
+                    self.comp_start[cid] = min(self.comp_start.get(cid, st), st)
+            due = []
+            for cid, st in self.comp_start.items():
+                left = st - now
+                if left <= 0:
+                    continue
+                every = 90 if left < 3 * 3600 else (360 if left < 12 * 3600 else None)
+                if every and now - self.comp_ts.get(cid, 0) > every:
+                    due.append((left, cid))
+            for _, cid in sorted(due)[:2]:
+                self.comp_ts[cid] = now
+                self.take(olimp_events(json.loads(self.get(f'competitions-with-events?vids%5B%5D={cid}%3A'))), now)
+                self.stat['comp_fetches'] += 1
+        for d in (self.ev, self.cev):
+            for eid in [k for k, e in d.items() if (e.get('startDateTime') or 0) < now - 3 * 3600]:
+                d.pop(eid, None)
+        self.last_ok = now
+        self.fails = 0
+
+    def football(self):
+        now = time.time()
+        out = []
+        for eid, e in self.ev.items():
+            st = e.get('startDateTime') or 0
+            if st > now + 60:
+                en = ((e.get('names') or {}).get('2') or '').split(' - ')
+                out.append({'id': eid, 'team1': e.get('team1Name'), 'team2': e.get('team2Name'), 'startTime': st,
+                            'en': en if len(en) == 2 else None, '_ol': e})
+        return out
+
+    def odds_of(self, eid):
+        out = olimp_markets(self.ev.get(eid) or {})
+        c = self.cev.get(self.kid.get(eid))
+        if c:
+            out.update(olimp_markets(c))
+        return out
+
+    def match_odds(self, ev):
+        m = olimp_markets(ev['_ol']).get(('1x2', None)) or [None] * 3
+        return list(m) + [None, None, None]
+
+    def event_url(self, ev):
+        return None                   # адрес матча на сайте Олимпа с «слагом» — пока не строим (в окно Олимп не идёт)
+
+    def match_to_oddsru(self, ev, matches):
+        eid = ev['id']
+        if eid in self.match_map and (self.match_map[eid] or time.time() - self.match_tried.get(eid, 0) < 600):
+            return self.match_map[eid]
+        res = DirectFeed.match_to_oddsru(self, ev, matches)
+        if res is None and ev.get('en'):          # русские названия не сошлись — английские (из названия Олимпа)
+            best, best_s = None, 0
+            for m in matches.values():
+                if not m.get('home_en') or abs(m['start'] - ev['startTime']) > 20 * 60:
+                    continue
+                s1, s2 = en_sim(ev['en'][0], m['home_en']), en_sim(ev['en'][1], m['away_en'])
+                if min(s1, s2) >= 0.6 and (s1 + s2) / 2 > best_s:
+                    best, best_s = m['id'], (s1 + s2) / 2
+            res = best if best_s >= 0.7 else None
+            self.match_map[eid] = res
+        return res
+
+
 def settle_ah(margin, hcap, odds):
     """азиатская фора: margin — разница мячей своей команды, hcap — её фора; четверти делятся пополам"""
     frac = round((abs(hcap) * 4) % 2)
@@ -2119,7 +2325,7 @@ class State:
         self.margins = {}        # (контора, рынок) -> [сумма, число строк]
         self.pin_fair = {}       # id матча odds.ru -> честные цены Pinnacle с его сайта
 
-    def snapshot(self):
+    def snapshot(self, journal=False):
         with self.lock:
             now = time.time()
             # пока прямая линия конторы жива, её цены с odds.ru не показываются вовсе: они отстают
@@ -2127,7 +2333,7 @@ class State:
             alive = {n for n, f in self.status['feeds'].items() if n != 'Pinnacle' and f.get('last_ok')
                      and now - f['last_ok'] < 90}
             vals = [v for v in self.values.values() if v['bookmaker'] not in alive]
-            vals += list(self.direct_values.values())
+            vals += [v for v in self.direct_values.values() if journal or v['bookmaker'] not in JOURNAL_ONLY]
             vals.sort(key=lambda v: -v['ev'])
             rows = []
             for v in vals:
@@ -3239,6 +3445,8 @@ class Collector:
         self.feeds = [DirectFeed(b) for b in DIRECT_BOOKS if b['name'] in MY_BOOKMAKERS]
         if 'Винлайн' in MY_BOOKMAKERS:
             self.feeds.append(WinlineFeed())
+        if self.cfg.get('olimp', True):            # -97: Олимп — только в журнал CLV (JOURNAL_ONLY)
+            self.feeds.append(OlimpFeed())
         self.pin = PinnacleFeed()
         try:                                       # -91: цены Pinnacle с прошлого запуска (перезапуск при обновлении)
             n = load_pin_state(self.pin)
@@ -3590,8 +3798,8 @@ class Collector:
     def record_paper(self):
         now = time.time()
         rows = []
-        for v in STATE.snapshot()['values']:
-            if v['bookmaker'] not in MY_BOOKMAKERS or v['ev'] <= 0:
+        for v in STATE.snapshot(journal=True)['values']:
+            if (v['bookmaker'] not in MY_BOOKMAKERS and v['bookmaker'] not in JOURNAL_ONLY) or v['ev'] <= 0:
                 continue
             if not v.get('start_ts') or v['start_ts'] < now + 60:
                 continue
@@ -3609,7 +3817,7 @@ class Collector:
         cur = self.con.cursor()
         added = 0
         try:
-            for code, v in pick_for_strategies(rows):
+            for code, v in pick_for_strategies([v for v in rows if v['bookmaker'] not in JOURNAL_ONLY]):
                 cur.execute('INSERT OR IGNORE INTO paper2 (created, match_id, title, league, start_ts, strategy, event,'
                             ' src, bookmaker, market_name, outcome, line, odds, fair, ev, rel, pin_age, fam, bk_url) VALUES'
                             ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -5675,6 +5883,11 @@ def build_report(con):
     rep['rules_recon'] = getattr(COLLECTOR, 'rules', None)
     rep['bk_event_recon'] = getattr(COLLECTOR, 'evr', None)
     rep['olimp_recon'] = getattr(COLLECTOR, 'olimp', None)
+    of = next((x for x in getattr(COLLECTOR, 'feeds', []) if x.name == 'Олимп'), None)
+    if of is not None:                                  # -97: Олимп в журнале CLV — сколько видит и сопоставил
+        rep['olimp_feed'] = dict(of.stat, events=len(of.ev), corners=len(of.cev), blocked=of.blocked,
+                                 matched=sum(1 for v in of.match_map.values() if v), last_error=of.last_error,
+                                 fails=of.fails, comps=len(of.comp_start))
     rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
     # -84, пункт 3: где цена Pinnacle к началу сдвинулась больше чем на 15% — история её цены и с каким матчем Pinnacle
     # он сопоставлен (22.11: Мельбурн Виктори 1.40 → 2.13 — проверить, не чужой ли матч)
