@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-110"
+VERSION = "2026.11.21-111"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1276,6 +1276,15 @@ class ExtStats:
                 d['ht'] = (e.get('homeScore'), e.get('awayScore'))
             if e.get('type') == 'Half' and e.get('halfStrShort') == 'FT':
                 d['ft'] = (e.get('homeScore'), e.get('awayScore'))     # конец основного времени
+        # -111 (владелец 22.11: Абия Уорриорс — Эньимба, Нигерия: «матч окончен», «счёта матча нет ни в одном источнике»):
+        # у мелких лиг на FotMob нет событий матча (Half HT/FT) — счёт основного времени берём из шапки, если матч окончен
+        # в основное время: status.reason.shortKey 'fulltime_short' и не было доп. времени (формат проверен по записям 21.11)
+        st = ((j.get('header') or {}).get('status') or {})
+        if 'ft' not in d and (st.get('reason') or {}).get('shortKey') == 'fulltime_short' \
+                and not ((st.get('halfs') or {}).get('firstExtraHalfStarted')):
+            tm = (j.get('header') or {}).get('teams') or []
+            if len(tm) == 2 and all(isinstance(t.get('score'), int) for t in tm):
+                d['ft'] = (tm[0]['score'], tm[1]['score'])
         for g in (((content.get('stats') or {}).get('Periods') or {}).get('All') or {}).get('stats') or []:
             for it in g.get('stats') or []:
                 if it.get('key') == 'corners' and isinstance(it.get('stats'), list) and len(it['stats']) == 2:
