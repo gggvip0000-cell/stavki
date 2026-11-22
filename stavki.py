@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-70"
+VERSION = "2026.11.21-71"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2315,6 +2315,7 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+.lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
 .updon{background:#ffd400;color:#111;font-weight:700;padding:6px 12px;border-radius:8px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
 .updok{background:#3fae5a;color:#fff;font-weight:700;padding:6px 12px;border-radius:8px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
@@ -2521,7 +2522,7 @@ function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
-const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча'};
+const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча','live':'матчи идут сейчас'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
 // только растут — если счёт уже больше линии, «Б» выиграна, «М» проиграна целиком (для любых линий, и с возвратом)
 // -60/-63/-69: тоталы и инд. тоталы только растут. Для «Больше» нынешний счёт — худший исход, для «Меньше» — лучший.
@@ -2555,10 +2556,15 @@ function decided(b){
  return '';
 }
 let POPSEL=null;
+// -71 (владелец 22.11: «над „Сделано“ — цифра, по ней окно только со ставками, где матчи идут сейчас»)
+function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts>now)return false;
+ const lv=b.live||{},t=lv.timer;if(lv.fin)return false;
+ if(t&&t.tsec!=null)return !(!t.tdir&&t.tsec>=5400);
+ return now-b.start_ts<135*60}
 function popBets(sel){
  POPSEL=sel;
  const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
- const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
+ const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||(st==='live'?isLiveBet(b):b.status===st)));
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
  // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
@@ -2641,7 +2647,8 @@ function renderPaper(p){
  const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
- h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
+ const nl=(p.bets||[]).filter(isLiveBet).length;
+ h+='<table class="ptab"><tr class="lvr"><td></td><td>'+(nl?'<span class="livebtn num" data-pop="*|*|live" title="ставки на матчи, которые идут сейчас">● '+nl+'</span>':'<span class="livebtn off" title="сейчас ни один матч с нашей ставкой не идёт">● 0</span>')+'</td><td colspan="5"></td></tr><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
