@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-53"
+VERSION = "2026.11.21-54"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1003,6 +1003,8 @@ class ExtStats:
         self.last_error = ''
 
     def page(self, browser, key, url):
+        if getattr(self, 'blocked', {}).get(key, 0) > time.time():
+            return None
         p = self.pages.get(key)
         if p is not None or browser is None:
             return p
@@ -1030,6 +1032,11 @@ class ExtStats:
         except Exception as e:
             self.last_error = f'{key}: {str(e).splitlines()[0][:100]}'
             self.pages.pop(key, None)          # страница сломалась — откроется заново
+            return None
+        if r.get('s') == 403 and 'challenge' in str(r.get('t')):
+            # 22.11 у владельца: Sofascore отвечает программе «403 challenge» (проверка «вы не робот») — 30 мин не дёргать
+            self.blocked = dict(getattr(self, 'blocked', {}), **{key: time.time() + 1800})
+            self.last_http = f'{key} не пускает программу (проверка «вы не робот») — пока ищем на FotMob'
             return None
         if r.get('s') != 200:
             self.last_http = f"{url.split('?')[0][-60:]} → ответ {r.get('s')}: {str(r.get('t'))[:80]}"
