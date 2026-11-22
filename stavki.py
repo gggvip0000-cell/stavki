@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-92"
+VERSION = "2026.11.21-93"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2435,9 +2435,9 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pp .ptab tr.sub td{background:#141b23;font-size:14px}.ptab tr.sub td:first-child{padding-left:34px;color:#cdd5dd}
 .ptab td.w{color:#5fd38d;font-weight:700}.ptab td.l{color:#ff6b6b;font-weight:700}.ptab td.p{color:#c9d1d9}
 .ptab td:nth-child(3),.ptab td:nth-child(4),.ptab td:nth-child(5),.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){box-shadow:inset 0 0 0 999px rgba(90,176,255,.06)}
-.ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(9),.ptab th:nth-child(9){border-left:2px solid #34414f}
+.ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(9),.ptab th:nth-child(9),.ptab td:nth-child(11),.ptab th:nth-child(11){border-left:2px solid #34414f}
 /* -87 (владелец 22.11: «эти поля сделать уже»): колонки исходов уже, вид ставки забирает остальное; «Расчёт» — жёлтым */
-.ptab th:nth-child(2){width:110px}.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){width:105px}.ptab th:nth-child(6),.ptab th:nth-child(7),.ptab th:nth-child(8){width:80px}.ptab th:nth-child(9){width:120px}
+.ptab th:nth-child(2){width:110px}.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){width:105px}.ptab th:nth-child(6),.ptab th:nth-child(7),.ptab th:nth-child(8){width:80px}.ptab th:nth-child(9),.ptab th:nth-child(10){width:115px}.ptab th:nth-child(11){width:120px}.ptab td.mw,.ptab td.ml{font-weight:700;white-space:nowrap}
 .ptab td.stl{color:#ffd400;font-weight:700}.ptab td.lvc{color:#ff6b6b;font-weight:700}
 .ptab tr.taxr td:nth-child(2){border-left:2px solid #34414f}.ptab tr.taxr td:nth-child(3){border-left:2px solid #34414f;box-shadow:none}
 .pp .ptab tr.tot td{border-top:2px solid #3a4756;font-weight:800;font-size:16px;background:#1b2430}
@@ -2705,6 +2705,10 @@ function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts
 function isSettleBet(b){return b.status==='open'&&b.start_ts<=Date.now()/1000&&!isLiveBet(b)}
 function settleOf(p,part,name){return (p.bets||[]).filter(b=>isSettleBet(b)&&(part==='*'||b.part===part)&&(name==='*'||b.name===name)).length}
 // -88 (владелец 22.11: «из „Ждут“ матчи, которые уже идут, убирать… „Идут“ поместить между „Ждут“ и „Расчёт“»)
+// -93 (владелец 22.11: «между „Расчёт“ и „Итог“ — 2 колонки: выиграл и проиграл, чтобы не просто видеть сумму итога»):
+// суммы по рассчитанным ставкам — выигравшие (чистый выигрыш) и проигравшие; «Итог» = их сумма (те же ставки, что в окне)
+function moneyOf(p,part,name){let w=0,l=0,d=0;for(const b of p.bets||[]){if(b.status==='open'||!(part==='*'||b.part===part)||!(name==='*'||b.name===name))continue;
+ const x=b.profit_rub||0;d++;if(x>0)w+=x;else l+=x}return {w:w,l:l,t:w+l,d:d}}
 function liveOf(p,part,name){return (p.bets||[]).filter(b=>isLiveBet(b)&&(part==='*'||b.part===part)&&(name==='*'||b.name===name)).length}
 function popBets(sel){
  POPSEL=sel;
@@ -2776,7 +2780,7 @@ function watchChg(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchChg()});
 function trackChg(p){
  const now=Date.now(),cur={},first=PV===null;
- const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se-lv;cur[sel+'|live']=lv;cur[sel+'|settle']=se;cur[sel+'|итог']=g.done?Math.round(g.profit_rub||0):null};
+ const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se-lv;cur[sel+'|live']=lv;cur[sel+'|settle']=se;const mo=moneyOf(p,pa,na);cur[sel+'|итог']=g.done?mo.t:null;cur[sel+'|выиграл']=mo.w;cur[sel+'|проиграл']=mo.l};
  const groups={};for(const g of p.simple||[]){put(g.part+'|'+g.name,g);const G=groups[g.part]=groups[g.part]||{n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const k in G)G[k]+=g[k]||0}
  for(const part in groups)put(part+'|*',groups[part]);
  if(p.simple_total)put('*|*',p.simple_total);
@@ -2805,11 +2809,12 @@ function renderPaper(p){
  const z=x=>x?x:'·';
  const ck=(sel,k)=>{const key='c:'+sel+'|'+k;return isChg(key)?' chg" data-ck="'+key.replace(/"/g,'&quot;'):''};
  const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
- const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se-lv,'',sel,'open')+c(lv,'lvc',sel,'live')+c(se,'stl',sel,'settle')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>'};
+ const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na),mo=moneyOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se-lv,'',sel,'open')+c(lv,'lvc',sel,'live')+c(se,'stl',sel,'settle')+mcell(mo.w,'mw',sel,'выиграл','выигрыш')+mcell(mo.l,'ml',sel,'проиграл','проигрыш')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(mo.t,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>'};
+ const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
- h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
+ h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
@@ -2818,7 +2823,7 @@ function renderPaper(p){
   if(!closed)for(const r of G.rows){const nm=r.name||r.val;const sn=SHN[nm];h+='<tr class="sub"><td>'+(sn?'<span class="lg">'+nm+'</span><span class="sh">'+sn+'</span>':nm)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>'}
  }
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr>';
- const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="7" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
+ const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
