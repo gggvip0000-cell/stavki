@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import gzip
 import io
+import collections
 import struct
 import zipfile
 import zlib
@@ -28,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-61"
+VERSION = "2026.11.21-62"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2422,7 +2423,10 @@ async function tick(){
    for(const b of bkCols){
     const c=COLORS[b]||'#7fb6ff';const rs=srows.filter(v=>v.bookmaker===b);
     const byM={};for(const v of rs)(byM[v.match_id]=byM[v.match_id]||[]).push(v);
-    const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>(isNew(y)-isNew(x))||(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>(y.some(isNew)-x.some(isNew))||(Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel))));
+    // -62 (владелец 22.11: «порядок по их появлению: появилась — осталась сверху»): свежие сверху — и карточки, и ставки в них
+    // (held — сколько секунд ставка держится; после перезапуска программы у всех одинаково — тогда по надёжности)
+    const hcmp=(a,b)=>Math.abs(a-b)<5?0:a-b;
+    const cards=Object.values(byM).map(vs=>vs.sort((x,y)=>hcmp(x.held||0,y.held||0)||(vw(x)[3]-vw(y)[3])||(y.rel-x.rel))).sort((x,y)=>hcmp(Math.min(...x.map(v=>v.held||0)),Math.min(...y.map(v=>v.held||0)))||(Math.max(...y.map(v=>v.rel))-Math.max(...x.map(v=>v.rel))));
     const f=s.feeds[b];let feed;
     const pins=rs.map(v=>v.pin_age).filter(x=>x!=null),ages=rs.map(v=>v.age);
     const chk=(ages.length?' · проверены '+fmt(Math.max(...ages))+' назад':'')+(pins.length?' · Pinnacle до '+fmt(Math.max(...pins))+' назад':'');
@@ -3703,6 +3707,11 @@ class Collector:
                     self.ext_step()
                     self.sofa_link_step()
                     self.fotmob_live_step()
+                    if getattr(self, 'recon_ts', None) is None:
+                        self.recon_ts = time.time() - 1500          # первая разведка видов спорта — через 5 мин после запуска
+                    if time.time() - self.recon_ts > 1800:
+                        self.recon_ts = time.time()
+                        self.recon_data = dict(sports_recon(self), made=now_str())
                 except Exception as e:
                     add_error('статистика матчей (Sofascore/FotMob): ' + str(e).splitlines()[0][:120], 'ext')
                 else:
@@ -3890,6 +3899,52 @@ def ExtStatsLastError():
     return getattr(COLLECTOR, 'ext', None) and COLLECTOR.ext.last_error or ''
 
 
+def sports_recon(col):
+    """-62, пункт «замер других видов спорта» (владелец 22.11 «давай дальше»), шаг 1 — разведка: какие виды спорта и
+    рынки есть в линии Фонбета (коды ставок, примеры событий) и у Pinnacle (виды спорта и число матчей). Только в отчёт."""
+    out = {}
+    try:
+        f = next((x for x in col.feeds if x.name == 'Фонбет'), None) or (col.feeds[0] if col.feeds else None)
+        if f is not None:
+            def top(sid):
+                sp, hops = f.sports.get(sid), 0
+                while sp and sp.get('parentId') and hops < 8:
+                    nxt = f.sports.get(sp['parentId'])
+                    if not nxt:
+                        break
+                    sp, hops = nxt, hops + 1
+                return sp or {}
+            now, by = time.time(), {}
+            for e in list(f.events.values()):
+                if e.get('level') != 1 or e.get('place') != 'line' or e.get('_blocked') or e.get('startTime', 0) < now:
+                    continue
+                t = top(e.get('sportId'))
+                by.setdefault((t.get('id'), t.get('name')), []).append(e)
+            fon = []
+            for (tid, tname), evs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+                cnt = collections.Counter()
+                for e in evs:
+                    cnt.update((f.factors.get(e['id']) or {}).keys())
+                smp = []
+                for e in evs[:3]:
+                    fs = f.factors.get(e['id']) or {}
+                    smp.append({'id': e['id'], 'teams': f"{e.get('team1', '')} — {e.get('team2', '')}",
+                                'segment': (f.sports.get(e.get('sportId')) or {}).get('name'),
+                                'factors': {str(k): [v.get('v'), v.get('p'), v.get('pt')] for k, v in list(fs.items())[:80]},
+                                'kids': [k.get('name') for k in f.events.values() if k.get('parentId') == e['id']][:12]})
+                fon.append({'sport_id': tid, 'sport': tname, 'events': len(evs), 'top_codes': cnt.most_common(60),
+                            'samples': smp})
+            out['fonbet'] = fon[:15]
+    except Exception as e:
+        out['fonbet_error'] = str(e)[:200]
+    try:
+        out['pinnacle_sports'] = [{'id': x.get('id'), 'name': x.get('name'), 'matchups': x.get('matchupCount')}
+                                  for x in col.pin.get('/sports') if x.get('matchupCount')]
+    except Exception as e:
+        out['pinnacle_error'] = str(e)[:200]
+    return out
+
+
 def build_report(con):
     """«Отчёт для разработки» (владелец 21.11): всё, что программа считает для себя, — одним файлом .zip с report.json.
     Владелец присылает его в чат, разработка смотрит, держится ли перевес вживую."""
@@ -3912,6 +3967,7 @@ def build_report(con):
            'bet_matches': rows('SELECT * FROM matches WHERE match_id IN (SELECT match_id FROM paper2)'),
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
+    rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)    # собирается в потоке программы (браузер — не из окна)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
