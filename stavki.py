@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-112"
+VERSION = "2026.11.21-113"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -176,14 +176,17 @@ F_AH = [(1851, 1852), (910, 912), (927, 928), (937, 938), (989, 991), (1569, 157
 F_TT1 = [(974, 976), (1809, 1810), (1812, 1813), (1815, 1816), (1818, 1819), (1821, 1822), (1824, 1825), (1827, 1828), (1830, 1831), (2203, 2204)]
 F_TT2 = [(978, 980), (1854, 1871), (1873, 1874), (1880, 1881), (1883, 1884), (1886, 1887), (1893, 1894), (1896, 1897), (1899, 1900), (2209, 2210)]
 F_MATCH_ODDS = (921, 922, 923, 924, 1571, 925)   # П1 Х П2 1Х 12 Х2 (каталог Фонбета, таблица «Исходы»)
-FB_PARTS = {'1-й тайм': 'h1_', 'угловые': 'c_'}
+FB_PARTS = {'1-й тайм': 'h1_', 'угловые': 'c_', '1-й тайм угловые': 'ch_'}
+# -113 (штурм 22.11, perekos: у Фонбета 1-й тайм угловых всегда 0.480 тотала матча, у Pinnacle 0.467): угловые 1-го тайма —
+# ТОЛЬКО в журнал CLV (cand); в окно, на бумагу и в Telegram не идут (рассчитывать нечем — счёта угловых по таймам нет)
+JOURNAL_FAMS = ('ch_',)
 MARKET_LABEL = {'1x2': '1Х2', 'total': 'Тотал', 'ah': 'Фора', 'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}
-PART_LABEL = {'': '', 'h1_': '1-й тайм: ', 'c_': 'Угловые: '}
+PART_LABEL = {'': '', 'h1_': '1-й тайм: ', 'c_': 'Угловые: ', 'ch_': 'Угловые 1-й тайм: '}
 SETTLEABLE = {'1x2', 'total', 'ah', 'tt1', 'tt2'}     # рассчитываются по счёту матча → идут на бумагу
 
 
 def split_fam(fam):
-    for pre in ('h1_', 'c_'):
+    for pre in ('h1_', 'c_', 'ch_'):
         if fam.startswith(pre):
             return pre, fam[len(pre):]
     return '', fam
@@ -227,19 +230,19 @@ def bet_info(v):
         bet, sec = f"{home if base == 'tt1' else away} · {bm} {lns}", 'Инд. тоталы'   # «ИНД. ТОТАЛ» — в пометке
     else:
         bet, sec = f'{bm} {lns}', 'Тоталы'
-    where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → '}[pre] + sec
+    where = {'': '', 'h1_': '1-й тайм → ', 'c_': 'Угловые → ', 'ch_': 'Угловые 1-й тайм → '}[pre] + sec
     return bet, where
 
 
 def bet_kind(fam):
     """крупная пометка над ставкой — сразу видно, что это: «ГОЛЫ · ТОТАЛ», «1-Й ТАЙМ · ИСХОД», «УГЛОВЫЕ · ФОРА»"""
     pre, base = split_fam(fam)
-    goals = pre != 'c_'
+    goals = pre not in ('c_', 'ch_')
     kind = {'1x2': 'ИСХОД', 'ah': 'ФОРА', 'total': 'ТОТАЛ ГОЛОВ' if goals else 'ТОТАЛ',
             'tt1': 'ИНД. ТОТАЛ ГОЛОВ' if goals else 'ИНД. ТОТАЛ',
             'tt2': 'ИНД. ТОТАЛ ГОЛОВ' if goals else 'ИНД. ТОТАЛ'}.get(base, base.upper())
-    part = {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}[pre]
-    return f'{part} · {kind}', {'': 'm', 'h1_': 'h1', 'c_': 'c'}[pre]
+    part = {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ', 'ch_': 'УГЛОВЫЕ 1-Й ТАЙМ'}[pre]
+    return f'{part} · {kind}', {'': 'm', 'h1_': 'h1', 'c_': 'c', 'ch_': 'c'}[pre]
 
 
 def bet_view(fam, outcome):
@@ -749,7 +752,7 @@ class PinnacleFeed:
             if pid in self.regular:
                 base, pre_of = pid, {0: '', 1: 'h1_'}
             elif (self.special.get(pid) or {}).get('units') == 'Corners':
-                base, pre_of = self.special[pid]['parent'], {0: 'c_'}
+                base, pre_of = self.special[pid]['parent'], {0: 'c_', 1: 'ch_'}   # -113: и 1-й тайм угловых
             else:
                 continue
             if base not in self.regular:
@@ -2386,7 +2389,8 @@ class State:
             alive = {n for n, f in self.status['feeds'].items() if n != 'Pinnacle' and f.get('last_ok')
                      and now - f['last_ok'] < 90}
             vals = [v for v in self.values.values() if v['bookmaker'] not in alive]
-            vals += [v for v in self.direct_values.values() if journal or v['bookmaker'] not in JOURNAL_ONLY]
+            vals += [v for v in self.direct_values.values() if journal or (v['bookmaker'] not in JOURNAL_ONLY
+                     and split_fam(event_of(v))[0] not in JOURNAL_FAMS)]
             vals.sort(key=lambda v: -v['ev'])
             rows = []
             for v in vals:
@@ -2519,7 +2523,7 @@ def pick_for_strategies(rows):
     groups = {}
     for v in rows:
         pre, base = split_fam(event_of(v))
-        if base not in SETTLEABLE:
+        if base not in SETTLEABLE or pre in JOURNAL_FAMS:
             continue                           # первый тайм и угловые рассчитываются по лайву конторы или football-data
         groups.setdefault((v['match_id'], event_group(event_of(v)), v['src']), []).append(v)
     out = []
@@ -6027,6 +6031,62 @@ def sports_recon(col):
     return out
 
 
+def corner_calib(con, days=5):
+    """-113 (штурм 22.11: «прав ли Pinnacle на угловых» — главный пробел): по ВСЕМ матчам с угловыми у Pinnacle (не только
+    нашим ставкам) — последняя цена Pinnacle до начала на половинных линиях (тотал, инд. тоталы, тотал 1-го тайма угловых)
+    и фактические угловые (FotMob/Sofascore, иначе лайв Фонбета/PARI — как bk_result). Сводка «ожидалось / вышло» по корзинам."""
+    now = time.time()
+    out, summ = [], {}
+    q = con.execute("SELECT DISTINCT p.match_id, m.start_ts, m.league FROM pin p JOIN matches m ON m.match_id = p.match_id"
+                    " WHERE p.market IN ('c_total', 'c_tt1', 'c_tt2', 'ch_total') AND m.start_ts BETWEEN ? AND ?",
+                    (now - days * 86400, now - 3 * 3600)).fetchall()
+    for mid, st, league in q:
+        hc = ac = src = None
+        r = con.execute('SELECT c1, c2 FROM ext_scores WHERE match_id=? AND done=1 AND c1 IS NOT NULL', (mid,)).fetchone()
+        if r:
+            hc, ac, src = r[0], r[1], 'ext'
+        else:
+            sc = {p: (a, b, ts, cm) for p, a, b, ts, cm in
+                  con.execute('SELECT part, s1, s2, ts, comment FROM bk_scores WHERE match_id=?', (mid,))}
+            res = con.execute('SELECT home, away FROM results WHERE match_id=?', (mid,)).fetchone() or \
+                con.execute('SELECT ft1, ft2 FROM ext_scores WHERE match_id=? AND done=1 AND ft1 IS NOT NULL', (mid,)).fetchone()
+            if res and 'c' in sc and 'ft' in sc and tuple(sc['ft'][:2]) == tuple(res) and sc['c'][2] >= st + 105 * 60:
+                hc, ac, src = sc['c'][0], sc['c'][1], 'bk'
+        ccom = None
+        cm = con.execute("SELECT comment FROM bk_scores WHERE match_id=? AND part='c' ORDER BY ts DESC LIMIT 1", (mid,)).fetchone()
+        if cm:
+            ccom = (cm[0] or '')[:80]
+        lines = []
+        for market in ('c_total', 'c_tt1', 'c_tt2', 'ch_total'):
+            row = con.execute('SELECT raw FROM pin WHERE match_id=? AND market=? AND ts<=? ORDER BY ts DESC LIMIT 1',
+                              (mid, market, st)).fetchone()
+            if not row:
+                continue
+            try:
+                for names, po in json.loads(row[0]):
+                    l = line_of(names[0])
+                    po = [float(x) for x in po]
+                    if l is None or abs(l % 1 - 0.5) > 1e-9 or len(po) != 2 or min(po) <= 1:
+                        continue
+                    p = fair_power(po)[0]           # шанс «Больше»
+                    lines.append([market, l, round(p, 4)])
+                    if hc is not None and market != 'ch_total':
+                        x = {'c_total': hc + ac, 'c_tt1': hc, 'c_tt2': ac}[market]
+                        b = summ.setdefault(market, {}).setdefault(str(min(9, int(p * 10)) / 10), [0, 0.0, 0])
+                        b[0] += 1
+                        b[1] += p
+                        b[2] += 1 if x > l else 0
+            except Exception:
+                continue
+        if lines:
+            out.append({'match_id': mid, 'start_ts': st, 'league': league, 'hc': hc, 'ac': ac, 'src': src,
+                        'c_comment': ccom, 'lines': lines})
+    for market, bins in summ.items():
+        for k, (n, pe, w) in bins.items():
+            bins[k] = {'n': n, 'ожидалось': round(pe / n, 3), 'вышло': round(w / n, 3)}
+    return {'matches': len(out), 'with_result': sum(1 for o in out if o['hc'] is not None), 'summary': summ, 'rows': out}
+
+
 def build_report(con):
     """«Отчёт для разработки» (владелец 21.11): всё, что программа считает для себя, — одним файлом .zip с report.json.
     Владелец присылает его в чат, разработка смотрит, держится ли перевес вживую."""
@@ -6087,6 +6147,10 @@ def build_report(con):
         rep['pin_jumps'] = jumps
     except Exception as e:
         rep['pin_jumps'] = {'error': str(e)[:200]}
+    try:
+        rep['corner_calib'] = corner_calib(con)
+    except Exception as e:
+        rep['corner_calib'] = {'error': str(e)[:200]}
     for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
         sm = getattr(COLLECTOR, attr, None)
         if sm is not None:
