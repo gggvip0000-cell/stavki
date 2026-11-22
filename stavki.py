@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-98"
+VERSION = "2026.11.21-99"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2941,9 +2941,10 @@ function popBets(sel){
   else left='<div class="mu sm">сыгран</div>';
   // -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): тайм/угловые через 2.5 ч после начала так и не пришли
   // ни из одного источника — можно ввести счёт с сайта (PARI, Flashscore) вручную, ставки матча рассчитаются сразу
-  const needMan=b.status==='open'&&b.part!=='МАТЧ'&&now-b.start_ts>150*60&&b.mid;
-  const mk=b.part==='УГЛОВЫЕ'?'c':'h1';
-  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':'счёта 1-го тайма')+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  // -99: и счёт матча (основные рынки) — Монтана — Добруджа 0:0 не нашёлся нигде, кроме Алисы
+  const needMan=b.status==='open'&&now-b.start_ts>150*60&&b.mid;
+  const mk=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft');
+  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
@@ -3341,7 +3342,7 @@ class Handler(BaseHTTPRequestHandler):
                 n = int(self.headers.get('Content-Length') or 0)
                 q = json.loads(self.rfile.read(min(n, 2000)).decode('utf-8') or '{}')
                 mid, part, h, a = int(q['mid']), str(q['part']), int(q['h']), int(q['a'])
-                ok = part in ('c', 'h1') and 0 <= h <= 40 and 0 <= a <= 40
+                ok = part in ('c', 'h1', 'ft') and 0 <= h <= 40 and 0 <= a <= 40
             except Exception:
                 ok = False
             if ok:
@@ -3900,12 +3901,14 @@ class Collector:
             if sc:
                 self.con.execute('UPDATE paper2 SET res_h=?, res_a=? WHERE id=?', (sc[0], sc[1], pid))
         rows = self.con.execute("SELECT p.id, COALESCE(p.fam, p.event), p.outcome, p.line, p.odds, p.match_id, p.start_ts,"
-                                " COALESCE(x.ft1, r.home), COALESCE(x.ft2, r.away) FROM paper2 p"
+                                " COALESCE(x.ft1, ms.h, r.home), COALESCE(x.ft2, ms.a, r.away) FROM paper2 p"
                                 " LEFT JOIN results r ON r.match_id = p.match_id"
                                 " LEFT JOIN ext_scores x ON x.match_id = p.match_id AND x.done = 1"
+                                # -99 (владелец 22.11: Монтана — Добруджа 0:0 «ни на одном сайте, кроме Алисы»): счёт матча вручную
+                                " LEFT JOIN manual_scores ms ON ms.match_id = p.match_id AND ms.part = 'ft'"
                                 " WHERE p.status='open' AND COALESCE(p.fam, p.event) NOT LIKE 'h1!_%' ESCAPE '!'"
                                 " AND COALESCE(p.fam, p.event) NOT LIKE 'c!_%' ESCAPE '!'"
-                                " AND (x.ft1 IS NOT NULL OR (r.home IS NOT NULL AND p.start_ts < ?))",
+                                " AND (x.ft1 IS NOT NULL OR ms.h IS NOT NULL OR (r.home IS NOT NULL AND p.start_ts < ?))",
                                 (time.time() - 6 * 3600,)).fetchall()
         for pid, fam, outcome, line, odds, mid, start_ts in self.con.execute(
                 "SELECT id, fam, outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
