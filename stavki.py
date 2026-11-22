@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-94"
+VERSION = "2026.11.21-95"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3763,7 +3763,39 @@ class Collector:
                 add_error(f'{f.name}: счёт из лайва — {str(e)[:100]}', f.name + ' счёт')
             else:
                 clear_error(f.name + ' счёт')
+            try:
+                self.fill_links(f)
+            except Exception as e:
+                log(f'{f.name}: ссылки на матч — {str(e)[:100]}')
             self.direct_values_for(f)
+
+    def fill_links(self, f):
+        """-95 (владелец 22.11: «почему тут нет ссылки? и это не один такой матч»): у ставок, записанных до -47 (до 22.11 02:55),
+        ссылки на матч у конторы нет — дописать, пока матч есть в линии/лайве конторы (раз в минуту)"""
+        now = time.time()
+        if now - getattr(f, 'links_ts', 0) < 60:
+            return
+        f.links_ts = now
+        need = {mid for (mid,) in self.con.execute(
+            "SELECT DISTINCT match_id FROM paper2 WHERE bookmaker=? AND status='open' AND COALESCE(bk_url,'')=''", (f.name,))}
+        if not need:
+            return
+        n = 0
+        for eid, mid in list(f.match_map.items()):
+            ev = f.events.get(eid)
+            if mid not in need or not ev or ev.get('parentId'):
+                continue
+            try:
+                url = f.event_url(ev)
+            except Exception:
+                url = None
+            if url:
+                n += self.con.execute("UPDATE paper2 SET bk_url=? WHERE bookmaker=? AND match_id=? AND status='open'"
+                                      " AND COALESCE(bk_url,'')=''", (url, f.name, mid)).rowcount
+                need.discard(mid)
+        if n:
+            self.con.commit()
+            log(f'{f.name}: дописаны ссылки на матч у {n} ставок')
 
     def save_scores(self, f):
         """счёт идущих матчей с сайта конторы → bk_scores (раз в 30 с); ts — когда матч последний раз был в лайве"""
