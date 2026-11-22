@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-74"
+VERSION = "2026.11.21-75"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2315,7 +2315,7 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
-.lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;margin-right:6px;font-size:13px;line-height:18px;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
+.lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;margin-left:40px;vertical-align:2px;font-size:13px;line-height:18px;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
 .updon{display:inline-block;background:#c9a400;color:#111;padding:7px 14px;border-radius:6px;font-size:14px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
 .updok{display:inline-block;background:#2f7d4f;color:#fff;padding:7px 14px;border-radius:6px;font-size:14px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
@@ -2650,7 +2650,8 @@ function renderPaper(p){
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  const nl=(p.bets||[]).filter(isLiveBet).length;
- h+='<table class="ptab"><tr><th>Вид ставки</th><th>'+(nl?'<span class="livebtn num" data-pop="*|*|live" title="ставки на матчи, которые идут сейчас">● '+nl+'</span>':'<span class="livebtn off" title="сейчас ни один матч с нашей ставкой не идёт">● 0</span>')+' Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
+ h=h.replace('</h2>',' '+(nl?'<span class="livebtn num" data-pop="*|*|live" title="ставки на матчи, которые идут сейчас">● '+nl+'</span>':'<span class="livebtn off" title="сейчас ни один матч с нашей ставкой не идёт">● 0</span>')+'</h2>');
+ h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
