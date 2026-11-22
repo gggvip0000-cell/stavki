@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-73"
+VERSION = "2026.11.21-74"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2316,8 +2316,8 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
 .lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;margin-right:6px;font-size:13px;line-height:18px;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
-.updon{background:#ffd400;color:#111;font-weight:700;padding:6px 12px;border-radius:8px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
-.updok{background:#3fae5a;color:#fff;font-weight:700;padding:6px 12px;border-radius:8px}
+.updon{display:inline-block;background:#c9a400;color:#111;padding:7px 14px;border-radius:6px;font-size:14px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
+.updok{display:inline-block;background:#2f7d4f;color:#fff;padding:7px 14px;border-radius:6px;font-size:14px}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
@@ -2399,7 +2399,7 @@ let UPDT=0;try{UPDT=+localStorage.getItem('updt')||0}catch(e){}
 function startUpdate(v){UPDT=Date.now();try{localStorage.setItem('updt',UPDT);localStorage.setItem('updto',v)}catch(e){}
  showUpdating();post('/api/update')}
 function showUpdating(){const u=document.getElementById('upd');const sec=Math.round((Date.now()-UPDT)/1000);
- u.innerHTML='<span class="updon">⏳ Обновление запущено · '+sec+' с · программа перезапускается, окно обновится само (обычно до минуты)</span>'}
+ u.innerHTML='<span class="updon" title="программа перезапускается, окно обновится само (обычно до минуты)">⏳ Обновляюсь… '+sec+' с</span>'}
 async function tick(){
  const updating=UPDT&&Date.now()-UPDT<5*60000;
  if(updating)showUpdating();
@@ -2408,7 +2408,7 @@ async function tick(){
   if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
   const u=document.getElementById('upd');
   let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
-  if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено до версии '+s.version+'</span>';
+  if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено</span>';
    setTimeout(()=>{try{localStorage.removeItem('updok')}catch(e){}},20000)}
   else if(s.restarting||updating)showUpdating();
   else if(s.update_available)u.innerHTML='<button class="ubtn" onclick="startUpdate(\''+s.update_available+'\')">Обновить до версии '+s.update_available+'</button>';
@@ -2497,7 +2497,7 @@ async function tick(){
    for(const b of bks){const x=d.margins[b];const c=y=>y?y[0]+'% <span class="st">('+y[1]+')</span>':'—';m+='<tr><td>'+(d.mine.includes(b)?'<b>'+b+'</b>':b)+'</td><td>'+c(x['1Х2'])+'</td><td>'+c(x['Тотал'])+'</td></tr>'}
    m+='</table>'}
   document.getElementById('more').innerHTML=m;
- }catch(e){document.getElementById('st').innerHTML=UPDT?'<span class="updon">программа перезапускается после обновления — окно вернётся само</span>':'<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
+ }catch(e){document.getElementById('st').innerHTML=UPDT?'<span class="st">программа перезапускается после обновления — окно вернётся само</span>':'<span class="bad">нет связи с программой: она перезапускается или закрыта (чёрное окно Stavki)</span>'}
 }
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
