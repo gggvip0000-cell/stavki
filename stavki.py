@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-107"
+VERSION = "2026.11.21-108"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2089,6 +2089,7 @@ OL_MK = {1: ('1x2', 'res'), 5: ('total', 'tot'), 166: ('total', 'tot'), 4: ('ah'
          10: ('h1_1x2', 'res'), 12: ('h1_total', 'tot'), 171: ('h1_total', 'tot'), 169: ('h1_ah', 'ah'),
          43: ('h1_tt1', 'tot'), 44: ('h1_tt2', 'tot')}
 JOURNAL_ONLY = {'Олимп'}
+OLIMP_MAX_AGE = 120     # -108: цена Олимпа в журнал — не старше 2 мин (иначе на сайте её могло уже не быть)
 
 
 def olimp_markets(ev):
@@ -2151,7 +2152,7 @@ def olimp_events(data):
 
 class OlimpFeed:
     """Олимп напрямую: страница линии футбола в браузере программы, запросы — изнутри неё (как делает сам сайт).
-    Вся линия — раз в 20 мин; чемпионаты с матчами в ближайшие 3 ч — раз в 90 с, 12 ч — раз в 6 мин (по 2 за опрос).
+    Вся линия — раз в 20 мин; чемпионаты с матчами в ближайший час — раз в 60 с, 3 ч — 90 с, 12 ч — 6 мин (по 4 за опрос, -108).
     Интерфейс как у DirectFeed (для direct_values_for). Капча на странице — стоп навсегда (обходить не делаем)."""
     name = 'Олимп'
     SITE = 'https://www.olimp.bet/line/futbol-1'
@@ -2229,10 +2230,11 @@ class OlimpFeed:
                 left = st - now
                 if left <= 0:
                     continue
-                every = 90 if left < 3 * 3600 else (360 if left < 12 * 3600 else None)
+                # -108: матчи в ближайший час — раз в 60 с (цена в журнал — не старше 2 мин), 3 ч — 90 с, 12 ч — 6 мин
+                every = 60 if left < 3600 else (90 if left < 3 * 3600 else (360 if left < 12 * 3600 else None))
                 if every and now - self.comp_ts.get(cid, 0) > every:
                     due.append((left, cid))
-            for _, cid in sorted(due)[:2]:
+            for _, cid in sorted(due)[:4]:         # -108: по 4 за опрос (было 2 — чемпионат ждал очереди по 4–5 мин)
                 self.comp_ts[cid] = now
                 self.take(olimp_events(json.loads(self.get(f'competitions-with-events?vids%5B%5D={cid}%3A'))), now)
                 self.stat['comp_fetches'] += 1
@@ -2434,6 +2436,10 @@ def db_open():
             pass
     try:                                       # страница матча у конторы — кнопка «к конторе» у идущего матча
         con.execute('ALTER TABLE paper2 ADD COLUMN bk_url TEXT')
+    except sqlite3.OperationalError:
+        pass
+    try:                                       # -108: сколько секунд было цене конторы, когда строка записана в журнал
+        con.execute('ALTER TABLE cand ADD COLUMN odds_age REAL')
     except sqlite3.OperationalError:
         pass
     for t in ('cand', 'paper2'):               # -84: когда снята цена закрытия Pinnacle (насколько она свежая к началу)
@@ -3885,6 +3891,11 @@ class Collector:
                 v['line'] = line_of(v['outcome']) if not fam.endswith('1x2') else None
             if not fam.endswith('1x2') and v['line'] is None:
                 continue
+            v['odds_age'] = round(now - v['odds_ts'], 1) if v.get('odds_ts') else None
+            # -108 (отчёт 22.11 19:26: Олимп CLV +6.7%, но строки за ~17 мин до начала, а цена Олимпа обновляется раз в
+            # несколько минут — такую цену на сайте могло уже не быть): Олимп в журнал — только с ценой не старше 2 мин
+            if v['bookmaker'] in JOURNAL_ONLY and (v['odds_age'] is None or v['odds_age'] > OLIMP_MAX_AGE):
+                continue
             if split_fam(fam)[0]:
                 with STATE.lock:
                     mm = STATE.matches.get(v['match_id'])
@@ -3907,9 +3918,10 @@ class Collector:
             for v in rows:
                 if v['ev'] >= CAND_MIN_EV and v['odds'] <= 4.0:
                     cur.execute('INSERT OR IGNORE INTO cand (match_id, bookmaker, src, market_name, outcome, line,'
-                                ' start_ts, first_seen, odds, fair, ev, pin_age, fam) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                ' start_ts, first_seen, odds, fair, ev, pin_age, fam, odds_age) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                 (v['match_id'], v['bookmaker'], v['src'], v['market_name'], v['outcome'], v['line'],
-                                 v['start_ts'], now, v['odds'], v['fair'], v['ev'], v.get('pin_age'), event_of(v)))
+                                 v['start_ts'], now, v['odds'], v['fair'], v['ev'], v.get('pin_age'), event_of(v),
+                                 v.get('odds_age')))
         except Exception as e:
             add_error('бумажная ставка: ' + str(e)[:100])
         self.con.commit()
