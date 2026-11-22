@@ -5,3 +5,4 @@ restarting.flag
 stavki_new.py
 __pycache__/
 *.pyc
+restart_update.flag

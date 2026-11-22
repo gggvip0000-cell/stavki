@@ -21,6 +21,8 @@ import collections
 import struct
 import zipfile
 import zlib
+import os
+import base64
 import sys
 import threading
 import time
@@ -29,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-77"
+VERSION = "2026.11.21-78"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2956,6 +2958,10 @@ class Collector:
     def shutdown_for_update(self):
         log('закрываю браузер и перезапускаюсь для обновления')
         try:
+            (HERE / 'restart_update.flag').write_text(str(time.time()))     # -78: после обновления не слать «запущена»
+        except Exception:
+            pass
+        try:
             if self.browser:
                 self.browser.close()
             if self.pw:
@@ -3458,13 +3464,17 @@ class Collector:
             return
         self.ext_last = now
         row = self.con.execute(
-            "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
+            "SELECT p.match_id, p.start_ts, m.home_en, m.away_en, p.league FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
             " LEFT JOIN ext_scores x ON x.match_id = p.match_id WHERE p.status='open' AND p.start_ts < ?"
             " AND m.home_en IS NOT NULL AND (x.match_id IS NULL OR (x.done=0 AND x.tries < 40 AND x.last_try < ?))"
             " ORDER BY p.start_ts LIMIT 1", (now - 105 * 60, now - 300)).fetchone()
         if not row:
             return
-        mid, start_ts, home_en, away_en = row
+        mid, start_ts, home_en, away_en, lg = row
+        if 'женск' in (lg or '').lower() and not (en_tokens(home_en)[1] & {'w', 'women'}):
+            # -78 (владелец 22.11: Мельбурн Виктори (ж) — FotMob «окончен», а расчёта нет): как в поиске ссылок (-59),
+            # в адресе odds.ru пометки «женщины» нет, а на FotMob «(W)» — без неё матч не находился и итог не приходил
+            home_en, away_en = home_en + '-w', away_en + '-w'
         d = self.ext.lookup(self.browser, home_en, away_en, start_ts)
         ft, ht, c = d.get('ft'), d.get('ht'), d.get('c')
         self.con.execute('INSERT INTO ext_scores (match_id, src, ext_id, ft1, ft2, ht1, ht2, c1, c2, done, tries, last_try)'
@@ -3821,6 +3831,20 @@ class Collector:
                                 sm.err = 'шаг: ' + str(e).splitlines()[0][:150]
                     except Exception as e:
                         add_error('замер баскетбола/хоккея: ' + str(e).splitlines()[0][:120], 'замер')
+                    try:
+                        if getattr(self, 'watch', None) is None:
+                            self.watch = Watchdog(TG, self.con)
+                        self.watch.step()
+                    except Exception as e:
+                        add_error('сообщения о работе (Telegram): ' + str(e).splitlines()[0][:120], 'watch')
+                    if getattr(self, 'nbk_ts', None) is None:
+                        self.nbk_ts = time.time() - 12 * 3600 + 600            # разведка новых контор — через 10 мин, потом раз в 12 ч
+                    if time.time() - self.nbk_ts > 12 * 3600 and self.browser is not None:
+                        self.nbk_ts = time.time()
+                        try:
+                            self.new_bk = new_bk_recon(self.browser)
+                        except Exception as e:
+                            self.new_bk = {'error': str(e).splitlines()[0][:200]}
                     if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
@@ -4424,6 +4448,191 @@ def bk_stats_recon(browser, con, wait_ms=20000):
             pass
 
 
+class Watchdog:
+    """-78, пункт 1 после Совета (владелец 22.11 «согласен»): программа сама сообщает в Telegram, что жива и что сломалось.
+    - при запуске: «🔄 Программа запущена» (так видно и перезапуск после обновления/падения/сна);
+    - сводка в 07:30 и 19:30 МСК: работает ли, свежесть Pinnacle и контор, бумага;
+    - тревога, если Pinnacle молчит 15 мин («проверьте VPN») или контора — 10 мин; повтор не чаще раза в час;
+      «✅ Починилось», когда вернулось;
+    - цикл программы стоял > 5 мин (ноутбук спал) — «💤 Программа стояла с … до …»;
+    - на сообщение боту «статус» — та же сводка в ответ.
+    Окно не трогает. Не даёт Windows уснуть от бездействия (SetThreadExecutionState), пока программа работает;
+    закрытую крышку это не отменяет — это настройка Windows."""
+    SUMMARY_AT = ('07:30', '19:30')
+
+    def __init__(self, tg, con):
+        self.tg, self.con = tg, con
+        self.alarms = {}            # ключ -> время последней тревоги
+        self.last_tick = time.time()
+        self.last_check = 0
+        self.sent_summary = set()
+        self.upd_offset = None
+        self.last_poll = 0
+        self.started = time.time()
+        flag, by_update = HERE / 'restart_update.flag', False
+        try:
+            by_update = flag.exists() and time.time() - float(flag.read_text() or 0) < 900
+            flag.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if not by_update:                  # перезапуск по кнопке «Обновить» — не сообщение, это владелец сделал сам
+            self.tg.send(f'🔄 Программа «Ставки» запущена в {datetime.datetime.now(MSK):%H:%M} (версия {VERSION}).')
+        if os.name == 'nt':
+            try:
+                import ctypes
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)    # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            except Exception:
+                pass
+
+    def problems(self, now):
+        out = {}
+        with STATE.lock:
+            feeds = {k: dict(v) for k, v in (STATE.status.get('feeds') or {}).items()}
+        pin = feeds.get('Pinnacle') or {}
+        if now - self.started > 900 and (not pin.get('last_ok') or now - pin['last_ok'] > 900):
+            out['pin'] = 'Нет свежих цен Pinnacle больше 15 минут — проверьте VPN на ноутбуке.'
+        for name in ('PARI', 'Фонбет', 'Винлайн'):
+            f = feeds.get(name)
+            if f is None:
+                continue
+            if now - self.started > 600 and (not f.get('last_ok') or now - f['last_ok'] > 600):
+                out['feed:' + name] = f'Нет цен {name} больше 10 минут — сайт конторы не отвечает или сменился.'
+        return out
+
+    def summary(self, now):
+        with STATE.lock:
+            feeds = {k: dict(v) for k, v in (STATE.status.get('feeds') or {}).items()}
+            tracked = STATE.status.get('tracked')
+        lines = [f'✅ Работаю · {datetime.datetime.now(MSK):%d.%m %H:%M}' + (f' · матчей в работе {tracked}' if tracked else '')]
+        for name in ('Pinnacle', 'PARI', 'Фонбет', 'Винлайн'):
+            f = feeds.get(name)
+            if f is None:
+                continue
+            age = now - f['last_ok'] if f.get('last_ok') else None
+            lines.append(f"{'✓' if age is not None and age < 600 else '⚠'} {name}: " +
+                         ('нет данных' if age is None else f'обновлён {int(age // 60)} мин назад'))
+        try:
+            ps = paper_stats(self.con, 100)
+            t = ps.get('simple_total') or {}
+            live = sum(1 for b in ps.get('bets') or [] if b.get('status') == 'open' and b.get('start_ts', 0) <= now)
+            lines.append(f"Бумага: ставок {t.get('n', 0)}, рассчитано {t.get('done', 0)}, итог {t.get('profit_rub', 0):+} ₽"
+                         + (f', сейчас идут матчей с нашими ставками: {live}' if live else ''))
+        except Exception:
+            pass
+        return '\n'.join(lines)
+
+    def poll_commands(self, now):
+        """сообщение боту «статус» → сводка в ответ (раз в 20 с смотрим новые сообщения)"""
+        if not self.tg.ready() or self.tg.connecting or now - self.last_poll < 20:
+            return
+        self.last_poll = now
+        try:
+            if self.upd_offset is None:                       # старые сообщения пропускаем
+                r = self.tg.api('getUpdates', {'offset': -1, 'timeout': 0}, timeout=15)
+                res = r.get('result') or []
+                self.upd_offset = (res[-1]['update_id'] + 1) if res else 0
+                return
+            r = self.tg.api('getUpdates', {'offset': self.upd_offset, 'timeout': 0}, timeout=15)
+            for u in r.get('result') or []:
+                self.upd_offset = u['update_id'] + 1
+                txt = ((u.get('message') or {}).get('text') or '').lower()
+                if 'статус' in txt or 'status' in txt:
+                    self.tg.send(self.summary(now))
+        except Exception:
+            pass
+
+    def step(self):
+        now = time.time()
+        gap = now - self.last_tick
+        self.last_tick = now
+        if gap > 300:
+            a = datetime.datetime.fromtimestamp(now - gap, MSK)
+            self.tg.send(f'💤 Программа стояла с {a:%H:%M} до {datetime.datetime.now(MSK):%H:%M} (ноутбук спал или завис) — '
+                         'ставки за это время не отслеживались. Сейчас снова работаю.')
+        self.poll_commands(now)
+        if now - self.last_check < 60:
+            return
+        self.last_check = now
+        hm = datetime.datetime.now(MSK).strftime('%H:%M')
+        day = datetime.datetime.now(MSK).strftime('%d.%m')
+        for at in self.SUMMARY_AT:
+            if at <= hm < at[:3] + '%02d' % (int(at[3:]) + 10) and (day, at) not in self.sent_summary:
+                self.sent_summary.add((day, at))
+                self.tg.send(self.summary(now))
+        cur = self.problems(now)
+        for k, msg in cur.items():
+            if now - self.alarms.get(k, 0) > 3600:
+                self.alarms[k] = now
+                self.tg.send('⚠ ' + msg)
+        for k in [k for k in self.alarms if k not in cur]:
+            self.alarms.pop(k)
+            self.tg.send('✅ Починилось: ' + ('цены Pinnacle снова идут.' if k == 'pin' else f'цены {k[5:]} снова идут.'))
+
+
+NEW_BK_SITES = (('BetBoom', 'https://betboom.ru/'), ('Лига Ставок', 'https://www.ligastavok.ru/'))
+
+
+def new_bk_recon(browser, wait_ms=25000):
+    """-78, пункт 2 после Совета (владелец 22.11: оставить PARI, вместо Фонбета — новая независимая контора;
+    проверить BetBoom и Лигу Ставок). Разведка: открыть сайт, перейти на футбол, 25 с записывать, откуда страница берёт
+    коэффициенты: адреса ответов (json), куски больших ответов, websocket и первые кадры, текст страницы. Ничего не
+    нажимает, кроме перехода по ссылке «Футбол». Только в отчёт."""
+    out = []
+    for name, home in NEW_BK_SITES:
+        resp, wss = [], []
+        pg = browser.new_page(locale='ru-RU')
+        try:
+            def on_resp(r):
+                try:
+                    ct = (r.headers or {}).get('content-type', '')
+                    item = {'url': r.url[:300], 'status': r.status, 'ct': ct[:60]}
+                    if ('json' in ct or 'text/plain' in ct) and len(resp) < 150:
+                        b = r.text()
+                        item['len'] = len(b)
+                        if len(b) > 1500:
+                            item['head'] = b[:1500]
+                    if len(resp) < 300:
+                        resp.append(item)
+                except Exception:
+                    pass
+
+            def on_ws(ws):
+                rec = {'url': ws.url[:300], 'frames': []}
+                wss.append(rec)
+
+                def fr(pl):
+                    if len(rec['frames']) < 8:
+                        if isinstance(pl, (bytes, bytearray)):
+                            rec['frames'].append({'bin': len(pl), 'b64': base64.b64encode(bytes(pl[:600])).decode()})
+                        else:
+                            rec['frames'].append({'text': str(pl)[:600]})
+                ws.on('framereceived', fr)
+            pg.on('response', on_resp)
+            pg.on('websocket', on_ws)
+            pg.goto(home, wait_until='domcontentloaded', timeout=60000)
+            pg.wait_for_timeout(6000)
+            links = pg.eval_on_selector_all('a[href]', 'as => as.map(a => [a.href, (a.innerText || "").trim()]).slice(0, 2000)')
+            foot = next((h for h, t in links if re.search(r'football|futbol|soccer', h, re.I)), None) or \
+                next((h for h, t in links if t.lower() == 'футбол'), None)
+            if foot:
+                pg.goto(foot, wait_until='domcontentloaded', timeout=60000)
+            pg.wait_for_timeout(wait_ms)
+            try:
+                text = pg.inner_text('body')[:6000]
+            except Exception as x:
+                text = 'текст не получен: ' + str(x)[:80]
+            out.append({'bk': name, 'home': home, 'football_url': foot, 'final_url': pg.url, 'responses': resp,
+                        'websockets': wss, 'page_text': text})
+        except Exception as x:
+            out.append({'bk': name, 'home': home, 'error': str(x).splitlines()[0][:200], 'responses': resp[:50]})
+        finally:
+            try:
+                pg.close()
+            except Exception:
+                pass
+    return {'made': now_str(), 'sites': out}
+
+
 def sports_recon(col):
     """-62, пункт «замер других видов спорта» (владелец 22.11 «давай дальше»), шаг 1 — разведка: какие виды спорта и
     рынки есть в линии Фонбета (коды ставок, примеры событий) и у Pinnacle (виды спорта и число матчей). Только в отчёт."""
@@ -4495,6 +4704,7 @@ def build_report(con):
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
+    rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
     for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
         sm = getattr(COLLECTOR, attr, None)
         if sm is not None:
