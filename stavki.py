@@ -4252,7 +4252,8 @@ class Collector:
                             r = bk_stats_recon(self.browser, self.con)
                             if r is not None:                 # нашёлся идущий матч — следующая разведка через 3 ч
                                 self.bk_stats = r
-                                self.bksr_ts = time.time()
+                                # сайт показал проверку «вы не робот» — больше не ходим (обход защиты не делаем)
+                                self.bksr_ts = time.time() + (10 ** 9 if r.get('blocked') else 0)
                             else:
                                 self.bksr_ts = time.time() - 3 * 3600 + 600     # идущего матча нет — проверить через 10 мин
                         except Exception as e:
@@ -4874,7 +4875,8 @@ def winline_event_recon(browser, wl, n=2, wait_ms=15000):
 
 
 # адреса страниц правил — по памяти, не проверены: что открылось — видно в отчёте (final_url, длина текста)
-RULES_PAGES = (('Фонбет', 'https://fon.bet/rules'), ('PARI', 'https://www.pari.ru/rules'), ('Винлайн', 'https://winline.ru/rules'))
+# Фонбет убран (-86): его страница матча показала программе капчу; Фонбет и так заменяем
+RULES_PAGES = (('PARI', 'https://pari.ru/rules'), ('Винлайн', 'https://winline.ru/rules'))
 RULES_WORDS = r'углов|corner|основное время|дополнительн|овертайм|не пробит|перепод|переигр|трансляци|прерван|источник'
 
 
@@ -4918,6 +4920,10 @@ def bk_stats_recon(browser, con, wait_ms=20000):
     if not row:
         return None
     url, title = row
+    # -86: страница матча на fon.bet показала программе капчу «вы не робот» (отчёт 22.11 10:56). Обходить не делаем;
+    # виджет статистики владелец видел на PARI (снимок 22.11: Чоннам — Ансан, угловые 0:0 на 45:23) — номера событий у
+    # Фонбета и PARI общие, адрес тот же, меняется только сайт. Если и PARI покажет проверку — разведка останавливается.
+    url = re.sub(r'^https?://(www\.)?fon\.bet/', 'https://pari.ru/', url)
     seen, hits = [], []
     pg = browser.new_page(locale='ru-RU')
     try:
@@ -4945,8 +4951,9 @@ def bk_stats_recon(browser, con, wait_ms=20000):
             text = pg.inner_text('body')[:8000]
         except Exception as x:
             text = 'текст не получен: ' + str(x)[:80]
+        blocked = bool(re.search(r'не с роботом|не робот|пройдите капчу|captcha', text, re.I))
         return {'made': now_str(), 'match': title, 'url': url, 'responses': seen, 'websockets': ws_urls, 'hits': hits,
-                'page_text': text}
+                'page_text': text, 'blocked': blocked}
     except Exception as x:
         return {'made': now_str(), 'match': title, 'url': url, 'error': str(x).splitlines()[0][:200]}
     finally:
