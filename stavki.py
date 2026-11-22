@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-88"
+VERSION = "2026.11.21-89"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4257,6 +4257,13 @@ class Collector:
                     if self.evr_q and time.time() - self.evr_ts > 180 and self.browser is not None:
                         self.evr_ts = time.time()
                         self.evr.append(bk_event_recon(self.browser, *self.evr_q.pop(0)))
+                    # -89: разведка запросов Олимпа — через 4 мин после запуска, раз в 6 ч
+                    if time.time() - getattr(self, 'olr_ts', time.time() - 6 * 3600 + 240) > 6 * 3600 and self.browser is not None:
+                        self.olr_ts = time.time()
+                        try:
+                            self.olimp = olimp_recon(self.browser)
+                        except Exception as e:
+                            self.olimp = {'error': str(e).splitlines()[0][:200]}
                     if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
@@ -4886,7 +4893,8 @@ def winline_event_recon(browser, wl, n=2, wait_ms=15000):
 
 # адреса страниц правил — по памяти, не проверены: что открылось — видно в отчёте (final_url, длина текста)
 # Фонбет убран (-86): его страница матча показала программе капчу; Фонбет и так заменяем
-RULES_PAGES = (('PARI', 'https://pari.ru/rules'), ('Винлайн', 'https://winline.ru/rules'))
+# отчёт 15:03: правила PARI прочитаны (угловые — как у Pinnacle); winline.ru/rules — только меню. С -89 не читаем
+RULES_PAGES = ()
 RULES_WORDS = r'углов|corner|основное время|дополнительн|овертайм|не пробит|перепод|переигр|трансляци|прерван|источник'
 
 
@@ -5122,12 +5130,59 @@ class Watchdog:
 # Итог 22.11 (отчёт 10:56): открылись Мелбет, Олимп, Марафон, Зенит, BETTERY (платформа Фонбета — та же линия, не
 # независимая); не пускает Леон; Бет-М — соединение отклонено; Бетсити — пустая страница. С -86 проверяются только
 # не проверенные до конца: Балтбет и Бетсити (дольше ждём)
-NEW_BK_SITES = (('Балтбет', 'https://baltbet.ru/'), ('Бетсити', 'https://betcity.ru/'))
+# отчёт 15:03: Балтбет открылся (16 ответов с данными), Бетсити — данных нет. С -89 разведка контор закончена
+NEW_BK_SITES = ()
 # -86, пункт 2: открывшиеся независимые конторы — страница одного матча: есть ли угловые, что за цены, откуда данные
-EVENT_RECON_SITES = (('Олимп', 'https://www.olimp.bet/line/futbol-1', '/line/futbol-1/'),
-                     ('Марафон', 'https://www.marathonbet.ru/su/betting/Football/Russia/Premier+League+-+22433', '/su/betting/Football/'),
-                     ('Зенит', 'https://zenit.win/line/football/l_246211_russia-premier-league', '/line/football/'),
-                     ('Мелбет', 'https://melbet.ru/ru/sport/pre-match/football', '/ru/sport/pre-match/football/'))
+# Итог 22.11 (отчёт 15:03): Олимп — json /api/v4/0/line/events?vids[]=<id>:&main=false (все рынки матча, ~390 КБ), угловые —
+# отдельные «статистические» матчи «УГЛ А - УГЛ Б»; Марафон — 86 угловых на матч, цены только в тексте страницы; Зенит —
+# угловые есть, правила угловых как у Pinnacle; Мелбет — страница матча не нашлась. Выбран Олимп (владелец «давай подключим»).
+# С -89 страницы матчей больше не открываем.
+EVENT_RECON_SITES = ()
+
+
+def olimp_recon(browser, wait_ms=12000):
+    """-89, пункт 2 (владелец 22.11: «давай подключим» Олимп вместо Фонбета), шаг 1: какими запросами сайт Олимпа сам
+    получает список матчей чемпионата с кф и угловые («Статистика» — отдельные матчи «УГЛ А - УГЛ Б»). Открывает страницу
+    линии футбола, потом страницу одного чемпионата и одного «статистического» чемпионата; пишет адреса /api/ и начало
+    ответов (структура). Только читает, ничего не нажимает. Только в отчёт."""
+    from urllib.parse import urlparse
+    out = {'made': now_str(), 'pages': []}
+    pg = browser.new_page(locale='ru-RU', viewport={'width': 1400, 'height': 900})
+    cur = {'resp': []}
+
+    def on_resp(r):
+        try:
+            if '/api/' in r.url and len(cur['resp']) < 40:
+                b = r.text()
+                cur['resp'].append({'url': r.url[:400], 'status': r.status, 'len': len(b), 'head': b[:6000]})
+        except Exception:
+            pass
+    pg.on('response', on_resp)
+    try:
+        def visit(url):
+            cur['resp'] = []
+            pg.goto(url, wait_until='domcontentloaded', timeout=60000)
+            pg.wait_for_timeout(wait_ms)
+            txt = pg.inner_text('body')
+            out['pages'].append({'url': url, 'final_url': pg.url, 'responses': cur['resp'], 'text': txt[:4000],
+                                 'blocked': bool(re.search(r'не робот|капч|captcha', txt, re.I))})
+            return [h for h in pg.eval_on_selector_all('a[href]', 'as => as.map(a => [a.href, (a.innerText||"").trim()])')]
+        links = visit('https://www.olimp.bet/line/futbol-1')
+        comps = [(h, t) for h, t in links if re.fullmatch(r'/line/futbol-1/[^/]+', urlparse(h).path or '')]
+        out['comp_links'] = comps[:80]
+        top = next((h for h, t in comps if re.search(r'англ|apl|premer', h + t, re.I)), comps[0][0] if comps else None)
+        stat = next((h for h, t in comps if re.search(r'statist|статист', h + t, re.I)), None)
+        for u in (top, stat):
+            if u and not out['pages'][-1]['blocked']:
+                visit(u)
+    except Exception as e:
+        out['error'] = str(e).splitlines()[0][:200]
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+    return out
 
 
 def bk_event_recon(browser, name, line_url, prefix, wait_ms=15000):
@@ -5345,6 +5400,7 @@ def build_report(con):
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
     rep['rules_recon'] = getattr(COLLECTOR, 'rules', None)
     rep['bk_event_recon'] = getattr(COLLECTOR, 'evr', None)
+    rep['olimp_recon'] = getattr(COLLECTOR, 'olimp', None)
     rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
     # -84, пункт 3: где цена Pinnacle к началу сдвинулась больше чем на 15% — история её цены и с каким матчем Pinnacle
     # он сопоставлен (22.11: Мельбурн Виктори 1.40 → 2.13 — проверить, не чужой ли матч)
