@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-91"
+VERSION = "2026.11.21-92"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2115,6 +2115,7 @@ class State:
         self.direct_cover = {}   # контора -> матчи odds.ru, по которым есть прямые цены
         self.restart_requested = False
         self.razvedka_requested = False
+        self.manual_q = []       # -92: счёт, введённый владельцем: (match_id, part, h, a)
         self.margins = {}        # (контора, рынок) -> [сумма, число строк]
         self.pin_fair = {}       # id матча odds.ru -> честные цены Pinnacle с его сайта
 
@@ -2231,6 +2232,10 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
                 ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
     con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
+    # -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): счёт угловых/тайма, введённый владельцем вручную,
+    # когда ни один источник его не дал (FotMob без статистики, Sofascore не пускает, в потоке PARI угловых не было)
+    con.execute('CREATE TABLE IF NOT EXISTS manual_scores (match_id INT, part TEXT, h INT, a INT, ts REAL,'
+                ' PRIMARY KEY (match_id, part))')
     # счёт и угловые идущих матчей с FotMob — когда у Фонбета в лайве угловых нет (владелец 22.11: «на FotMob вижу, в программе нет»)
     con.execute('CREATE TABLE IF NOT EXISTS ext_live (match_id INT PRIMARY KEY, ft1 INT, ft2 INT, c1 INT, c2 INT, ts REAL)')
     if 'fin' not in [r[1] for r in con.execute('PRAGMA table_info(ext_live)')]:
@@ -2408,7 +2413,7 @@ td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd4
 .mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
 .mt tr.mg td{background:#1b2430;padding:6px 8px;border-bottom:none}.lft{color:#ffd400;font-weight:700;font-size:13px}
 .bt{font-weight:700}.mlink{text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}
-.mt td.bcell{white-space:nowrap}.mt td.rcell{width:120px;max-width:140px;font-size:13px}.mt .bkbtn{margin-left:0}
+.mt td.bcell{white-space:nowrap}.mform{margin-top:4px}.mform span{white-space:nowrap}.mform input{width:38px;padding:2px 4px;background:#0f141b;color:#e8eef5;border:1px solid #3a4656;border-radius:4px}.mform button{padding:2px 8px;cursor:pointer}.mt td.rcell{width:120px;max-width:140px;font-size:13px}.mt .bkbtn{margin-left:0}
 a.bkbtn,span.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:#fff;background:var(--c);border-radius:5px;padding:1px 7px;text-decoration:none;vertical-align:1px}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
@@ -2683,7 +2688,13 @@ function decided(b){
  if(!has(1))return '<span class="neg">выиграть уже нельзя</span>'+sub((has(-1)?'максимум полвозврата':'максимум возврат')+' · '+now);
  return '';
 }
-let POPSEL=null;
+let POPSEL=null;const MANSENT={},MANVAL={};
+// -92: счёт угловых/1-го тайма вручную → программа записывает и сразу рассчитывает ставки этого матча
+async function manSc(id,mid,part){const h=document.getElementById('mh'+id),a=document.getElementById('ma'+id);
+ const hv=parseInt(h&&h.value,10),av=parseInt(a&&a.value,10);
+ if(!(hv>=0&&hv<=40&&av>=0&&av<=40)){if(h)h.style.outline='2px solid #e55';if(a)a.style.outline='2px solid #e55';return}
+ try{const r=await fetch('/api/manual_score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:mid,part:part,h:hv,a:av})});
+  const j=await r.json();if(j.ok){MANSENT[mid+part]=1;if(POPSEL)popBets(POPSEL)}}catch(e){}}
 // -71 (владелец 22.11: «над „Сделано“ — цифра, по ней окно только со ставками, где матчи идут сейчас»)
 function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts>now)return false;
  const lv=b.live||{},t=lv.timer;if(lv.fin)return false;
@@ -2715,7 +2726,11 @@ function popBets(sel){
     left='<div class="livem">● '+(lv.fin?'матч окончен':matchClock(lv.timer,mins))+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
    else left='<div class="mu sm">закончился, ждём результат</div>'}
   else left='<div class="mu sm">сыгран</div>';
-  let res=b.status==='open'?(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>'):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  // -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): тайм/угловые через 2.5 ч после начала так и не пришли
+  // ни из одного источника — можно ввести счёт с сайта (PARI, Flashscore) вручную, ставки матча рассчитаются сразу
+  const needMan=b.status==='open'&&b.part!=='МАТЧ'&&now-b.start_ts>150*60&&b.mid;
+  const mk=b.part==='УГЛОВЫЕ'?'c':'h1';
+  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':'счёта 1-го тайма')+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
@@ -2809,7 +2824,8 @@ function renderPaper(p){
  el.innerHTML=h+'</div>';
  fitTable(el);
  const pe=document.getElementById('pop');
- if(pe&&pe.style.display==='flex'&&POPSEL){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
+ const ae=document.activeElement;
+ if(pe&&pe.style.display==='flex'&&POPSEL&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae))){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
  watchChg();
 }
 
@@ -3102,6 +3118,18 @@ class Handler(BaseHTTPRequestHandler):
             if token and TG:
                 threading.Thread(target=TG.connect, args=(token,), daemon=True).start()
             body = b'{"ok": true}'
+        elif self.path.startswith('/api/manual_score'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                q = json.loads(self.rfile.read(min(n, 2000)).decode('utf-8') or '{}')
+                mid, part, h, a = int(q['mid']), str(q['part']), int(q['h']), int(q['a'])
+                ok = part in ('c', 'h1') and 0 <= h <= 40 and 0 <= a <= 40
+            except Exception:
+                ok = False
+            if ok:
+                with STATE.lock:
+                    STATE.manual_q.append((mid, part, h, a))
+            body = json.dumps({'ok': ok}).encode('utf-8')
         elif self.path.startswith('/api/razvedka'):
             with STATE.lock:
                 if not STATE.status['razvedka'] or STATE.status['razvedka'].startswith('готово'):
@@ -3655,7 +3683,8 @@ class Collector:
                 (time.time() - 50 * 60,)).fetchall():      # с -49: не ждать 3 ч — каждый источник сам знает, окончателен ли счёт
             pre, base = split_fam(fam)
             h = a = None
-            for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid)):
+            for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid),
+                      self.manual_result(mid)):
                 if d:
                     h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
                     if h is not None and a is not None:
@@ -3882,6 +3911,16 @@ class Collector:
         self.con.commit()
         if ft:
             self.settle_paper()                  # -61: итог пришёл — рассчитать сразу, не ждать обновления списка
+
+    def manual_result(self, mid):
+        """-92: счёт тайма/угловых, введённый владельцем в окне ставок (последний источник — автоматические главнее)"""
+        d = {'hthg': None, 'htag': None, 'hc': None, 'ac': None}
+        for part, h, a in self.con.execute('SELECT part, h, a FROM manual_scores WHERE match_id=?', (mid,)):
+            if part == 'h1':
+                d['hthg'], d['htag'] = h, a
+            elif part == 'c':
+                d['hc'], d['ac'] = h, a
+        return d
 
     def ext_result(self, mid):
         r = self.con.execute('SELECT ft1, ft2, ht1, ht2, c1, c2 FROM ext_scores WHERE match_id=? AND done=1',
@@ -4213,6 +4252,15 @@ class Collector:
                         STATE.status['restarting'] = False
                 else:
                     self.shutdown_for_update()
+            with STATE.lock:
+                mq, STATE.manual_q = STATE.manual_q, []
+            for mid_, part_, h_, a_ in mq:
+                self.con.execute('INSERT OR REPLACE INTO manual_scores (match_id, part, h, a, ts) VALUES (?,?,?,?,?)',
+                                 (mid_, part_, h_, a_, time.time()))
+                self.con.commit()
+                log(f'введён вручную счёт ({part_}) матча {mid_}: {h_}:{a_}')
+                self.settle_paper()
+                self.con.commit()
             if STATE.razvedka_requested:
                 STATE.razvedka_requested = False
                 try:
@@ -4431,7 +4479,7 @@ def paper_stats(con, stake_rub):
             " profit, res_h, res_a, bk_url, fair"
             " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
         pre = split_fam(fam or '')[0]
-        out['bets'].append({'id': pid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
+        out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
                             'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
                             'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
@@ -5167,41 +5215,141 @@ NEW_BK_SITES = ()
 EVENT_RECON_SITES = ()
 
 
+def olimp_summ(body, max_groups=80):
+    """-92: краткая выжимка ответа Олимпа: события (имя, чемпионат, parentId, время) и группы рынков
+    (groupName, tableType, marketId, число исходов, примеры shortName/param/unprocessedName/кф)."""
+    try:
+        data = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        data = [data]
+    evs, groups = [], {}
+    for it in data:
+        p = it.get('payload') if isinstance(it, dict) else None
+        if not isinstance(p, dict):
+            continue
+        lst = p.get('events') if isinstance(p.get('events'), list) else [p]
+        for comp in (p.get('competitionsWithEvents') or []):
+            lst = lst + list(comp.get('events') or [])
+        for e in lst:
+            if not isinstance(e, dict) or 'outcomes' not in e and 'team1Name' not in e:
+                continue
+            evs.append({k: e.get(k) for k in ('id', 'name', 'competitionId', 'competitionName', 'parentId',
+                                                'startDateTime', 'outcomeCount', 'state')})
+            for o in e.get('outcomes') or []:
+                k = (o.get('groupName'), o.get('tableType'), o.get('marketId'))
+                g = groups.setdefault(k, {'n': 0, 'ex': []})
+                g['n'] += 1
+                if len(g['ex']) < 4:
+                    g['ex'].append([o.get('shortName'), o.get('param'), o.get('unprocessedName'), o.get('probability'),
+                                    o.get('basketId')])
+    out_g = sorted(groups.items(), key=lambda kv: -kv[1]['n'])[:max_groups]
+    return {'ops': sorted({str(it.get('operationId')) for it in data if isinstance(it, dict)}),
+            'n_events': len(evs), 'events': evs[:25],
+            'groups': [{'group': k[0], 'table': k[1], 'market': k[2], **v} for k, v in out_g]}
+
+
 def olimp_recon(browser, wait_ms=12000):
-    """-89, пункт 2 (владелец 22.11: «давай подключим» Олимп вместо Фонбета), шаг 1: какими запросами сайт Олимпа сам
-    получает список матчей чемпионата с кф и угловые («Статистика» — отдельные матчи «УГЛ А - УГЛ Б»). Открывает страницу
-    линии футбола, потом страницу одного чемпионата и одного «статистического» чемпионата; пишет адреса /api/ и начало
-    ответов (структура). Только читает, ничего не нажимает. Только в отчёт."""
+    """-89/-92, пункт 2 (владелец 22.11: «давай подключим» Олимп вместо Фонбета): какими запросами сайт Олимпа сам
+    получает список матчей чемпионата с кф и угловые («Статистика» — отдельные матчи «УГЛ А - УГЛ Б», parentId).
+    -92: в -90 страница чемпионата не открылась — на линии нет ссылок на чемпионаты, только на матчи
+    (/line/futbol-1/<чемпионат-id>/<матч-id>). Теперь адрес чемпионата = адрес матча без последней части.
+    Дальше — изнутри страницы сайта (как браузер сам): список чемпионатов (сколько «Статистика»), запрос списка матчей
+    чемпионата с подставленным номером «статистического» чемпионата, полная роспись одного матча и одного
+    «УГЛ»-матча — выжимкой (группы рынков). Только читает, ничего не нажимает. Только в отчёт."""
     from urllib.parse import urlparse
-    out = {'made': now_str(), 'pages': []}
+    out = {'made': now_str(), 'pages': [], 'fetches': []}
     pg = browser.new_page(locale='ru-RU', viewport={'width': 1400, 'height': 900})
     cur = {'resp': []}
+    full = {}                                         # адрес → тело (для выжимки и поиска запроса чемпионата)
 
     def on_resp(r):
         try:
             if '/api/' in r.url and len(cur['resp']) < 40:
                 b = r.text()
-                cur['resp'].append({'url': r.url[:400], 'status': r.status, 'len': len(b), 'head': b[:6000]})
+                full[r.url] = b
+                cur['resp'].append({'url': r.url[:400], 'status': r.status, 'len': len(b), 'head': b[:3000]})
         except Exception:
             pass
     pg.on('response', on_resp)
+
+    def fetch(url, why):
+        r = pg.evaluate(PAGE_FETCH_JS, url) or {}
+        t = r.get('t') or ''
+        rec = {'why': why, 'url': url[:400], 'status': r.get('s'), 'len': len(t), 'head': t[:1500],
+               'summ': olimp_summ(t)}
+        out['fetches'].append(rec)
+        return t
+
+    def blocked(txt):
+        return bool(re.search(r'не робот|капч|captcha', txt or '', re.I))
     try:
         def visit(url):
             cur['resp'] = []
             pg.goto(url, wait_until='domcontentloaded', timeout=60000)
             pg.wait_for_timeout(wait_ms)
             txt = pg.inner_text('body')
-            out['pages'].append({'url': url, 'final_url': pg.url, 'responses': cur['resp'], 'text': txt[:4000],
-                                 'blocked': bool(re.search(r'не робот|капч|captcha', txt, re.I))})
+            out['pages'].append({'url': url, 'final_url': pg.url, 'responses': cur['resp'], 'text': txt[:2500],
+                                 'blocked': blocked(txt)})
             return [h for h in pg.eval_on_selector_all('a[href]', 'as => as.map(a => [a.href, (a.innerText||"").trim()])')]
         links = visit('https://www.olimp.bet/line/futbol-1')
-        comps = [(h, t) for h, t in links if re.fullmatch(r'/line/futbol-1/[^/]+', urlparse(h).path or '')]
-        out['comp_links'] = comps[:80]
-        top = next((h for h, t in comps if re.search(r'англ|apl|premer', h + t, re.I)), comps[0][0] if comps else None)
-        stat = next((h for h, t in comps if re.search(r'statist|статист', h + t, re.I)), None)
-        for u in (top, stat):
-            if u and not out['pages'][-1]['blocked']:
-                visit(u)
+        if out['pages'][-1]['blocked']:
+            return out
+        comps = {}
+        for h, t in links:
+            parts = [x for x in (urlparse(h).path or '').split('/') if x]
+            if len(parts) >= 3 and parts[0] == 'line' and parts[1] == 'futbol-1':
+                comps.setdefault('https://www.olimp.bet/line/futbol-1/' + parts[2], h)
+        out['comp_links'] = list(comps)[:80]
+        top = next((c for c in comps if re.search(r'angli|premer', c)), next(iter(comps), None))
+        out['comp_url'] = top
+        if top:
+            visit(top)
+        if out['pages'][-1]['blocked']:
+            return out
+        # список чемпионатов (уже пришёл странице) → «статистические» чемпионаты
+        lst = next((b for u, b in full.items() if 'line/sports-with-categories-with-competitions' in u), '')
+        stat = []
+        try:
+            for it in json.loads(lst):
+                p = it.get('payload') or {}
+                if str(p.get('id')) != '1':
+                    continue
+                for cat in p.get('categoriesWithCompetitions') or []:
+                    for c in cat.get('competitions') or []:
+                        if re.search(r'статист', c.get('name') or '', re.I):
+                            stat.append((c.get('eventCount') or 0, str(c.get('id')), c.get('name')))
+        except Exception as e:
+            out['comp_list_error'] = str(e)[:200]
+        stat = sorted(set(stat), reverse=True)
+        out['stat_comps'] = {'n': len(stat), 'events': sum(x[0] for x in stat), 'top': stat[:25]}
+        # запрос, которым страница чемпионата получила свои матчи: адрес /api/ с номером чемпионата
+        cid = re.search(r'-(\d+)$', top or '')
+        cid = cid.group(1) if cid else None
+        out['comp_id'] = cid
+        q = [u for u in full if cid and cid in u and '/api/' in u]
+        out['comp_queries'] = q[:10]
+        for u in q[:3]:
+            out['fetches'].append({'why': 'ответ страницы чемпионата', 'url': u[:400], 'len': len(full[u]),
+                                   'summ': olimp_summ(full[u])})
+        if q and stat:
+            fetch(q[0].replace(cid, stat[0][1]), 'тот же запрос с номером «статистического» чемпионата')
+        elif stat:                                    # страница не спросила /api/ с номером — пробуем догадки
+            for g in ('competitions-with-events?vids%5B%5D={}%3A', 'sports-with-competitions-with-events?vids%5B%5D=1%3A{}'):
+                fetch('https://www.olimp.bet/api/v4/0/line/' + g.format(stat[0][1]), 'догадка: матчи чемпионата')
+        # полная роспись: один обычный матч и один «УГЛ»-матч
+        ev = next(iter(comps.values()), None)
+        m = re.search(r'-(\d+)$', urlparse(ev).path) if ev else None
+        if m:
+            fetch(f'https://www.olimp.bet/api/v4/0/line/events?vids%5B%5D={m.group(1)}%3A&main=false', 'роспись матча')
+        ugl = None
+        for f in out['fetches']:
+            for e in ((f.get('summ') or {}).get('events') or []):
+                if re.match(r'УГЛ ', e.get('name') or ''):
+                    ugl = ugl or e.get('id')
+        if ugl:
+            fetch(f'https://www.olimp.bet/api/v4/0/line/events?vids%5B%5D={ugl}%3A&main=false', 'роспись «УГЛ»-матча')
     except Exception as e:
         out['error'] = str(e).splitlines()[0][:200]
     finally:
@@ -5415,6 +5563,7 @@ def build_report(con):
            # -82: по матчам с открытыми ставками — что видел лайв конторы и что дал odds.ru (22.11 угловые Чоннам — Ансан
            # «ждём результат», а по отчёту не понять, был ли счёт угловых в лайве PARI)
            'open_bk_scores': rows("SELECT * FROM bk_scores WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open')"),
+           'manual_scores': rows('SELECT * FROM manual_scores'),
            'open_results': rows("SELECT * FROM results WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open')"),
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                       for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
