@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-76"
+VERSION = "2026.11.21-77"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2315,6 +2315,8 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+/* -77 (владелец 22.11: «обведи цифры чёрной рамкой, чтобы читались лучше»): белый текст на цветных плашках — с чёрным контуром */
+.sec .bkn,.livebtn,.bkbtn{text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 0 2px #000}.bkbtn{white-space:nowrap}
 .lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;margin-left:40px;vertical-align:2px;font-size:13px;line-height:18px;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
 .updon{display:inline-block;background:#c9a400;color:#111;padding:7px 14px;border-radius:6px;font-size:14px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
 .updok{display:inline-block;background:#2f7d4f;color:#fff;padding:7px 14px;border-radius:6px;font-size:14px}
