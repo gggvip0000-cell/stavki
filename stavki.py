@@ -4443,6 +4443,9 @@ def paper_stats(con, stake_rub):
     return out
 
 
+NDFL_RATE = 0.13          # НДФЛ с выигрыша (до 2.4 млн ₽ в год); первые 4000 ₽ выигрыша в год не облагаются — не учитываем
+
+
 def clv_dedup(con):
     """-85, пункт 4 после Совета (владелец 22.11): проверка по цене Pinnacle перед матчем (CLV) без повторов.
     Только цены с сайта контор. Одна и та же ставка (матч + рынок + исход + линия) у Фонбета и PARI (одна линия)
@@ -4459,6 +4462,10 @@ def clv_dedup(con):
         k = (mid, fam, oc, line)
         if k not in best or odds > best[k]['odds']:
             best[k] = {'mid': mid, 'fam': fam, 'odds': odds, 'clv': clv, 'ev': ev, 'bk': bk,
+                       # после налога: 13% с чистого выигрыша каждой выигравшей ставки, проигрыши не вычитаются (НК РФ
+                       # ст. 214.7 на осень 2026; законопроект 617-9 о зачёте проигрышей ещё не принят). Шанс выигрыша
+                       # по цене закрытия ≈ (1 + clv) / кф (возврат не учитывается)
+                       'clv_tax': clv - NDFL_RATE * (1 + clv) * (odds - 1) / odds if odds and odds > 1 else clv,
                        'lead': (st - first) / 60 if st and first else None,
                        'close_age': (st - cts) / 60 if st and cts else None}
     rows = list(best.values())
@@ -4472,6 +4479,7 @@ def clv_dedup(con):
             bym.setdefault(x['mid'], []).append(x['clv'])
         mm = [sum(v) / len(v) for v in bym.values()]
         return {'n': len(xs), 'matches': len(bym), 'clv': round(100 * sum(c) / len(c), 2),
+                'clv_tax': round(100 * sum(x['clv_tax'] for x in xs) / len(xs), 2),
                 'median': round(100 * statistics.median(c), 2), 'pos': round(100 * sum(v > 0 for v in c) / len(c)),
                 'clv_by_match': round(100 * sum(mm) / len(mm), 2), 'pos_by_match': round(100 * sum(v > 0 for v in mm) / len(mm))}
 
