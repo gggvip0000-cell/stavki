@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-57"
+VERSION = "2026.11.21-58"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -478,6 +478,16 @@ def en_sim(a, b):
     elif (set(ca) & set(cb)) - EN_COMMON:
         r = max(r, 0.75)
     return r
+
+
+def en_names_any(home_en, away_en, url):
+    """английские названия для поиска страницы матча. Нет home_en (матч записан до -11 или уже начался и пропал
+    из списка odds.ru) — берём обе части адреса odds.ru без ориентации: для ссылки хозяева/гости не важны,
+    find_fotmob сверяет оба порядка (22.11: 14 из 54 матчей не искались вовсе)."""
+    if home_en and away_en:
+        return home_en, away_en
+    m = re.search(r'/match/([^/]+)-vs-([^/]+)/\d+-\d+/?$', url or '')
+    return (m.group(1), m.group(2)) if m else (None, None)
 
 
 def en_names_of(ev):
@@ -2448,7 +2458,7 @@ async function tick(){
   renderPaper(d.paper);
   let m='<p class="st">'+[ 'матчей в работе '+s.tracked+' (обновлены за 5 мин: '+s.fresh+')','список матчей обновлён '+(s.events_updated||'—'),s.cycle_info,(s.near?'Pinnacle по матчам ближайших 3 ч ('+s.near+'): в среднем '+fmt(s.near_age)+' назад, самый старый '+fmt(s.near_max):''),(s.avg_request?'ответ odds.ru в среднем '+s.avg_request+' с':'')].filter(x=>x).join(' · ')+'</p>';
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
-  const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
+  const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.noname?', без английских названий (искать не по чему) '+sf.noname:'')+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
   te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
@@ -3240,6 +3250,11 @@ class Collector:
         if len(teams) != 2:
             return
         same = self.ext.pair(teams[0].get('name', ''), teams[1].get('name', ''), he or '', ae or '')
+        if same is None:
+            # хозяева неизвестны (нет английских названий) — не пишем: перевёрнутые угловые испортят инд. тотал
+            self.con.execute('INSERT OR REPLACE INTO ext_live VALUES (?,NULL,NULL,NULL,NULL,?)', (mid, now))
+            self.con.commit()
+            return
         ft = [teams[0].get('score'), teams[1].get('score')]
         c = None
         for g in ((((j.get('content') or {}).get('stats') or {}).get('Periods') or {}).get('All') or {}).get('stats') or []:
@@ -3260,11 +3275,16 @@ class Collector:
         if now - getattr(self, 'sofa_last', 0) < 15 or self.browser is None:
             return
         self.sofa_last = now
-        rows = self.con.execute(
-            "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
-            " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE m.home_en IS NOT NULL AND p.strategy='Б'"
-            " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
-            " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)).fetchall()
+        rows = []
+        for mid, st, he, ae, url in self.con.execute(
+                "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en, m.url FROM paper2 p"
+                " LEFT JOIN matches m ON m.match_id = p.match_id"
+                " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy='Б'"
+                " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
+                " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)):
+            he, ae = en_names_any(he, ae, url)
+            if he:
+                rows.append((mid, st, he, ae))
         if not rows:
             return
         ext = self.ext
@@ -3742,6 +3762,8 @@ def paper_stats(con, stake_rub):
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
     for lmid, f1, f2, c1, c2 in con.execute('SELECT match_id, ft1, ft2, c1, c2 FROM ext_live WHERE ts > ?',
                                              (time.time() - 300,)):
+        if f1 is None and c1 is None:
+            continue
         d = live.setdefault(lmid, {})
         if 'c' not in d and c1 is not None and c2 is not None:
             d['c'] = [c1, c2]                  # угловых нет в лайве конторы — берём FotMob
@@ -3765,7 +3787,10 @@ def paper_stats(con, stake_rub):
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
     need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
-    out['sofa'] = {'found': sl[0] or 0, 'notfound': sl[1] or 0, 'need': need,
+    noname = sum(1 for he, ae, u in con.execute(
+        "SELECT m.home_en, m.away_en, m.url FROM (SELECT DISTINCT match_id FROM paper2 WHERE strategy='Б') p"
+        " LEFT JOIN matches m ON m.match_id = p.match_id") if not en_names_any(he, ae, u)[0])
+    out['sofa'] = {'found': sl[0] or 0, 'notfound': sl[1] or 0, 'need': need, 'noname': noname,
                    'error': (getattr(COLLECTOR, 'ext', None) and (COLLECTOR.ext.last_error
                                                                    or getattr(COLLECTOR.ext, 'last_http', ''))) or ''}
     out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
