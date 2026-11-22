@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-62"
+VERSION = "2026.11.21-63"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2190,6 +2190,8 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
     # счёт и угловые идущих матчей с FotMob — когда у Фонбета в лайве угловых нет (владелец 22.11: «на FotMob вижу, в программе нет»)
     con.execute('CREATE TABLE IF NOT EXISTS ext_live (match_id INT PRIMARY KEY, ft1 INT, ft2 INT, c1 INT, c2 INT, ts REAL)')
+    if 'fin' not in [r[1] for r in con.execute('PRAGMA table_info(ext_live)')]:
+        con.execute('ALTER TABLE ext_live ADD COLUMN fin INT')     # -63: FotMob считает матч оконченным
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -2508,8 +2510,12 @@ function decided(b){
  const k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft'),sc=b.live[k];if(!sc)return '';
  const m=/\(([-\d.]+)\)/.exec(b.oc);if(!m)return '';const line=parseFloat(m[1]);
  const n=b.base==='total'?sc[0]+sc[1]:(b.base==='tt1'?sc[0]:(b.base==='tt2'?sc[1]:null));
- if(n==null||!(n>line))return '';
+ if(n==null)return '';
  const over=b.oc.startsWith('Больше');
+ if(b.live.fin&&!(n>line)){                        // -63: матч окончен по FotMob — итог уже известен, расчёт вот-вот
+  if(n===line)return '<span>↩ возврат</span><div class="mu sm">ровно '+n+', расчёт скоро</div>';
+  return (over?'<span class="neg">✗ проиграна</span>':'<span class="pos">✓ выиграна</span>')+'<div class="mu sm">'+n+' меньше '+line+', расчёт скоро</div>'}
+ if(!(n>line))return '';
  return over?'<span class="pos">✓ уже выиграна</span><div class="mu sm">'+n+' больше '+line+'</div>':'<span class="neg">✗ уже проиграна</span><div class="mu sm">'+n+' больше '+line+'</div>';
 }
 function popBets(sel){
@@ -2528,7 +2534,7 @@ function popBets(sel){
   if(b.start_ts>now)left='<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>';
   else if(b.status==='open'){const mins=Math.floor((now-b.start_ts)/60);
    if(mins<135||(b.live&&b.live.timer)){const lv=b.live||{},k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'&&lv.h1?'h1':'ft'),sc=lv[k];
-    left='<div class="livem">● '+matchClock(lv.timer,mins)+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
+    left='<div class="livem">● '+(lv.fin?'матч окончен':matchClock(lv.timer,mins))+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
    else left='<div class="mu sm">закончился, ждём результат</div>'}
   else left='<div class="mu sm">сыгран</div>';
   let res=b.status==='open'?(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>'):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
@@ -3280,10 +3286,17 @@ class Collector:
         teams = (j.get('header') or {}).get('teams') or []
         if len(teams) != 2:
             return
+        # -63 (владелец 22.11: FotMob «Завершен», а у нас «идёт · 124 мин»): матч окончен — так и писать, а итог
+        # с FotMob запросить сразу, не дожидаясь очередной 5-минутной попытки
+        fin = 1 if (((j.get('header') or {}).get('status') or {}).get('finished')) else 0
+        if fin:
+            self.con.execute('UPDATE ext_scores SET last_try=0 WHERE match_id=? AND done=0', (mid,))
+            self.ext_last = 0
         same = self.ext.pair(teams[0].get('name', ''), teams[1].get('name', ''), he or '', ae or '')
         if same is None:
             # хозяева неизвестны (нет английских названий) — не пишем: перевёрнутые угловые испортят инд. тотал
-            self.con.execute('INSERT OR REPLACE INTO ext_live VALUES (?,NULL,NULL,NULL,NULL,?)', (mid, now))
+            self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,NULL,NULL,NULL,NULL,?,?)',
+                             (mid, now, fin))
             self.con.commit()
             return
         ft = [teams[0].get('score'), teams[1].get('score')]
@@ -3294,8 +3307,8 @@ class Collector:
                     c = list(it['stats'])
         if same is False:
             ft, c = ft[::-1], (c[::-1] if c else None)
-        self.con.execute('INSERT OR REPLACE INTO ext_live VALUES (?,?,?,?,?,?)',
-                         (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now))
+        self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,?,?,?,?,?,?)',
+                         (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now, fin))
         self.con.commit()
 
     def sofa_link_step(self):
@@ -3803,11 +3816,13 @@ def paper_stats(con, stake_rub):
         live.setdefault(lmid, {})[part] = [a1, a2]
         if part == 'ft':
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
-    for lmid, f1, f2, c1, c2 in con.execute('SELECT match_id, ft1, ft2, c1, c2 FROM ext_live WHERE ts > ?',
-                                             (time.time() - 300,)):
-        if f1 is None and c1 is None:
+    for lmid, f1, f2, c1, c2, fin in con.execute('SELECT match_id, ft1, ft2, c1, c2, fin FROM ext_live WHERE ts > ?',
+                                                  (time.time() - 300,)):
+        if f1 is None and c1 is None and not fin:
             continue
         d = live.setdefault(lmid, {})
+        if fin:
+            d['fin'] = 1
         if 'c' not in d and c1 is not None and c2 is not None:
             d['c'] = [c1, c2]                  # угловых нет в лайве конторы — берём FotMob
         if 'ft' not in d and f1 is not None and f2 is not None:
