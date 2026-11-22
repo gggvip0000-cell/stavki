@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-63"
+VERSION = "2026.11.21-64"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1212,9 +1212,12 @@ class ExtStats:
         if not m:
             return None
         d = {'src': 'fotmob', 'ext_id': str(m['id'])}
-        if not (m.get('status') or {}).get('finished'):
-            return dict(d, finished=False)
+        # -64: статус в списке дня — из кэша (до 30 мин), 22.11 Пачука—Толука из-за этого ждала расчёта ~10 мин;
+        # окончен ли матч — по свежим matchDetails
         j = self.get('fotmob', f"https://www.fotmob.com/api/data/matchDetails?matchId={m['id']}") or {}
+        if not (((j.get('header') or {}).get('status') or {}).get('finished')
+                or ((m.get('status') or {}).get('finished') and j)):
+            return dict(d, finished=False)
         d['finished'] = True
         content = j.get('content') or {}
         for e in ((content.get('matchFacts') or {}).get('events') or {}).get('events') or []:
