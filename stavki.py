@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-84"
+VERSION = "2026.11.21-85"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4413,6 +4413,10 @@ def paper_stats(con, stake_rub):
         out['cand_fam'].append({'val': market_label(fam), 'n': n, 'done': nd,
                                 'clv': round(100 * clv, 1) if clv is not None else None,
                                 'pos': round(100 * pos) if pos is not None else None})
+    try:
+        out['clv_dedup'] = clv_dedup(con)
+    except Exception as e:
+        out['clv_dedup'] = {'error': str(e)[:200]}
     for code, desc, _c, _k in STRATEGIES:
         for src in ('сайт', 'odds.ru'):
             out['strategies'].append(dict(agg('strategy=? AND src=?', (code, src)), code=code, desc=desc, src=src))
@@ -4430,6 +4434,63 @@ def paper_stats(con, stake_rub):
         out['last'].append(dict(zip(['created', 'title', 'start_ts', 'bookmaker', 'src', 'market_name', 'outcome',
                                      'odds', 'ev', 'status', 'profit', 'clv', 'strategies'], r)))
     return out
+
+
+def clv_dedup(con):
+    """-85, пункт 4 после Совета (владелец 22.11): проверка по цене Pinnacle перед матчем (CLV) без повторов.
+    Только цены с сайта контор. Одна и та же ставка (матч + рынок + исход + линия) у Фонбета и PARI (одна линия)
+    и у Винлайна — одна строка, с лучшим кф (владелец ставит одну ставку там, где кф выше). Ставки одного матча
+    связаны, поэтому рядом — «по матчам»: сначала среднее внутри матча, потом среднее по матчам.
+    «надёжная» — цена закрытия снята не раньше чем за 15 мин до начала (close_ts, с -84); у старых строк — неизвестно.
+    Половины A/B (чётный/нечётный номер матча) — чтобы правило подбирать на одной, а проверять на другой."""
+    import statistics
+    best = {}
+    for mid, fam, mname, oc, line, odds, clv, ev, bk, st, first, cts in con.execute(
+            "SELECT match_id, fam, market_name, outcome, line, odds, clv, ev, bookmaker, start_ts, first_seen, close_ts"
+            " FROM cand WHERE src='сайт' AND clv IS NOT NULL"):
+        fam = fam or ('1x2' if mname == '1Х2' else 'total')
+        k = (mid, fam, oc, line)
+        if k not in best or odds > best[k]['odds']:
+            best[k] = {'mid': mid, 'fam': fam, 'odds': odds, 'clv': clv, 'ev': ev, 'bk': bk,
+                       'lead': (st - first) / 60 if st and first else None,
+                       'close_age': (st - cts) / 60 if st and cts else None}
+    rows = list(best.values())
+
+    def summ(xs):
+        if not xs:
+            return {'n': 0}
+        c = [x['clv'] for x in xs]
+        bym = {}
+        for x in xs:
+            bym.setdefault(x['mid'], []).append(x['clv'])
+        mm = [sum(v) / len(v) for v in bym.values()]
+        return {'n': len(xs), 'matches': len(bym), 'clv': round(100 * sum(c) / len(c), 2),
+                'median': round(100 * statistics.median(c), 2), 'pos': round(100 * sum(v > 0 for v in c) / len(c)),
+                'clv_by_match': round(100 * sum(mm) / len(mm), 2), 'pos_by_match': round(100 * sum(v > 0 for v in mm) / len(mm))}
+
+    def part(x):
+        pre = split_fam(x['fam'])[0]
+        return {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, pre)
+
+    def group(fn):
+        g = {}
+        for x in rows:
+            g.setdefault(fn(x), []).append(x)
+        return {k: summ(v) for k, v in sorted(g.items(), key=lambda kv: str(kv[0]))}
+    return {
+        'all': summ(rows),
+        'reliable_close': summ([x for x in rows if x['close_age'] is not None and x['close_age'] <= 15]),
+        'by_part': group(part),
+        'by_part_reliable': {k: summ([x for x in rows if part(x) == k and x['close_age'] is not None and x['close_age'] <= 15])
+                             for k in ('МАТЧ', '1-Й ТАЙМ', 'УГЛОВЫЕ')},
+        'by_kind': group(lambda x: paper_kind_name(x['fam']) and (part(x) + ' · ' + paper_kind_name(x['fam']))),
+        'by_bk': group(lambda x: x['bk']),
+        'by_lead': group(lambda x: '?' if x['lead'] is None else '<1 ч' if x['lead'] < 60 else '1–3 ч' if x['lead'] < 180
+                         else '3–12 ч' if x['lead'] < 720 else '>12 ч'),
+        'by_ev': group(lambda x: '3–5%' if x['ev'] < 0.05 else '5–8%' if x['ev'] < 0.08 else '8%+'),
+        'halves': {h: {p: summ([x for x in rows if x['mid'] % 2 == i and part(x) == p]) for p in ('МАТЧ', 'УГЛОВЫЕ')}
+                   for i, h in ((0, 'A'), (1, 'B'))},
+    }
 
 
 def _no_secrets(x):
