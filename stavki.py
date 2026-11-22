@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-78"
+VERSION = "2026.11.21-79"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2253,7 +2253,7 @@ def migrate_old_paper(con):
 
 # ---------------------------------------------------------------- окно программы
 
-PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Ставки — можно ставить сейчас</title>
+PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ставки — можно ставить сейчас</title>
 <style>
 *{box-sizing:border-box}
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#0f1419;color:#e6e6e6}
@@ -2322,6 +2322,21 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
 .lvr td{border:none!important;background:none!important;padding:0 0 4px!important;text-align:center}.livebtn{display:inline-block;margin-left:40px;vertical-align:2px;font-size:13px;line-height:18px;background:#e5484d;color:#fff;font-weight:700;padding:3px 12px;border-radius:12px;cursor:pointer;text-decoration:none!important}.livebtn.off{background:#3a4250;color:#9aa4b2;cursor:default}
 .updon{display:inline-block;background:#c9a400;color:#111;padding:7px 14px;border-radius:6px;font-size:14px;animation:updb 1.2s ease-in-out infinite}@keyframes updb{50%{opacity:.6}}
 .updok{display:inline-block;background:#2f7d4f;color:#fff;padding:7px 14px;border-radius:6px;font-size:14px}
+.ptab .sh{display:none}
+/* -79: вёрстка под телефон (владелец 22.11) */
+@media(max-width:700px){
+ header{padding:8px 10px;gap:8px}header h1{font-size:18px}main{padding:8px!important}
+ .sec{flex-wrap:wrap;gap:6px}.sec .kind{min-width:auto}
+ .pp{padding:10px!important}.pp h2{font-size:15px}
+ .pp .ptab th,.pp .ptab td{padding:6px 3px;font-size:13px}.pp .ptab th{font-size:10px}.ptab tr.sub td:first-child{padding-left:14px}
+ .ptab .gn{display:none}.ptab .lg{display:none}.ptab .sh{display:inline}.pp .ptab td{font-size:13px}.ptab td:last-child{white-space:nowrap;font-size:12px}
+ .ptab tr.sub td:first-child{font-size:12px}.ptab .num{min-width:14px;padding:1px 3px}.ptab tr.grp .kind.ks{min-width:0;font-size:11px;padding:2px 6px}
+ #pop{padding:0}.mbox{max-height:100vh;height:100vh;border-radius:0}
+ .mt tr:first-child{display:none}.mt tr{display:block;border-bottom:1px solid #2a3542;padding:6px 4px}
+ .mt td{display:inline-block;border:0!important;padding:2px 6px!important;vertical-align:middle}
+ .mt td:first-child,.mt td.bcell,.mt td.rcell{display:block;width:auto;max-width:none}.mt tr.mg td{display:block}
+ .bet .bl{font-size:14px}.mo{font-size:11px}
+}
 td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
@@ -2374,7 +2389,9 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <details><summary>Подробнее: работа программы, маржа контор, разведка, Telegram</summary>
 <p><a class="rbtn" href="/api/report" download>Скачать отчёт для разработки</a> <span class="st">— файл otchet_….zip появится в «Загрузках»; пришлите его в чат Claude</span></p>
 <p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
-<button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p><div id="more"></div></details></main>
+<button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p>
+<p class="st">Вход с телефона: <span id="phst">—</span><span id="phform"> · пароль (от 10 знаков): <input id="phpass" type="password" style="width:200px">
+<button class="lbtn" onclick="phset()">Сохранить пароль</button> <span id="phmsg"></span></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
 const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400'};   // цвета с сайтов контор (снимки разведки 21.11)
@@ -2492,6 +2509,10 @@ async function tick(){
   if(s.errors.length)m+='<p class="st">последние ошибки:<br>'+s.errors.join('<br>')+'</p>';
   const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.noname?', без английских названий (искать не по чему) '+sf.noname:'')+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
+  const ph=s.prohod||{},pe=document.getElementById('phst');
+  pe.innerHTML=ph.sost==='работает'?'<span class="pos">работает</span> · ссылку пришлёт бот на слово «сайт»'+(ph.link?' · <span class="mu">'+ph.link+'</span>':'')+' · <a href="#" onclick="document.getElementById(\'phform\').style.display=\'\';return false">сменить пароль</a>'
+   :((ph.sost||'выключен')+(ph.why?' — '+ph.why:''));
+  if(ph.sost==='работает'&&!PHEDIT)document.getElementById('phform').style.display='none';
   const tg=s.telegram||{};const te=document.getElementById('tgst');
   te.innerHTML=tg.ok===true?'<span class="pos">'+tg.text+'</span>':(tg.ok===false?'<span class="bad">'+tg.text+'</span>':(tg.text||'не подключён'));
   document.getElementById('tgform').style.display=(tg.ok===true||(tg.text||'').startsWith('проверяю')||(tg.text||'').startsWith('ключ подходит'))?'none':'';
@@ -2657,7 +2678,7 @@ function renderPaper(p){
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  const nl=(p.bets||[]).filter(isLiveBet).length;
  h=h.replace('</h2>',' '+(nl?'<span class="livebtn num" data-pop="*|*|live" title="ставки на матчи, которые идут сейчас">● '+nl+'</span>':'<span class="livebtn off" title="сейчас ни один матч с нашей ставкой не идёт">● 0</span>')+'</h2>');
- h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
+ h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
@@ -2675,6 +2696,11 @@ function renderPaper(p){
 
 
 
+let PHEDIT=false;
+async function phset(){const p=document.getElementById('phpass').value;const m=document.getElementById('phmsg');
+ try{const r=await fetch('/api/phone_pass',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({p})});const d=await r.json();
+  m.innerHTML=d.ok?'<span class="pos">сохранён — через минуту бот пришлёт ссылку на слово «сайт»</span>':'<span class="bad">'+(d.why||'не сохранился')+'</span>';
+  if(d.ok)document.getElementById('phpass').value=''}catch(e){m.textContent='не сохранился'}}
 async function tgc(){const k=document.getElementById('tgkey').value.trim();if(!k)return;
  try{await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:k})})}catch(e){}}
 async function post(u){try{await fetch(u,{method:'POST'})}catch(e){}}
@@ -2682,8 +2708,196 @@ tick();setInterval(tick,3000);
 </script></body></html>"""
 
 
+# ================================================================ Сайт с телефона (-79, владелец 22.11: «чтобы я с телефона
+# мог открывать этот сайт, сделать под смартфон вёрстку»). Как в программе для роликов: бесплатный проход TryCloudflare —
+# программа cloudflared (официальные выпуски Cloudflare на GitHub) стучится наружу, Cloudflare даёт ссылку
+# https://…trycloudflare.com, бот присылает её на слово «сайт». По проходу страница видна интернету, поэтому пускает
+# только пароль (не короче 10 знаков; на самом ноутбуке пароль не спрашивается). Пароль хранится только как отпечаток.
+CF_URL = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+CF_LINK = re.compile(r'https://[a-z0-9-]+\.trycloudflare\.com')
+MIN_PASS = 10
+CFG = {}
+
+
+def pass_hash(pw, salt):
+    import hashlib
+    return hashlib.pbkdf2_hmac('sha256', pw.encode('utf-8'), salt.encode('utf-8'), 200000).hex()
+
+
+def session_token():
+    """жетон входа выводится из отпечатка пароля: сменили пароль — все старые входы недействительны"""
+    import hmac
+    import hashlib
+    h = CFG.get('phone_pass_hash') or ''
+    return hmac.new(h.encode(), b'stavki-session', hashlib.sha256).hexdigest() if h else ''
+
+
+class Prohod:
+    def __init__(self, cfg):
+        self.cfg, self.proc, self.link, self.why = cfg, None, '', ''
+        self.pid_file = HERE / 'prohod.pid'
+        self.fails = 0
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def set(self, sost, why=''):
+        self.why = why
+        with STATE.lock:
+            STATE.status['prohod'] = {'sost': sost, 'link': self.link, 'why': why,
+                                      'pass_set': bool(self.cfg.get('phone_pass_hash'))}
+
+    def exe(self):
+        return HERE / 'vneshnie' / ('cloudflared.exe' if os.name == 'nt' else 'cloudflared')
+
+    def ensure_exe(self):
+        f = self.exe()
+        if f.exists() and f.stat().st_size > 1_000_000:
+            return f
+        if os.name != 'nt':
+            raise RuntimeError('проход сделан только для Windows')
+        self.set('загрузка', 'скачиваю программу прохода с GitHub Cloudflare (~55 МБ, один раз)…')
+        f.parent.mkdir(exist_ok=True)
+        tmp = f.with_suffix('.part')
+        with urllib.request.urlopen(urllib.request.Request(CF_URL, headers={'User-Agent': 'stavki'}), timeout=300) as r, \
+                open(tmp, 'wb') as out:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                out.write(b)
+        tmp.replace(f)
+        return f
+
+    def kill_old(self):
+        try:
+            pid = int(self.pid_file.read_text())
+            if os.name == 'nt':
+                subprocess.run(['taskkill', '/PID', str(pid), '/F'], capture_output=True, timeout=10)
+        except Exception:
+            pass
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        self.proc, self.link = None, ''
+
+    def start(self):
+        f = self.ensure_exe()
+        self.kill_old()
+        flags = 0x08000000 if os.name == 'nt' else 0          # CREATE_NO_WINDOW — без чёрного окна
+        self.proc = subprocess.Popen([str(f), 'tunnel', '--no-autoupdate', '--url', f"http://127.0.0.1:{self.cfg['port']}"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=flags)
+        try:
+            self.pid_file.write_text(str(self.proc.pid))
+        except Exception:
+            pass
+        proc = self.proc
+
+        def read():
+            for raw in proc.stderr:
+                m = CF_LINK.search(raw.decode('utf-8', 'replace'))
+                if m and proc is self.proc:
+                    self.link = m.group(0)
+                    self.set('работает')
+                    log('проход для телефона: ' + self.link)
+        threading.Thread(target=read, daemon=True).start()
+        self.set('запуск', 'жду ссылку от Cloudflare…')
+
+    def alive(self):
+        """ссылка отвечает из интернета (раз в 5 мин)"""
+        try:
+            with urllib.request.urlopen(self.link + '/api/ping', timeout=20) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    def loop(self):
+        import atexit
+        atexit.register(self.stop)
+        pauses, k, last_check, dead = [10, 30, 120, 600], 0, 0, 0
+        while True:
+            time.sleep(5)
+            try:
+                ok_pass = bool(self.cfg.get('phone_pass_hash'))
+                if not ok_pass:
+                    if self.proc:
+                        self.stop()
+                    self.set('выключен', f'задайте пароль для входа с телефона (не короче {MIN_PASS} знаков)')
+                    continue
+                if self.proc is None or self.proc.poll() is not None:
+                    if self.proc is not None:
+                        self.set('перезапуск', f'проход оборвался — поднимаю снова через {pauses[min(k, 3)]} с')
+                        time.sleep(pauses[min(k, 3)])
+                        k += 1
+                    self.start()
+                    last_check, dead = time.time(), 0
+                    continue
+                if self.link and time.time() - last_check > 300:
+                    last_check = time.time()
+                    if self.alive():
+                        dead, k = 0, 0
+                    else:
+                        dead += 1
+                        if dead >= 3:                      # ссылка умерла, а процесс жив — поднять новый
+                            self.stop()
+                            dead = 0
+            except Exception as e:
+                self.set('ошибка', str(e).splitlines()[0][:160])
+                time.sleep(60)
+
+
+PROHOD = None
+LOGIN_FAILS = []
+
+LOGIN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ставки — вход</title><style>body{background:#0f1419;color:#e6edf3;font-family:system-ui,sans-serif;display:flex;
+align-items:center;justify-content:center;min-height:100vh;margin:0}form{background:#151c24;padding:24px;border-radius:12px;
+width:min(340px,90vw)}input{width:100%;box-sizing:border-box;font-size:18px;padding:10px;margin:12px 0;border-radius:8px;
+border:1px solid #2e3744;background:#0f1419;color:#fff}button{width:100%;font-size:18px;padding:10px;border:0;border-radius:8px;
+background:#2f7d4f;color:#fff}.e{color:#ff6b6b}</style></head><body><form method="post" action="/login">
+<b>Ставки</b><div>Пароль для входа с телефона</div><input type="password" name="p" autofocus>__ERR__<button>Войти</button></form></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
+    def remote(self):
+        """пришёл через проход Cloudflare (с телефона), а не с этого ноутбука"""
+        return bool(self.headers.get('Cf-Connecting-Ip') or self.headers.get('Cf-Ray'))
+
+    def authed(self):
+        if not self.remote():
+            return True
+        tok = session_token()
+        if not tok:
+            return False
+        import hmac
+        for part in (self.headers.get('Cookie') or '').split(';'):
+            k, _, v = part.strip().partition('=')
+            if k == 'stk' and hmac.compare_digest(v, tok):
+                return True
+        return False
+
+    def send_body(self, code, body, ctype, extra=()):
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Cache-Control', 'no-store')
+        for k, v in extra:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def login_page(self, err=''):
+        self.send_body(200, LOGIN_PAGE.replace('__ERR__', f'<div class="e">{err}</div>' if err else '').encode('utf-8'),
+                       'text/html; charset=utf-8')
+
     def do_GET(self):
+        if self.path.startswith('/api/ping'):
+            return self.send_body(200, b'ok', 'text/plain')
+        if not self.authed():
+            if self.path.startswith('/api/'):
+                return self.send_body(401, b'{"error": "login"}', 'application/json')
+            return self.login_page()
         if self.path.startswith('/api/report'):
             try:
                 body = build_report(STATS_DB)
@@ -2720,6 +2934,42 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path.startswith('/login'):
+            now = time.time()
+            LOGIN_FAILS[:] = [t for t in LOGIN_FAILS if now - t < 900]
+            if len(LOGIN_FAILS) >= 8:
+                return self.login_page('Слишком много неверных попыток — подождите 15 минут.')
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                pw = urllib.parse.parse_qs(self.rfile.read(min(n, 2000)).decode('utf-8')).get('p', [''])[0]
+            except Exception:
+                pw = ''
+            h, salt = CFG.get('phone_pass_hash'), CFG.get('phone_pass_salt', '')
+            import hmac
+            if h and pw and hmac.compare_digest(pass_hash(pw, salt), h):
+                return self.send_body(303, b'', 'text/plain', (
+                    ('Location', '/'),
+                    ('Set-Cookie', f'stk={session_token()}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax')))
+            LOGIN_FAILS.append(now)
+            return self.login_page('Неверный пароль.')
+        if not self.authed():
+            return self.send_body(401, b'{"error": "login"}', 'application/json')
+        if self.remote() and (self.path.startswith('/api/telegram') or self.path.startswith('/api/phone_pass')):
+            return self.send_body(403, b'{"error": "only from the laptop"}', 'application/json')
+        if self.path.startswith('/api/phone_pass'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                pw = json.loads(self.rfile.read(n).decode('utf-8') or '{}').get('p', '')
+            except Exception:
+                pw = ''
+            if len(pw) < MIN_PASS:
+                return self.send_body(200, json.dumps({'ok': False, 'why': f'нужно не меньше {MIN_PASS} знаков'},
+                                                      ensure_ascii=False).encode('utf-8'), 'application/json')
+            salt = os.urandom(16).hex()
+            CFG['phone_pass_salt'], CFG['phone_pass_hash'] = salt, pass_hash(pw, salt)
+            save_config_keys({'phone_pass_salt': salt, 'phone_pass_hash': CFG['phone_pass_hash']})
+            log('задан пароль для входа с телефона')
+            return self.send_body(200, b'{"ok": true}', 'application/json')
         if self.path.startswith('/api/check_update'):
             with STATE.lock:
                 STATE.status['check_now'] = True
@@ -4538,6 +4788,14 @@ class Watchdog:
                 txt = ((u.get('message') or {}).get('text') or '').lower()
                 if 'статус' in txt or 'status' in txt:
                     self.tg.send(self.summary(now))
+                elif 'сайт' in txt or 'ссылк' in txt or 'site' in txt:
+                    pr = PROHOD
+                    if pr and pr.link:
+                        self.tg.send(f'Сайт программы с телефона: {pr.link}\nПароль — тот, что вы задали в «Подробнее». '
+                                     'Ссылка меняется после перезапуска программы — тогда напишите «сайт» снова.')
+                    else:
+                        self.tg.send('Сайт с телефона пока не работает: ' + ((pr and pr.why) or 'проход ещё не поднят') +
+                                     '. Пароль задаётся на ноутбуке: «Подробнее» → «Вход с телефона».')
         except Exception:
             pass
 
@@ -4952,6 +5210,9 @@ def main():
     STATS_STAKE = cfg.get('paper_stake_rub', 100)
     global TG
     TG = Telegram(cfg)
+    global CFG, PROHOD
+    CFG = cfg
+    PROHOD = Prohod(cfg)
     set_tg('подключён' if TG.ready() else 'не подключён', ok=True if TG.ready() else None)
     srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
