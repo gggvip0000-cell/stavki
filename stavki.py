@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-108"
+VERSION = "2026.11.21-109"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2767,7 +2767,7 @@ async function tick(){
  if(updating)showUpdating();
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
-  if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}NORESET=true;location.reload();return}
+  if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
   const u=document.getElementById('upd');
   let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
   if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено</span>';
@@ -2927,7 +2927,7 @@ let SCOL={};try{SCOL=PHONE0?{m:true,h1:true,c:true}:JSON.parse(localStorage.getI
 function scol(k){SCOL[k]=!SCOL[k];if(!PHONE0)try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=PHONE0?{}:JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 const pclosed=g=>(g in PCOL)?!!PCOL[g]:PHONE0;
-function pcol(g){if(!pclosed(g))resetBase(k=>{const s=k.split('|');return s[0]===g&&s[1]!=='*'});PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
+function pcol(g){PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
 const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча','live':'матчи идут сейчас','settle':'матч окончен, ждут расчёта'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
@@ -3018,7 +3018,7 @@ function popBets(sel){
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'+(b.early?'<div class="sm mu">досрочно — счёт на момент расчёта</div>':'')}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
-  h+='<tr'+(isChg('b:'+b.id)?' class="chg" data-ck="b:'+b.id+'"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
+  h+='<tr'+(CHGB[b.id]?' class="chg"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
    +'<div class="sm">'+e(b.league)+'</div></td><td class="bcell"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'
    +(b.bk_url?'<a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'<span class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'">'+e(b.bk)+'</span>')+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td class="rcell">'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
@@ -3038,51 +3038,43 @@ function matchClock(t,mins){
  return half+' · '+(half==='1-й тайм'&&m>45?'45+'+(m-45):(m>90?'90+'+(m-90):m))+'-я минута'}
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
-function closePop(){document.getElementById('pop').style.display='none'}
+function closePop(){const pe=document.getElementById('pop');const was=pe.style.display==='flex';pe.style.display='none';if(was){ackPop(POPSEL);POPSEL=null;if(LASTP)renderPaper(LASTP)}}
 document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
  if(ev.target.id==='pop')closePop()});
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
-// -65 (владелец 22.11: «когда цифра меняется — пусть подсвечивается: новая ставка, смена статуса; и в раскрывающемся так же»):
-// PV — прошлые значения ячеек, PB — прошлые статусы ставок; изменилось — CHG[ключ]=когда. Подсветка снимается через 3 с
-// после того, как ячейка/строка впервые видна на экране (как «НОВАЯ»), или через 10 мин, если так и не показалась.
-let PB=null,CHG={},CHV={},BASE={},CUR={},NORESET=false;
-try{PB=JSON.parse(localStorage.getItem('pb')||'null');CHG=JSON.parse(localStorage.getItem('pchg')||'{}');CHV=JSON.parse(localStorage.getItem('pchv')||'{}');BASE=JSON.parse(localStorage.getItem('pbase')||'{}')}catch(e){}
-// -107 (владелец 22.11: «рядом с числом в той же клеточке — + или − то число, на которое оно изменилось с моего последнего
-// открытия; когда открыл — выделяются все новые и не гаснут, когда закрыл — пропадает»): BASE[клетка] — значение на момент,
-// когда владелец в последний раз ушёл с окна (вкладка скрыта/закрыта) или свернул группу; CUR — нынешние значения.
-// Разница ≠ 0 — в клетке «+N»/«−N» и рамка (сплошная — прибавилось, пунктир — убыло). Пока окно открыто — не гаснет.
-const isChg=k=>!!CHG[k]&&!(CHV[k]&&Date.now()-CHV[k]>3000);
-function saveChg(){try{localStorage.setItem('pb',JSON.stringify(PB));localStorage.setItem('pchg',JSON.stringify(CHG));localStorage.setItem('pchv',JSON.stringify(CHV));localStorage.setItem('pbase',JSON.stringify(BASE))}catch(e){}}
-function resetBase(f){for(const k in CUR)if(!f||f(k))BASE[k]=CUR[k];saveChg()}
-const dlt=k=>(k in CUR)?(CUR[k]||0)-(BASE[k]||0):0;
-function leavePage(){if(!NORESET&&Object.keys(CUR).length)resetBase()}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')leavePage()});
-window.addEventListener('pagehide',leavePage);
-function dropChg(k){delete CHG[k];saveChg();for(const el of document.querySelectorAll('.chg[data-ck]'))if(el.dataset.ck===k)el.classList.remove('chg')}
-let COBS=null;
-function watchChg(){
- if(COBS)COBS.disconnect();if(!('IntersectionObserver' in window))return;
- COBS=new IntersectionObserver(es=>{for(const e of es){if(!e.isIntersecting||document.visibilityState!=='visible')continue;
-  const k=e.target.dataset.ck;if(!k)continue;if(!CHV[k]){CHV[k]=Date.now();saveChg()}
-  setTimeout(()=>dropChg(k),Math.max(0,3000-(Date.now()-CHV[k])));COBS.unobserve(e.target)}},{threshold:0.5});
- for(const el of document.querySelectorAll('.chg[data-ck]'))COBS.observe(el)}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchChg()});
+// -109 (владелец 22.11, после -107: «а зачем пропало, если я не нажал?» — подсветка сбрасывалась, когда окно программы
+// закрывалось другим окном): учёт по каждой ставке. PSEEN[id] = {c: место, p: деньги} — где ставка была, когда владелец её
+// последний раз «увидел». Ставка, чьё место изменилось (или новая), даёт «+1» в клетке, где она сейчас, и «−1» в клетке,
+// где была (во всех строках: вид, группа, «Всего»); в деньгах — её ₽. Сбрасывается ТОЛЬКО нажатием: открыл цифру —
+// в окне ставок изменившиеся выделены и не гаснут; закрыл окно — эти ставки (и ушедшие из этой клетки) считаются увиденными.
+let PSEEN=null,DELTA={},CHGB={};
+try{PSEEN=JSON.parse(localStorage.getItem('pseen')||'null')}catch(e){}
+function saveSeen(){try{localStorage.setItem('pseen',JSON.stringify(PSEEN))}catch(e){}}
+function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
+const RES=['выигрыш','проигрыш','возврат'];
+function moneyCols(c,pr){const o={};if(!RES.includes(c))return o;pr=pr||0;o['итог']=pr;if(c==='выигрыш')o['выиграл']=pr;if(c==='проигрыш')o['проиграл']=pr;return o}
 function trackChg(p){
- const now=Date.now(),cur={};
- const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se-lv;cur[sel+'|live']=lv;cur[sel+'|settle']=se;const mo=moneyOf(p,pa,na);cur[sel+'|итог']=g.done?mo.t:0;cur[sel+'|выиграл']=mo.w;cur[sel+'|проиграл']=mo.l};
- const groups={};for(const g of p.simple||[]){put(g.part+'|'+g.name,g);const G=groups[g.part]=groups[g.part]||{n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const k in G)G[k]+=g[k]||0}
- for(const part in groups)put(part+'|*',groups[part]);
- if(p.simple_total)put('*|*',p.simple_total);
- // новая клетка (новый вид ставки) — от нуля, чтобы её ставки тоже были видны как «+N»
- const fresh=!Object.keys(BASE).length;for(const k in cur)if(!(k in BASE))BASE[k]=fresh?cur[k]:0;
- CUR=cur;
- const bs={};for(const b of p.bets||[])bs[b.id]=b.status;
- if(PB!==null)for(const id in bs)if(PB[id]!==bs[id]&&!CHG['b:'+id]){CHG['b:'+id]=now;delete CHV['b:'+id]}
- PB=bs;
- for(const k in CHG)if(now-CHG[k]>600000||(CHV[k]&&now-CHV[k]>3000))delete CHG[k];
- for(const k in CHV)if(!CHG[k]&&now-CHV[k]>600000)delete CHV[k];
- saveChg();
+ const bets=p.bets||[],cur={};for(const b of bets)cur[b.id]={c:catOf(b),p:b.profit_rub||0};
+ if(PSEEN===null){PSEEN=cur;saveSeen()}
+ for(const id in PSEEN)if(!(id in cur))delete PSEEN[id];
+ DELTA={};CHGB={};
+ const add=(rows,col,v)=>{for(const r of rows){const k=r+'|'+col;DELTA[k]=(DELTA[k]||0)+v}};
+ for(const b of bets){const s=PSEEN[b.id],c=cur[b.id];if(s&&s.c===c.c&&s.p===c.p)continue;
+  CHGB[b.id]=1;const rows=[b.part+'|'+b.name,b.part+'|*','*|*'];
+  if(!s)add(rows,'all',1);else add(rows,s.c,-1);
+  add(rows,c.c,1);
+  const mn=moneyCols(c.c,c.p),mo=s?moneyCols(s.c,s.p):{};
+  for(const k in mn)add(rows,k,mn[k]);for(const k in mo)add(rows,k,-mo[k])}
+ saveSeen();
 }
+const dlt=k=>DELTA[k]||0;
+// закрыл окно ставок по цифре sel = «часть|вид|место»: показанные в нём ставки и ушедшие из этой клетки — увидены
+function ackPop(sel){if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
+ for(const b of LASTP.bets||[]){if(!CHGB[b.id])continue;if(!((part==='*'||b.part===part)&&(name==='*'||b.name===name)))continue;
+  const c=catOf(b),s=PSEEN[b.id];
+  if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0}}
+ saveSeen()}
+function watchChg(){}
 // -81 (владелец 22.11, снимок с телефона: «не влезла таблица» — у него крупнее шрифт и двузначные числа): на телефоне
 // таблица, если шире места, уменьшается целиком (zoom), пока не влезет — при любом размере шрифта в браузере
 function fitTable(el){if(!isPhone())return;const t=el.querySelector('.ptab');if(!t)return;
