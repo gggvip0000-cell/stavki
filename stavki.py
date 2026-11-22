@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-56"
+VERSION = "2026.11.21-57"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2239,7 +2239,7 @@ PAGE = r"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>С�
 <style>
 *{box-sizing:border-box}
 body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#0f1419;color:#e6e6e6}
-header{padding:12px 20px;background:#151c24;border-bottom:1px solid #253040;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+header{position:sticky;top:0;z-index:40;padding:12px 20px;background:#151c24;border-bottom:1px solid #253040;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
 h1{font-size:20px;margin:0}
 .st{font-size:12px;color:#8696a6}
 .bad{color:#ff6b6b}
