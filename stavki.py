@@ -2431,6 +2431,7 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .ptab td:nth-child(3),.ptab td:nth-child(4),.ptab td:nth-child(5),.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){box-shadow:inset 0 0 0 999px rgba(90,176,255,.06)}
 .ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(7),.ptab th:nth-child(7){border-left:2px solid #34414f}
 .pp .ptab tr.tot td{border-top:2px solid #3a4756;font-weight:800;font-size:16px;background:#1b2430}
+.pp .ptab tr.taxr td{background:#161d26;font-size:14px;color:#aab4be;border-top:1px dashed #34414f}.pp .ptab tr.taxr td.taxn{text-align:left;font-size:12px;color:#7d8b99}.pp .ptab tr.taxr td:last-child{font-size:15px}
 .kind.ks{font-size:11px;padding:2px 7px;margin:0;vertical-align:1px;color:#111}
 .ptab tr.grp .kind.ks{min-width:78px;text-align:center;box-sizing:border-box;display:inline-block}
 .pp table td,.pp table th{font-size:12px;padding:3px 14px 3px 6px}
@@ -2791,7 +2792,9 @@ function renderPaper(p){
   h+='<tr class="grp" onclick="if(!event.target.closest(\'[data-pop]\'))pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
   if(!closed)for(const r of G.rows){const nm=r.name||r.val;const sn=SHN[nm];h+='<tr class="sub"><td>'+(sn?'<span class="lg">'+nm+'</span><span class="sh">'+sn+'</span>':nm)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>'}
  }
- h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
+ h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr>';
+ const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="5" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
+ h+='</table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
  fitTable(el);
@@ -4320,13 +4323,17 @@ def paper_kind_name(fam):
 def paper_stats(con, stake_rub):
     def agg(where, args=()):
         r = con.execute('SELECT COUNT(*), SUM(status!="open"), SUM(status="выигрыш"), SUM(status="проигрыш"),'
-                        ' SUM(status="возврат"), SUM(COALESCE(profit,0)), AVG(ev), AVG(clv), COUNT(clv), AVG(odds)'
-                        ' FROM paper2 WHERE status != "нет данных" AND ' + where, args).fetchone()
-        n, done, w, l, push, prof, ev, clv, nclv, odds = r
+                        ' SUM(status="возврат"), SUM(COALESCE(profit,0)), AVG(ev), AVG(clv), COUNT(clv), AVG(odds),'
+                        ' SUM(CASE WHEN profit > 0 THEN profit * ? ELSE COALESCE(profit, 0) END)'
+                        ' FROM paper2 WHERE status != "нет данных" AND ' + where, (1 - NDFL_RATE,) + tuple(args)).fetchone()
+        n, done, w, l, push, prof, ev, clv, nclv, odds, prof_tax = r
         done, w, l = done or 0, w or 0, l or 0
         return {'n': n or 0, 'done': done, 'w': w, 'l': l, 'push': push or 0,
                 'winpct': round(100 * w / (w + l)) if w + l else None,
                 'profit_rub': round((prof or 0) * stake_rub),
+                # -85 (владелец 22.11 «а как визуально это будет выглядеть?» — строка «после налога» под «Всего»):
+                # 13% с чистого выигрыша каждой выигравшей ставки, проигрыши налог не уменьшают; льготу 4000 ₽ в год не учитываем
+                'profit_tax_rub': round((prof_tax or 0) * stake_rub),
                 'roi': round(100 * (prof or 0) / done, 1) if done else None,
                 'ev': round(100 * ev, 1) if ev is not None else None,
                 'odds': round(odds, 2) if odds else None,
