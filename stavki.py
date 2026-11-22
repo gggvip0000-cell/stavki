@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-113"
+VERSION = "2026.11.21-114"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2501,6 +2501,12 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
     # -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): счёт угловых/тайма, введённый владельцем вручную,
     # когда ни один источник его не дал (FotMob без статистики, Sofascore не пускает, в потоке PARI угловых не было)
+    # -114 (штурм 22.11, владелец «да»): бумажные экспрессы из «Меньше» инд. тоталов угловых — без акций (страховки нет);
+    # налог берётся один раз с выигрыша экспресса, перевес ног перемножается. legs — JSON ног; mult — во сколько раз вернулась
+    # ставка (0 — проигрыш); legs_now — сколько матчей с подходящей ногой в момент сборки (поток по часам и дням недели)
+    con.execute('CREATE TABLE IF NOT EXISTS expr (id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL, size INT,'
+                ' bookmaker TEXT, legs TEXT, odds REAL, ev_prod REAL, status TEXT DEFAULT "open", mult REAL,'
+                ' settled REAL, legs_now INT)')
     con.execute('CREATE TABLE IF NOT EXISTS manual_scores (match_id INT, part TEXT, h INT, a INT, ts REAL,'
                 ' PRIMARY KEY (match_id, part))')
     # счёт и угловые идущих матчей с FotMob — когда у Фонбета в лайве угловых нет (владелец 22.11: «на FotMob вижу, в программе нет»)
@@ -4009,6 +4015,86 @@ class Collector:
                     return h, a
         return None
 
+    EXPR_SIZES = (4, 5, 6)
+
+    def expr_legs(self, now):
+        """ноги экспресса: «Меньше» инд. тотала угловых, половинная линия, перевес ≥3%, кф ≤4, до матча ≥10 мин;
+        по одной (лучшей) на матч для каждой конторы"""
+        by = {}
+        for v in STATE.snapshot()['values']:
+            if v.get('source') != 'сайт' or v['bookmaker'] not in ('Фонбет', 'PARI'):
+                continue
+            fam = event_of(v)
+            if fam not in ('c_tt1', 'c_tt2') or not str(v.get('outcome', '')).startswith('Меньше'):
+                continue
+            ln = v.get('line') if v.get('line') is not None else line_of(v['outcome'])
+            if ln is None or abs(ln % 1 - 0.5) > 1e-9 or v['ev'] < 0.03 or v['odds'] > 4.0:
+                continue
+            if not v.get('start_ts') or v['start_ts'] < now + 600:
+                continue
+            leg = {'mid': v['match_id'], 'fam': fam, 'outcome': v['outcome'], 'line': ln, 'odds': v['odds'],
+                   'fair': v.get('fair'), 'ev': round(v['ev'], 4), 'start_ts': v['start_ts'], 'title': v.get('match', '')}
+            d = by.setdefault(v['bookmaker'], {})
+            if v['match_id'] not in d or leg['ev'] > d[v['match_id']]['ev']:
+                d[v['match_id']] = leg
+        return by
+
+    def expr_step(self):
+        """-114: раз в час собрать бумажные экспрессы из 4, 5 и 6 ног (матчи не повторяются внутри размера);
+        и рассчитать открытые — проигрыш, как только известна проигравшая нога, иначе когда известны все"""
+        now = time.time()
+        if now - getattr(self, 'expr_ts', 0) >= 3600:
+            self.expr_ts = now
+            by = self.expr_legs(now)
+            if by:
+                bk = max(by, key=lambda b: (len(by[b]), b == 'Фонбет'))
+                legs_all = sorted(by[bk].values(), key=lambda l: -l['ev'])
+                for size in self.EXPR_SIZES:
+                    used = set()
+                    for (lg,) in self.con.execute("SELECT legs FROM expr WHERE size=? AND created>?", (size, now - 3 * 86400)):
+                        used |= {l['mid'] for l in json.loads(lg)}
+                    pick = [l for l in legs_all if l['mid'] not in used][:size]
+                    if len(pick) < size:
+                        continue
+                    odds = 1.0
+                    evp = 1.0
+                    for l in pick:
+                        odds *= l['odds']
+                        evp *= 1 + l['ev']
+                    self.con.execute('INSERT INTO expr (created, size, bookmaker, legs, odds, ev_prod, legs_now) VALUES'
+                                     ' (?,?,?,?,?,?,?)', (now, size, bk, json.dumps(pick, ensure_ascii=False),
+                                                         round(odds, 3), round(evp - 1, 4), len(legs_all)))
+            n_legs = max((len(d) for d in by.values()), default=0)
+            self.con.execute('INSERT INTO expr (created, size, bookmaker, legs, status, legs_now) VALUES'
+                             " (?, 0, '', '[]', 'замер', ?)", (now, n_legs))      # поток ног по часам, даже если экспресса нет
+            self.con.commit()
+        if now - getattr(self, 'expr_set_ts', 0) < 120:
+            return
+        self.expr_set_ts = now
+        for eid, legs_s, created in self.con.execute(
+                "SELECT id, legs, created FROM expr WHERE status='open' AND size>0").fetchall():
+            legs = json.loads(legs_s)
+            mult, known, lost = 1.0, 0, False
+            for l in legs:
+                if l['start_ts'] > now:
+                    continue
+                sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
+                if not sc:
+                    continue
+                f = 1 + settle_one(split_fam(l['fam'])[1], l['outcome'], l['line'], l['odds'], sc[0], sc[1])
+                l['res'] = [sc[0], sc[1]]
+                known += 1
+                mult *= f
+                if f <= 0:
+                    lost = True
+            if lost or known == len(legs):
+                st = 'проигрыш' if mult <= 0 else ('выигрыш' if mult > 1 else 'возврат')
+                self.con.execute('UPDATE expr SET status=?, mult=?, settled=?, legs=? WHERE id=?',
+                                 (st, round(max(mult, 0), 4), now, json.dumps(legs, ensure_ascii=False), eid))
+            elif now - max(l['start_ts'] for l in legs) > 2 * 86400:
+                self.con.execute("UPDATE expr SET status='нет данных', settled=? WHERE id=?", (now, eid))
+        self.con.commit()
+
     def settle_paper(self):
         # у уже рассчитанных ставок без записанного счёта — дописать (для окна «что там было»)
         for pid, fam, mid, st in self.con.execute(
@@ -4709,6 +4795,10 @@ class Collector:
                     self.ever_ok = True
                 self.poll_feeds()
                 self.record_paper()
+                try:
+                    self.expr_step()
+                except Exception as e:
+                    add_error('бумажные экспрессы: ' + str(e).splitlines()[0][:120], 'expr')
                 try:
                     self.ext_step()
                     self.sofa_link_step()
@@ -6147,6 +6237,30 @@ def build_report(con):
         rep['pin_jumps'] = jumps
     except Exception as e:
         rep['pin_jumps'] = {'error': str(e)[:200]}
+    try:
+        ex = rows('SELECT * FROM expr ORDER BY id')
+        summ = {}
+        for e in ex:
+            if not e['size']:
+                continue
+            s = summ.setdefault(str(e['size']), {'n': 0, 'done': 0, 'wins': 0, 'stake': 0, 'ret': 0.0, 'ret_tax': 0.0,
+                                                 'ev_prod_mean': 0.0})
+            s['n'] += 1
+            s['ev_prod_mean'] += e['ev_prod'] or 0
+            if e['status'] in ('выигрыш', 'проигрыш', 'возврат') and e['mult'] is not None:
+                m = e['mult']
+                s['done'] += 1
+                s['stake'] += 1
+                s['wins'] += 1 if m > 1 else 0
+                s['ret'] += m
+                s['ret_tax'] += m - NDFL_RATE * max(0.0, m - 1)
+        for s in summ.values():
+            s['ev_prod_mean'] = round(s['ev_prod_mean'] / max(1, s['n']), 4)
+            s['roi'] = round(s['ret'] / s['stake'] - 1, 4) if s['stake'] else None
+            s['roi_tax'] = round(s['ret_tax'] / s['stake'] - 1, 4) if s['stake'] else None
+        rep['expr'] = {'summary': summ, 'rows': ex}
+    except Exception as e:
+        rep['expr'] = {'error': str(e)[:200]}
     try:
         rep['corner_calib'] = corner_calib(con)
     except Exception as e:
