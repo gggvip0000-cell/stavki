@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-100"
+VERSION = "2026.11.21-101"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2425,8 +2425,8 @@ def db_open():
             con.execute(f'ALTER TABLE {t} ADD COLUMN close_ts REAL')
         except sqlite3.OperationalError:
             pass
-    for col in ('res_h', 'res_a'):             # фактический счёт, по которому рассчитана ставка (голы/тайм/угловые)
-        try:
+    for col in ('res_h', 'res_a', 'early'):    # фактический счёт, по которому рассчитана ставка (голы/тайм/угловые);
+        try:                                   # early — -101: рассчитана досрочно по счёту лайва (итог ещё не пришёл)
             con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} INT')
         except sqlite3.OperationalError:
             pass
@@ -2950,7 +2950,7 @@ function popBets(sel){
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
-   res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
+   res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'+(b.early?'<div class="sm mu">досрочно — счёт на момент расчёта</div>':'')}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
   h+='<tr'+(isChg('b:'+b.id)?' class="chg" data-ck="b:'+b.id+'"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
@@ -3883,11 +3883,13 @@ class Collector:
         """(хозяева, гости) для расчёта: основное время, 1-й тайм или угловые; None — пока неизвестно"""
         pre = split_fam(fam)[0]
         if not pre:
-            r = self.con.execute('SELECT COALESCE(x.ft1, r.home), COALESCE(x.ft2, r.away) FROM (SELECT ? AS m) q'
+            r = self.con.execute('SELECT COALESCE(x.ft1, ms.h, r.home), COALESCE(x.ft2, ms.a, r.away) FROM (SELECT ? AS m) q'
                                  ' LEFT JOIN results r ON r.match_id = q.m'
+                                 " LEFT JOIN manual_scores ms ON ms.match_id = q.m AND ms.part = 'ft'"
                                  ' LEFT JOIN ext_scores x ON x.match_id = q.m AND x.done = 1', (mid,)).fetchone()
             return tuple(r) if r and r[0] is not None and r[1] is not None else None
-        for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid)):
+        for d in (self.stats_result(mid, start_ts), self.bk_result(mid, start_ts), self.ext_result(mid),
+                  self.manual_result(mid)):
             if d:
                 h, a = (d['hthg'], d['htag']) if pre == 'h1_' else (d['hc'], d['ac'])
                 if h is not None and a is not None:
@@ -4050,6 +4052,58 @@ class Collector:
                 self.con.execute('UPDATE bk_scores SET tsec=?, tdir=?, tupd=? WHERE match_id=? AND part=?',
                                  (m['timerSeconds'], m.get('timerDirection'), m.get('timerUpdateTimestampMsec'), mid, 'ft'))
         self.con.commit()
+        try:
+            self.settle_early()
+        except Exception as e:
+            log('досрочный расчёт: ' + str(e)[:150])
+
+    def settle_early(self):
+        """-101 (владелец 22.11: «проигранная ставка рассчитывается сразу, не дожидаясь конца матча, так же как и точно
+        выигранная»): тотал / инд. тотал матча и угловых, исход которого уже не изменится (счёт только растёт: итог при
+        нынешнем счёте = итогу при счёте +50) — рассчитать по свежему счёту лайва (конторы ≤3 мин, иначе FotMob ≤5 мин).
+        1-й тайм не трогаем (рассчитывается в перерыв). Когда придёт итог матча — счёт и расчёт сверяются заново."""
+        now = time.time()
+        rows = self.con.execute(
+            "SELECT id, COALESCE(fam, event), outcome, line, odds, match_id, start_ts FROM paper2 WHERE status='open'"
+            " AND start_ts < ? AND COALESCE(fam, event) NOT LIKE 'h1!_%' ESCAPE '!'", (now,)).fetchall()
+        n = 0
+        for pid, fam, outcome, line, odds, mid, st in rows:
+            pre, base = split_fam(fam)
+            if base not in ('total', 'tt1', 'tt2') or line is None:
+                continue
+            part = 'c' if pre == 'c_' else 'ft'
+            r = self.con.execute('SELECT s1, s2 FROM bk_scores WHERE match_id=? AND part=? AND ts>?',
+                                 (mid, part, now - 180)).fetchone()
+            if not r:
+                r = self.con.execute(f"SELECT {'c1, c2' if part == 'c' else 'ft1, ft2'} FROM ext_live"
+                                     ' WHERE match_id=? AND ts>?', (mid, now - 300)).fetchone()
+            if not r or r[0] is None or r[1] is None:
+                continue
+            h, a = r
+            pr = settle_one(base, outcome, line, odds, h, a)
+            if pr != settle_one(base, outcome, line, odds, h + 50, a + 50):
+                continue
+            stt = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
+            cf, clv = self.closing_fair(mid, fam, outcome, line, st, odds)
+            self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?,'
+                             ' close_ts=?, early=1 WHERE id=?', (stt, pr, cf, clv, now, h, a, self.close_ts if cf else None, pid))
+            n += 1
+        # итог пришёл — записать окончательный счёт; если вдруг расходится с досрочным расчётом — пересчитать
+        for pid, fam, outcome, line, odds, mid, st, prof in self.con.execute(
+                "SELECT id, COALESCE(fam, event), outcome, line, odds, match_id, start_ts, profit FROM paper2"
+                " WHERE early=1").fetchall():
+            sc = self.score_for(fam, mid, st)
+            if not sc:
+                continue
+            pr = settle_one(split_fam(fam)[1], outcome, line, odds, sc[0], sc[1])
+            if abs(pr - (prof or 0)) > 1e-9:
+                log(f'досрочный расчёт исправлен по итогу: ставка {pid}, {prof} → {pr}')
+            stt = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
+            self.con.execute('UPDATE paper2 SET status=?, profit=?, res_h=?, res_a=?, early=0 WHERE id=?',
+                             (stt, pr, sc[0], sc[1], pid))
+        self.con.commit()
+        if n:
+            log(f'рассчитано досрочно (исход уже не изменится): {n}')
 
     def fotmob_live_step(self):
         """идущие матчи с открытыми бумажными ставками: счёт и угловые с FotMob (matchDetails), раз в 8 с один матч,
@@ -4741,9 +4795,9 @@ def paper_stats(con, stake_rub):
             d['ft'] = [f1, f2]
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
     surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
-    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair in con.execute(
+    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early in con.execute(
             "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-            " profit, res_h, res_a, bk_url, fair"
+            " profit, res_h, res_a, bk_url, fair, early"
             " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
         pre = split_fam(fam or '')[0]
         out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
@@ -4754,7 +4808,8 @@ def paper_stats(con, stake_rub):
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
                             'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
                             'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
-                            'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
+                            'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub),
+                            'early': bool(early)})
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
     need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
     noname = sum(1 for he, ae, u in con.execute(
