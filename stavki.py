@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-67"
+VERSION = "2026.11.21-68"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3775,6 +3775,16 @@ class Collector:
                                 sm.err = 'шаг: ' + str(e).splitlines()[0][:150]
                     except Exception as e:
                         add_error('замер баскетбола/хоккея: ' + str(e).splitlines()[0][:120], 'замер')
+                    wl = next((x for x in self.feeds if x.name == 'Винлайн'), None)
+                    if wl is not None and wl.page is not None and wl.line.pm_events:
+                        if getattr(self, 'wlr_ts', None) is None:
+                            self.wlr_ts = time.time() - 6 * 3600 + 600     # первая разведка — через 10 мин, потом раз в 6 ч
+                        if time.time() - self.wlr_ts > 6 * 3600:
+                            self.wlr_ts = time.time()
+                            try:
+                                self.wl_recon = winline_event_recon(self.browser, wl)
+                            except Exception as e:
+                                self.wl_recon = {'error': str(e).splitlines()[0][:200]}
                     if getattr(self, 'recon_ts', None) is None:
                         self.recon_ts = time.time() - 1500          # первая разведка видов спорта — через 5 мин после запуска
                     if time.time() - self.recon_ts > 1800:
@@ -4252,6 +4262,61 @@ class HockeyMeasure(BasketMeasure):
     JOURNAL = {'1x2'}
 
 
+def winline_event_recon(browser, wl, n=2, wait_ms=15000):
+    """-68 (владелец 22.11 «да»: угловые и инд. тоталы Винлайна). Шаг 1 — разведка: открыть в отдельной вкладке страницу
+    1–2 популярных футбольных матчей Винлайна, 15 с слушать websocket (сайт сам просит роспись события), записать все
+    рынки этого матча (код, название из справочника, линия, кф, как бы их понял WL_MARKETS) и текст страницы — для
+    сверки по отчёту. Ничего не нажимает и не отправляет. В окно и бумагу не идёт."""
+    now = time.time()
+    evs = [e for e in wl.line.football(live=False) if e.get('start_ts') and now + 2 * 3600 < e['start_ts'] < now + 30 * 3600]
+    evs.sort(key=lambda e: -(e.get('count_add_line') or 0))
+    out = []
+    for e in evs[:n]:
+        line, q = WinlineLine(), []
+        pg = browser.new_page(locale='ru-RU')
+        try:
+            def on_ws(ws):
+                if 'data_ng' in ws.url:
+                    ws.on('framereceived', lambda pl: q.append(bytes(pl)) if isinstance(pl, (bytes, bytearray)) else None)
+            pg.on('websocket', on_ws)
+            pg.goto(e['url'], wait_until='domcontentloaded', timeout=60000)
+            pg.wait_for_timeout(wait_ms)
+            bad, kinds = 0, collections.Counter()
+            for fr in q:
+                try:
+                    for r in line.feed(fr) or []:
+                        kinds[r.get('kind')] += 1
+                except Exception:
+                    bad += 1
+            lines = [L for L in list(line.pm_lines.values()) + list(line.live_lines.values()) if L.get('event_id') == e['id']]
+            rows = []
+            for L in sorted(lines, key=lambda L: (L['tip'], L['id'])):
+                tl = line.tiplines.get(L['tip']) or {}
+                m = WL_MARKETS.get(L['tip'])
+                key = None
+                try:
+                    key = market_key(L['tip'], L['koef'], L['favorite'], tl) if m else None
+                except Exception:
+                    pass
+                rows.append({'tip': L['tip'], 'name': tl.get('name') or tl.get('title'), 'koef': L.get('koef'),
+                             'fav': L.get('favorite'), 'V': L.get('V'), 'as': [key[0], key[1]] if key else None})
+            try:
+                text = pg.inner_text('body')[:12000]
+            except Exception as x:
+                text = 'текст не получен: ' + str(x)[:80]
+            out.append({'event': e['id'], 'url': e['url'], 'teams': f"{e['home']} — {e['away']}", 'league': e.get('league'),
+                        'frames': len(q), 'bad': bad, 'kinds': dict(kinds), 'n_lines': len(rows), 'lines': rows[:400],
+                        'page_text': text})
+        except Exception as x:
+            out.append({'event': e['id'], 'error': str(x).splitlines()[0][:200]})
+        finally:
+            try:
+                pg.close()
+            except Exception:
+                pass
+    return {'made': now_str(), 'events': out}
+
+
 def sports_recon(col):
     """-62, пункт «замер других видов спорта» (владелец 22.11 «давай дальше»), шаг 1 — разведка: какие виды спорта и
     рынки есть в линии Фонбета (коды ставок, примеры событий) и у Pinnacle (виды спорта и число матчей). Только в отчёт."""
@@ -4321,6 +4386,7 @@ def build_report(con):
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
+    rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
         sm = getattr(COLLECTOR, attr, None)
         if sm is not None:
