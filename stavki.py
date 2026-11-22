@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-89"
+VERSION = "2026.11.21-90"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4258,7 +4258,9 @@ class Collector:
                         self.evr_ts = time.time()
                         self.evr.append(bk_event_recon(self.browser, *self.evr_q.pop(0)))
                     # -89: разведка запросов Олимпа — через 4 мин после запуска, раз в 6 ч
-                    if time.time() - getattr(self, 'olr_ts', time.time() - 6 * 3600 + 240) > 6 * 3600 and self.browser is not None:
+                    if not hasattr(self, 'olr_ts'):           # -90: первый раз — через 4 мин после запуска (в -89 условие
+                        self.olr_ts = time.time() - 6 * 3600 + 240   # пересчитывалось каждый круг и не срабатывало никогда)
+                    if time.time() - self.olr_ts > 6 * 3600 and self.browser is not None:
                         self.olr_ts = time.time()
                         try:
                             self.olimp = olimp_recon(self.browser)
