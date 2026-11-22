@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-99"
+VERSION = "2026.11.21-100"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2942,7 +2942,9 @@ function popBets(sel){
   // -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): тайм/угловые через 2.5 ч после начала так и не пришли
   // ни из одного источника — можно ввести счёт с сайта (PARI, Flashscore) вручную, ставки матча рассчитаются сразу
   // -99: и счёт матча (основные рынки) — Монтана — Добруджа 0:0 не нашёлся нигде, кроме Алисы
-  const needMan=b.status==='open'&&now-b.start_ts>150*60&&b.mid;
+  // -100 (владелец 22.11: «2,5 часа долго… что должно произойти, чтобы через 5–10 минут статистики не было, а через 2 часа
+  // появилась?»): форма — сразу, как матч окончен (как колонка «Расчёт», isSettleBet); источники всё равно главнее ручного
+  const needMan=isSettleBet(b)&&b.mid;
   const mk=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft');
   let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
