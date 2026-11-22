@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-52"
+VERSION = "2026.11.21-53"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2286,7 +2286,8 @@ a.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;colo
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
 .info .loch{background:#e5484d;color:#fff;border-radius:5px;padding:0 6px;font-weight:700}.info .loch b{color:#fff}
-.info .midch{background:#2f3d4f;color:#c9d6e3;border-radius:5px;padding:0 6px}.bad2{color:#ffb454;font-weight:700}
+.info .midch{background:#2f3d4f;color:#c9d6e3;border-radius:5px;padding:0 6px}
+.chp{border-radius:5px;padding:1px 7px;font-weight:700}.chp.hich{background:#ffd400;color:#111}.chp.loch{background:#e5484d;color:#fff}.chp.midch{background:#2f3d4f;color:#c9d6e3}.bad2{color:#ffb454;font-weight:700}
 .newb{font-size:12px;font-weight:800;color:#111;background:#ffd400;border-radius:6px;padding:3px 9px;animation:blink 1.2s ease-in-out infinite}
 @keyframes blink{50%{opacity:.45}}
 .pp{background:#131a22;border-radius:10px;padding:12px 16px;margin-bottom:16px;overflow-x:auto}
@@ -2446,13 +2447,13 @@ function popBets(sel){
  const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
  const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
- let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Начало</th><th>Итог</th></tr>';
+ let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
  // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
  const now=Date.now()/1000,GR=['МАТЧ','1-Й ТАЙМ','УГЛОВЫЕ'];
  L.sort((x,y)=>(GR.indexOf(x.part)-GR.indexOf(y.part))||((x.status==='open')-(y.status==='open'))*-1||(x.status==='open'?x.start_ts-y.start_ts:y.start_ts-x.start_ts));
  let gp=null;
  for(const b of L){const tm=(b.title||'').split(' — ');
-  if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="7"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
+  if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="8"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
   const dt=new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
   let left;
   if(b.start_ts>now)left='<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>';
@@ -2469,8 +2470,8 @@ function popBets(sel){
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
   h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
-   +(b.status==='open'&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
- if(!L.length)h+='<tr><td colspan="7" class="mu">нет ставок</td></tr>';
+   +(b.status==='open'&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
+ if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
 // timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
@@ -3657,9 +3658,9 @@ def paper_stats(con, stake_rub):
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
     surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
-    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku in con.execute(
+    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair in con.execute(
             "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-            " profit, res_h, res_a, bk_url"
+            " profit, res_h, res_a, bk_url, fair"
             " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
         pre = split_fam(fam or '')[0]
         out['bets'].append({'id': pid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
@@ -3668,6 +3669,7 @@ def paper_stats(con, stake_rub):
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
                             'odds': odds, 'ev': ev, 'status': status, 'res': [rh, ra] if rh is not None else None,
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
+                            'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
                             'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
                             'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub)})
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
