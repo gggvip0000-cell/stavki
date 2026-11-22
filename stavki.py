@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-65"
+VERSION = "2026.11.21-66"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3762,6 +3762,14 @@ class Collector:
                     self.ext_step()
                     self.sofa_link_step()
                     self.fotmob_live_step()
+                    try:
+                        if getattr(self, 'bb', None) is None:
+                            self.bb = BasketMeasure(self.con)
+                        self.bb.step(next((x for x in self.feeds if x.name == 'Фонбет'), None),
+                                     self.pin if getattr(self.pin, 'headers', None) else None)
+                    except Exception as e:
+                        if getattr(self, 'bb', None) is not None:
+                            self.bb.err = 'шаг: ' + str(e).splitlines()[0][:150]
                     if getattr(self, 'recon_ts', None) is None:
                         self.recon_ts = time.time() - 1500          # первая разведка видов спорта — через 5 мин после запуска
                     if time.time() - self.recon_ts > 1800:
@@ -3956,6 +3964,253 @@ def ExtStatsLastError():
     return getattr(COLLECTOR, 'ext', None) and COLLECTOR.ext.last_error or ''
 
 
+# ================================================================ Баскетбол: замер вживую, только внутри программы (-66)
+# Владелец 22.11: «пусть будет баскетбол, только внутри программы, в интерфейс не добавлять». Журнал bb_cand: каждая
+# ставка Фонбета на баскетбол с перевесом ≥3% и кф ≤4 против Pinnacle; цена Pinnacle перед началом → CLV. Только в отчёт.
+# Правила: Pinnacle — «Bets on the Game … include all overtimes» (pinnacle.com/en/future/betting-rules). Фонбет: в каталоге
+# у баскетбола нет рынков «основное время», исход без ничьей; что тоталы с ОТ — по каталогу и общему правилу, не по
+# странице правил конторы (её не нашли) — в отчёте видно, если линии систематически расходятся.
+BB_FON_SPORT = 3          # «Баскетбол» в каталоге видов спорта Фонбета (разведка 22.11)
+BB_PIN_SPORT = 4          # «Basketball» у Pinnacle (/sports, разведка 22.11)
+RU_LAT = dict(zip('абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
+                  ['a', 'b', 'v', 'g', 'd', 'e', 'e', 'zh', 'z', 'i', 'i', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u',
+                   'f', 'h', 'ts', 'ch', 'sh', 'sch', '', 'i', '', 'e', 'iu', 'ia']))
+
+
+def lat_key(name):
+    """название команды → грубое латинское звучание (для сверки «Енисей» и «Enisey», «ЦСКА» и «CSKA»)"""
+    t = (name or '').lower().replace('ё', 'е')
+    t = ''.join(RU_LAT.get(ch, ch) for ch in t)
+    t = re.sub(r'\([^)]*\)', ' ', t)
+    for a, b in (('ts', 'c'), ('ck', 'k'), ('x', 'ks'), ('c', 'k'), ('w', 'v'), ('ph', 'f'), ('y', 'i'), ('kh', 'h'),
+                 ('j', 'dzh'), ('ou', 'u'), ('ee', 'i'), ('oo', 'u')):
+        t = t.replace(a, b)
+    t = re.sub(r'[^a-z0-9 ]+', ' ', t)
+    drop = {'bk', 'bc', 'kk', 'kb', 'fk', 'pbk', 'basket', 'basketbol', 'basketball', 'klub', 'club', 'the'}
+    return ' '.join(w for w in t.split() if w not in drop)
+
+
+def lat_sim(a, b):
+    a, b = lat_key(a), lat_key(b)
+    if not a or not b:
+        return 0.0
+    r = difflib.SequenceMatcher(None, a, b).ratio()
+    wa, wb = a.split(), b.split()
+    best = max((difflib.SequenceMatcher(None, x, y).ratio() for x in wa for y in wb if len(x) >= 3 and len(y) >= 3),
+               default=0.0)
+    return max(r, 0.9 * best)
+
+
+class BasketMeasure:
+    """Pinnacle-баскетбол по лигам по очереди + Фонбет-баскетбол из уже идущей прямой линии → журнал bb_cand"""
+
+    def __init__(self, con):
+        self.con = con
+        con.execute('CREATE TABLE IF NOT EXISTS bb_cand (fon_id INT, fam TEXT, line REAL, side INT, outcome TEXT,'
+                    ' teams TEXT, pin_teams TEXT, league TEXT, start_ts REAL, first_seen REAL, odds REAL, p_win REAL,'
+                    ' p_push REAL, ev REAL, close_p REAL, close_push REAL, close_ts REAL, clv REAL,'
+                    ' PRIMARY KEY (fon_id, fam, line, side))')
+        con.commit()
+        self.leagues, self.leagues_ts, self.last = {}, 0, 0
+        self.pin = {}            # id матча Pinnacle -> {home, away, start, league, fair, ts}
+        self.map = {}            # id события Фонбета -> (id Pinnacle, перевёрнуты ли хозяева) или None
+        self.map_try = {}
+        self.log = []            # сопоставления для проверки в отчёте
+        self.err = ''
+
+    def poll_pin(self, pin):
+        now = time.time()
+        if now - getattr(self, 'pin_req', 0) < 3:       # не чаще раза в 3 с — футбольный Pinnacle главнее
+            return False
+        self.pin_req = now
+        if now - self.leagues_ts > 600:
+            self.leagues_ts = now
+            for lg in pin.get(f'/sports/{BB_PIN_SPORT}/leagues?all=false'):
+                if lg.get('matchupCount', 0) > 0 and not lg.get('isHidden'):
+                    self.leagues.setdefault(lg['id'], {'last': 0, 'next': None})['name'] = lg.get('name', '')
+
+        def due(lg):
+            ns = lg.get('next')
+            iv = 900 if ns is None or ns - now > 12 * 3600 else (300 if ns - now > 3 * 3600 else 120)
+            return now - lg['last'] >= iv
+        for lid, lg in sorted(self.leagues.items(), key=lambda kv: kv[1]['last']):
+            if not due(lg):
+                continue
+            lg['last'] = now
+            mu = pin.get(f'/leagues/{lid}/matchups')
+            mk = pin.get(f'/leagues/{lid}/markets/straight')
+            self.ingest(lid, lg, mu, mk)
+            return True                     # одна лига за вызов
+        return False
+
+    def ingest(self, lid, lg, matchups, markets):
+        now, starts = time.time(), []
+        for x in matchups or []:
+            if x.get('type') != 'matchup' or x.get('isLive') or x.get('parentId'):
+                continue
+            ps = {q.get('alignment'): q.get('name') for q in x.get('participants') or []}
+            try:
+                st = datetime.datetime.fromisoformat(x['startTime'].replace('Z', '+00:00')).timestamp()
+            except Exception:
+                continue
+            if not ps.get('home') or not ps.get('away'):
+                continue
+            self.pin.setdefault(x['id'], {})
+            self.pin[x['id']].update(home=ps['home'], away=ps['away'], start=st, league=lg.get('name', ''))
+            if st > now:
+                starts.append(st)
+        lg['next'] = min(starts) if starts else None
+        fairs = {}
+        for k in markets or []:
+            if k.get('status', 'open') != 'open' or k.get('period') != 0 or k.get('matchupId') not in self.pin:
+                continue
+            pr = {q.get('designation'): q for q in k.get('prices') or []}
+            f = fairs.setdefault(k['matchupId'], {})
+            try:
+                if k['type'] == 'moneyline' and {'home', 'away'} <= set(pr) and 'draw' not in pr:
+                    po = [am_to_dec(pr['home']['price']), am_to_dec(pr['away']['price'])]
+                    f[('1x2', None)] = (fair_power(po), po, now)        # «1x2» без ничьей: [хозяева, гости]
+                elif k['type'] == 'total' and {'over', 'under'} <= set(pr):
+                    po = [am_to_dec(pr['over']['price']), am_to_dec(pr['under']['price'])]
+                    f[('total', round(float(pr['over']['points']), 2))] = (fair_power(po), po, now)
+                elif k['type'] == 'team_total' and {'over', 'under'} <= set(pr) and k.get('side') in ('home', 'away'):
+                    po = [am_to_dec(pr['over']['price']), am_to_dec(pr['under']['price'])]
+                    f[('tt1' if k['side'] == 'home' else 'tt2', round(float(pr['over']['points']), 2))] = \
+                        (fair_power(po), po, now)
+                elif k['type'] == 'spread' and {'home', 'away'} <= set(pr):
+                    po = [am_to_dec(pr['home']['price']), am_to_dec(pr['away']['price'])]
+                    f[('ah', round(float(pr['home']['points']), 2))] = (fair_power(po), po, now)
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                continue
+        for pid, f in fairs.items():
+            if f:
+                self.pin[pid]['fair'], self.pin[pid]['ts'] = f, now
+        for pid in [p for p, m in self.pin.items() if m.get('start', now) < now - 6 * 3600]:
+            self.pin.pop(pid, None)
+
+    def match(self, ev):
+        eid = ev['id']
+        if eid in self.map and (self.map[eid] or time.time() - self.map_try.get(eid, 0) < 600):
+            return self.map[eid]
+        best, best_s = None, 0.0
+        for pid, m in self.pin.items():
+            if 'start' not in m or abs(m['start'] - ev.get('startTime', 0)) > 15 * 60:
+                continue
+            for swapped, (h, a) in ((False, (m['home'], m['away'])), (True, (m['away'], m['home']))):
+                s1, s2 = lat_sim(ev.get('team1'), h), lat_sim(ev.get('team2'), a)
+                sc = (s1 + s2) / 2
+                if min(s1, s2) >= 0.45 and sc > best_s:
+                    best, best_s = (pid, swapped), sc
+        res = best if best_s >= 0.6 else None
+        self.map[eid], self.map_try[eid] = res, time.time()
+        if res:
+            m = self.pin[res[0]]
+            self.log = (self.log + [{'fon': f"{ev.get('team1')} — {ev.get('team2')}", 'pin': f"{m['home']} — {m['away']}",
+                                     'swapped': res[1], 'score': round(best_s, 2)}])[-200:]
+        return res
+
+    @staticmethod
+    def fon_odds(fs):
+        out = {}
+        a, b = fs.get(921, {}).get('v'), fs.get(923, {}).get('v')
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a > 1 and b > 1 and 922 not in fs:
+            out[('1x2', None)] = [a, b]
+        for fam, plist in (('total', F_TOTALS), ('ah', F_AH), ('tt1', F_TT1), ('tt2', F_TT2)):
+            for x, y in plist:
+                fx, fy = fs.get(x), fs.get(y)
+                if not (fx and fy and isinstance(fx.get('v'), (int, float)) and isinstance(fy.get('v'), (int, float))):
+                    continue
+                if fx['v'] <= 1 or fy['v'] <= 1 or not isinstance(fx.get('p'), (int, float)):
+                    continue
+                out[(fam, round(fx['p'] / 100, 2))] = [fx['v'], fy['v']]
+        return out
+
+    def step(self, feed, pin):
+        """раз в несколько секунд: одна лига Pinnacle; раз в 30 с — сверка всех баскетбольных событий Фонбета"""
+        now = time.time()
+        if pin is None or feed is None:
+            return
+        try:
+            self.poll_pin(pin)
+        except Exception as e:
+            self.err = 'Pinnacle: ' + str(e).splitlines()[0][:120]
+            return
+        if now - self.last < 30:
+            return
+        self.last = now
+
+        def is_bb(sid):
+            sp, hops = feed.sports.get(sid), 0
+            while sp and hops < 8:
+                if sp.get('id') == BB_FON_SPORT:
+                    return True
+                sp, hops = feed.sports.get(sp.get('parentId')), hops + 1
+            return False
+        n_ev = n_map = 0
+        for ev in list(feed.events.values()):
+            if ev.get('level') != 1 or ev.get('place') != 'line' or ev.get('_blocked') or ev.get('startTime', 0) < now + 60 \
+                    or not is_bb(ev.get('sportId')):
+                continue
+            n_ev += 1
+            got = self.match(ev)
+            if not got:
+                continue
+            n_map += 1
+            pid, swapped = got
+            m = self.pin.get(pid) or {}
+            fair = m.get('fair')
+            if not fair or now - m.get('ts', 0) > 900:
+                continue
+            if swapped:                      # хозяева Фонбета = гости Pinnacle: развернуть цены
+                fl = {}
+                for (fam, ln), (p, po, ts) in fair.items():
+                    if fam == '1x2':
+                        fl[(fam, None)] = ([p[1], p[0]], [po[1], po[0]], ts)
+                    elif fam == 'ah':
+                        fl[(fam, round(-ln, 2))] = ([p[1], p[0]], [po[1], po[0]], ts)
+                    elif fam in ('tt1', 'tt2'):
+                        fl[('tt2' if fam == 'tt1' else 'tt1', ln)] = (p, po, ts)
+                    else:
+                        fl[(fam, ln)] = (p, po, ts)
+                fair = fl
+            for (fam, ln), odds in self.fon_odds(feed.factors.get(ev['id'], {})).items():
+                for side in (0, 1):
+                    r = true_ev(fair, fam, ln, side, odds[side])
+                    if r is None:
+                        continue
+                    ev_, pw, pp = r
+                    key = (ev['id'], fam, ln if ln is not None else -999, side)
+                    row = self.con.execute('SELECT 1 FROM bb_cand WHERE fon_id=? AND fam=? AND line=? AND side=?',
+                                           key).fetchone()
+                    if row:
+                        self.con.execute('UPDATE bb_cand SET close_p=?, close_push=?, close_ts=? WHERE fon_id=? AND fam=?'
+                                         ' AND line=? AND side=?', (pw, pp, m.get('ts'), *key))
+                    elif ev_ >= 0.03 and odds[side] <= 4:
+                        oc = (['П1', 'П2'][side] if fam == '1x2' else outcome_names(fam, ln)[side])
+                        self.con.execute('INSERT INTO bb_cand (fon_id, fam, line, side, outcome, teams, pin_teams, league,'
+                                         ' start_ts, first_seen, odds, p_win, p_push, ev, close_p, close_push, close_ts)'
+                                         ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                         (*key, oc, f"{ev.get('team1')} — {ev.get('team2')}",
+                                          f"{m['home']} — {m['away']}", m.get('league'), ev.get('startTime'), now,
+                                          odds[side], pw, pp, ev_, pw, pp, m.get('ts')))
+        self.con.execute('UPDATE bb_cand SET clv = odds * close_p + close_push - 1 WHERE clv IS NULL AND start_ts < ?'
+                         ' AND close_p IS NOT NULL', (now,))
+        self.con.commit()
+        self.stat = {'fon_events': n_ev, 'matched': n_map, 'pin_matchups': len(self.pin), 'pin_leagues': len(self.leagues),
+                     'made': now_str()}
+
+    def report(self):
+        rows = self.con.execute('SELECT * FROM bb_cand ORDER BY first_seen').fetchall()
+        cols = [c[1] for c in self.con.execute('PRAGMA table_info(bb_cand)')]
+        done = [r for r in rows if r[cols.index('clv')] is not None]
+        clv = [r[cols.index('clv')] for r in done]
+        return {'stat': getattr(self, 'stat', None), 'error': self.err, 'match_log': self.log[-60:],
+                'n': len(rows), 'n_closed': len(done), 'clv_mean': (sum(clv) / len(clv)) if clv else None,
+                'clv_pos_share': (sum(c > 0 for c in clv) / len(clv)) if clv else None,
+                'rows': [dict(zip(cols, r)) for r in rows]}
+
+
+
 def sports_recon(col):
     """-62, пункт «замер других видов спорта» (владелец 22.11 «давай дальше»), шаг 1 — разведка: какие виды спорта и
     рынки есть в линии Фонбета (коды ставок, примеры событий) и у Pinnacle (виды спорта и число матчей). Только в отчёт."""
@@ -4024,7 +4279,13 @@ def build_report(con):
            'bet_matches': rows('SELECT * FROM matches WHERE match_id IN (SELECT match_id FROM paper2)'),
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
-    rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)    # собирается в потоке программы (браузер — не из окна)
+    rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
+    bb = getattr(COLLECTOR, 'bb', None)
+    if bb is not None:
+        try:
+            rep['basketball'] = bb.report()
+        except Exception as e:
+            rep['basketball'] = {'error': str(e)[:200]}    # собирается в потоке программы (браузер — не из окна)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
