@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-86"
+VERSION = "2026.11.21-87"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2377,6 +2377,7 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
  .pp{padding:8px!important}.pp .ptab th,.pp .ptab td{padding:5px 2px}.ptab .chev{width:12px}
  .ptab tr.sub td:first-child{padding-left:8px;white-space:nowrap}.ptab tr.grp td:first-child{white-space:nowrap}
  .ptab tr.grp .kind.ks{font-size:10px;padding:2px 4px;min-width:0!important}
+ .ptab th{width:auto!important}
  header{position:static}.livebtn{margin-left:8px}header h1{font-size:16px}header .st{font-size:11px}
 }
 /* -80: телефон — три колонки контор, короткие карточки */
@@ -2429,7 +2430,11 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pp .ptab tr.sub td{background:#141b23;font-size:14px}.ptab tr.sub td:first-child{padding-left:34px;color:#cdd5dd}
 .ptab td.w{color:#5fd38d;font-weight:700}.ptab td.l{color:#ff6b6b;font-weight:700}.ptab td.p{color:#c9d1d9}
 .ptab td:nth-child(3),.ptab td:nth-child(4),.ptab td:nth-child(5),.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){box-shadow:inset 0 0 0 999px rgba(90,176,255,.06)}
-.ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(7),.ptab th:nth-child(7){border-left:2px solid #34414f}
+.ptab td:nth-child(2),.ptab th:nth-child(2),.ptab td:nth-child(3),.ptab th:nth-child(3),.ptab td:nth-child(6),.ptab th:nth-child(6),.ptab td:nth-child(8),.ptab th:nth-child(8){border-left:2px solid #34414f}
+/* -87 (владелец 22.11: «эти поля сделать уже»): колонки исходов уже, вид ставки забирает остальное; «Расчёт» — жёлтым */
+.ptab th:nth-child(2){width:110px}.ptab th:nth-child(3),.ptab th:nth-child(4),.ptab th:nth-child(5){width:105px}.ptab th:nth-child(6),.ptab th:nth-child(7){width:85px}.ptab th:nth-child(8){width:120px}
+.ptab td.stl{color:#ffd400;font-weight:700}
+.ptab tr.taxr td:nth-child(2){border-left:2px solid #34414f}.ptab tr.taxr td:nth-child(3){border-left:2px solid #34414f;box-shadow:none}
 .pp .ptab tr.tot td{border-top:2px solid #3a4756;font-weight:800;font-size:16px;background:#1b2430}
 .pp .ptab tr.taxr td{background:#161d26;font-size:14px;color:#aab4be;border-top:1px dashed #34414f}.pp .ptab tr.taxr td.taxn{text-align:left;font-size:12px;color:#7d8b99}.pp .ptab tr.taxr td:last-child{font-size:15px}
 .kind.ks{font-size:11px;padding:2px 7px;margin:0;vertical-align:1px;color:#111}
@@ -2645,7 +2650,7 @@ let PCOL={};try{PCOL=PHONE0?{}:JSON.parse(localStorage.getItem('pcol')||'{}')}ca
 const pclosed=g=>(g in PCOL)?!!PCOL[g]:PHONE0;
 function pcol(g){PCOL[g]=!pclosed(g);if(!PHONE0)try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
-const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча','live':'матчи идут сейчас'};
+const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча или идут','live':'матчи идут сейчас','settle':'матч окончен, ждут расчёта'};
 // -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
 // только растут — если счёт уже больше линии, «Б» выиграна, «М» проиграна целиком (для любых линий, и с возвратом)
 // -60/-63/-69: тоталы и инд. тоталы только растут. Для «Больше» нынешний счёт — худший исход, для «Меньше» — лучший.
@@ -2684,10 +2689,14 @@ function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts
  const lv=b.live||{},t=lv.timer;if(lv.fin)return false;
  if(t&&t.tsec!=null)return !(!t.tdir&&t.tsec>=5400);
  return now-b.start_ts<135*60}
+// -87 (владелец 22.11: «после „Ждут“ — колонка „Расчёт“, туда все ставки, которые ждут расчёт»): матч уже окончен
+// (не до матча и не идёт — как в isLiveBet), а итога ещё нет
+function isSettleBet(b){return b.status==='open'&&b.start_ts<=Date.now()/1000&&!isLiveBet(b)}
+function settleOf(p,part,name){return (p.bets||[]).filter(b=>isSettleBet(b)&&(part==='*'||b.part===part)&&(name==='*'||b.name===name)).length}
 function popBets(sel){
  POPSEL=sel;
  const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
- const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||(st==='live'?isLiveBet(b):b.status===st)));
+ const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||(st==='live'?isLiveBet(b):st==='settle'?isSettleBet(b):st==='open'?(b.status==='open'&&!isSettleBet(b)):b.status===st)));
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
  // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
@@ -2750,7 +2759,7 @@ function watchChg(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchChg()});
 function trackChg(p){
  const now=Date.now(),cur={},first=PV===null;
- const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;cur[sel+'|open']=(g.n||0)-(g.done||0);cur[sel+'|итог']=g.done?Math.round(g.profit_rub||0):null};
+ const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;const [pa,na]=sel.split('|'),se=settleOf(p,pa,na);cur[sel+'|open']=(g.n||0)-(g.done||0)-se;cur[sel+'|settle']=se;cur[sel+'|итог']=g.done?Math.round(g.profit_rub||0):null};
  const groups={};for(const g of p.simple||[]){put(g.part+'|'+g.name,g);const G=groups[g.part]=groups[g.part]||{n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const k in G)G[k]+=g[k]||0}
  for(const part in groups)put(part+'|*',groups[part]);
  if(p.simple_total)put('*|*',p.simple_total);
@@ -2779,12 +2788,12 @@ function renderPaper(p){
  const z=x=>x?x:'·';
  const ck=(sel,k)=>{const key='c:'+sel+'|'+k;return isChg(key)?' chg" data-ck="'+key.replace(/"/g,'&quot;'):''};
  const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
- const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>';
+ const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se,'',sel,'open')+c(se,'stl',sel,'settle')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+'</td>'};
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  const nl=(p.bets||[]).filter(isLiveBet).length;
  h=h.replace('</h2>',' '+(nl?'<span class="livebtn num" data-pop="*|*|live" title="ставки на матчи, которые идут сейчас">● '+nl+'</span>':'<span class="livebtn off" title="сейчас ни один матч с нашей ставкой не идёт">● 0</span>')+'</h2>');
- h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
+ h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
@@ -2793,7 +2802,7 @@ function renderPaper(p){
   if(!closed)for(const r of G.rows){const nm=r.name||r.val;const sn=SHN[nm];h+='<tr class="sub"><td>'+(sn?'<span class="lg">'+nm+'</span><span class="sh">'+sn+'</span>':nm)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>'}
  }
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr>';
- const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="5" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
+ const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="6" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
