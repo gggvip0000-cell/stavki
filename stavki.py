@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-93"
+VERSION = "2026.11.21-94"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2460,7 +2460,8 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <p class="st">Telegram: <span id="tgst">—</span><span id="tgform"> · ключ бота из @BotFather: <input id="tgkey" style="width:340px">
 <button class="lbtn" onclick="tgc()">Подключить Telegram</button></span></p>
 <p class="st">Вход с телефона: <span id="phst">—</span><span id="phform"> · пароль (от 10 знаков): <input id="phpass" type="password" style="width:200px">
-<button class="lbtn" onclick="phset()">Сохранить пароль</button> <span id="phmsg"></span></span></p><div id="more"></div></details></main>
+<button class="lbtn" onclick="phset()">Сохранить пароль</button> <span id="phmsg"></span></span></p>
+<p class="st"><label><input type="checkbox" id="aust" onchange="fetch('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:this.checked})})"> Запускать программу вместе с Windows</label> <span id="aumsg"></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
 const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400'};   // цвета с сайтов контор (снимки разведки 21.11)
@@ -2581,6 +2582,8 @@ async function tick(){
   const sf=d.paper&&d.paper.sofa;if(sf)m+='<p class="st">Ссылки на статистику (FotMob / Sofascore): найдено '+sf.found+' из '+sf.need+' матчей с бумажными ставками, не нашлось '+sf.notfound+(sf.noname?', без английских названий (искать не по чему) '+sf.noname:'')+(sf.error?' · <span class="bad">Sofascore: '+sf.error+'</span>':'')+'</p>';
   if(s.nbk&&s.nbk.length)m+='<p class="st">Проверка контор (пускает ли сайт программу): '+s.nbk.map(x=>'<b>'+x[0]+'</b> — '+x[1]).join(' · ')+'</p>';
   const sx=s.stats;m+='<p class="st">Статистика матчей (football-data): '+(sx?(sx.rows?('матчей в базе '+sx.rows):'')+(sx.error?' <span class="bad">не все лиги скачались: '+sx.error+'</span>':''):'загружается…')+'</p>';
+  const au=s.autostart,ae=document.getElementById('aust'),am=document.getElementById('aumsg');
+  if(au&&ae&&document.activeElement!==ae){ae.checked=!!au.want;am.innerHTML=au.why?'<span class="bad">'+au.why+'</span>':(au.on?'<span class="pos">✓ ярлык в автозагрузке Windows</span>':'<span class="mu">выключено</span>')}
   const ph=s.prohod||{},pe=document.getElementById('phst');
   pe.innerHTML=ph.sost==='работает'?'<span class="pos">работает</span> · ссылку пришлёт бот по команде /site'+(ph.link?' · <span class="mu">'+ph.link+'</span>':'')+' · <a href="#" onclick="document.getElementById(\'phform\').style.display=\'\';return false">сменить пароль</a>'
    :((ph.sost||'выключен')+(ph.why?' — '+ph.why:''));
@@ -3094,7 +3097,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.login_page('Неверный пароль.')
         if not self.authed():
             return self.send_body(401, b'{"error": "login"}', 'application/json')
-        if self.remote() and (self.path.startswith('/api/telegram') or self.path.startswith('/api/phone_pass')):
+        if self.remote() and (self.path.startswith('/api/telegram') or self.path.startswith('/api/phone_pass')
+                              or self.path.startswith('/api/autostart')):
             return self.send_body(403, b'{"error": "only from the laptop"}', 'application/json')
         if self.path.startswith('/api/phone_pass'):
             try:
@@ -3135,6 +3139,16 @@ class Handler(BaseHTTPRequestHandler):
                 with STATE.lock:
                     STATE.manual_q.append((mid, part, h, a))
             body = json.dumps({'ok': ok}).encode('utf-8')
+        elif self.path.startswith('/api/autostart'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                on = bool(json.loads(self.rfile.read(min(n, 200)).decode('utf-8') or '{}').get('on'))
+            except Exception:
+                on = True
+            CFG['autostart'] = on
+            save_config_keys({'autostart': on})
+            autostart_apply(on)
+            body = b'{"ok": true}'
         elif self.path.startswith('/api/razvedka'):
             with STATE.lock:
                 if not STATE.status['razvedka'] or STATE.status['razvedka'].startswith('готово'):
@@ -5241,7 +5255,7 @@ def olimp_summ(body, max_groups=80):
             if not isinstance(e, dict) or 'outcomes' not in e and 'team1Name' not in e:
                 continue
             evs.append({k: e.get(k) for k in ('id', 'name', 'competitionId', 'competitionName', 'parentId',
-                                                'startDateTime', 'outcomeCount', 'state')})
+                                                'startDateTime', 'outcomeCount', 'state', 'names')})
             for o in e.get('outcomes') or []:
                 k = (o.get('groupName'), o.get('tableType'), o.get('marketId'))
                 g = groups.setdefault(k, {'n': 0, 'ex': []})
@@ -5250,7 +5264,9 @@ def olimp_summ(body, max_groups=80):
                     g['ex'].append([o.get('shortName'), o.get('param'), o.get('unprocessedName'), o.get('probability'),
                                     o.get('basketId')])
     out_g = sorted(groups.items(), key=lambda kv: -kv[1]['n'])[:max_groups]
+    first = next((it.get('payload') for it in data if isinstance(it, dict) and isinstance(it.get('payload'), dict)), {})
     return {'ops': sorted({str(it.get('operationId')) for it in data if isinstance(it, dict)}),
+            'payload_keys': sorted(first.keys())[:60] if isinstance(first, dict) else None,
             'n_events': len(evs), 'events': evs[:25],
             'groups': [{'group': k[0], 'table': k[1], 'market': k[2], **v} for k, v in out_g]}
 
@@ -5353,8 +5369,30 @@ def olimp_recon(browser, wait_ms=12000):
             for e in ((f.get('summ') or {}).get('events') or []):
                 if re.match(r'УГЛ ', e.get('name') or ''):
                     ugl = ugl or e.get('id')
+        # -94: «Статистика тура» — не угловые матчей. «УГЛ»-матчи (угловые матча) лежат в чемпионатах «<лига>. Статистика»,
+        # которых нет в списке чемпионатов; их номера — из любых ответов сайта (multigenerator), где встретился «УГЛ …»
+        seen = {}
+        for u, b in list(full.items()):
+            for m in re.finditer(r'"competitionId":"(\d+)"[^{}]{0,200}?"competitionName":"([^"]*Статистика[^"]*)"'
+                                 r'[^{}]{0,80}?(?:"parentId":"(\d+)")?[^{}]{0,120}?"name(?:s)?"', b):
+                seen.setdefault(m.group(1), m.group(2))
+            for m in re.finditer(r'"id":"(\d+)","eventSbId"[^\[\]]{0,600}?"name":"УГЛ [^"]*"', b):
+                ugl = ugl or m.group(1)
+        out['ugl_comps'] = list(seen.items())[:20]
+        for scid, nm in [x for x in seen.items() if 'тура' not in x[1] and 'раунда' not in x[1]][:2]:
+            t = fetch(f'https://www.olimp.bet/api/v4/0/line/competitions-with-events?vids%5B%5D={scid}%3A',
+                      'угловые матчей: чемпионат ' + nm)
+            if 'sample_ugl_comp' not in out and t:
+                out['sample_ugl_comp'] = t[:150000]
+            for f in out['fetches'][-1:]:
+                for e in ((f.get('summ') or {}).get('events') or []):
+                    if re.match(r'УГЛ ', e.get('name') or ''):
+                        ugl = ugl or e.get('id')
         if ugl:
             fetch(f'https://www.olimp.bet/api/v4/0/line/events?vids%5B%5D={ugl}%3A&main=false', 'роспись «УГЛ»-матча')
+        # -94: полный ответ страницы чемпионата — образец для чтения цен Олимпа (проверка разбора на настоящих данных)
+        if q:
+            out['sample_comp'] = full[q[0]][:450000]
     except Exception as e:
         out['error'] = str(e).splitlines()[0][:200]
     finally:
@@ -5902,6 +5940,61 @@ def stats_loop():
         time.sleep(6 * 3600)
 
 
+# -94 (владелец 22.11: «надо автозапуск программы после перезагрузки ноута, как у софта по монтажу роликов»): ярлык
+# Stavki.bat в папке автозагрузки Windows (как avtozapusk.py программы роликов). Ярлык (.lnk), а не .bat: путь к папке
+# бывает с русскими буквами; ярлык делает сама Windows (WScript.Shell через PowerShell), путь — переменной окружения.
+# Срабатывает, когда в Windows вошли; окно Stavki.bat — свёрнутым. По умолчанию включено, выключается в «Подробнее».
+AUTOSTART_LNK = 'Stavki.lnk'
+AUTOSTART_PS = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:ST_LNK);"
+                "$s.TargetPath = $env:ST_TARGET; $s.WorkingDirectory = $env:ST_DIR;"
+                "$s.WindowStyle = 7; $s.Save()")
+
+
+def autostart_path():
+    appdata = os.environ.get('APPDATA')
+    if sys.platform != 'win32' or not appdata:
+        return None
+    return Path(appdata) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs' / 'Startup' / AUTOSTART_LNK
+
+
+def autostart_set(on):
+    """Привести автозагрузку к настройке. '' — получилось, иначе — почему нет."""
+    y = autostart_path()
+    if y is None:
+        return 'автозапуск умеет только Windows'
+    if not on:
+        try:
+            y.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            return f'не удалось убрать ярлык: {e}'
+        return ''
+    if y.exists():
+        return ''
+    try:
+        y.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', AUTOSTART_PS],
+                           env=dict(os.environ, ST_LNK=str(y), ST_TARGET=str(HERE / 'Stavki.bat'), ST_DIR=str(HERE)),
+                           capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+                           creationflags=0x08000000)
+    except Exception as e:
+        return f'не удалось создать ярлык: {e}'
+    if r.returncode or not y.exists():
+        tail = (r.stderr or r.stdout or '').strip().splitlines()[-1:]
+        return 'не удалось создать ярлык' + (f': {tail[0]}' if tail else '')
+    return ''
+
+
+def autostart_apply(on):
+    why = autostart_set(on)
+    y = autostart_path()
+    with STATE.lock:
+        STATE.status['autostart'] = {'on': bool(y and y.exists()), 'want': bool(on), 'why': why}
+    if why:
+        log('автозапуск: ' + why)
+
+
 def load_config():
     p = HERE / 'config.json'
     cfg = dict(DEFAULT_CONFIG)
@@ -5928,9 +6021,19 @@ def main():
     CFG = cfg
     PROHOD = Prohod(cfg)
     set_tg('подключён' if TG.ready() else 'не подключён', ok=True if TG.ready() else None)
-    srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f'http://localhost:{cfg["port"]}'
+    try:
+        srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
+    except OSError:
+        # -94: с автозапуском программа может быть уже запущена — второй раз не запускаемся, открываем её окно
+        print('Программа «Ставки» уже запущена — открываю её окно. Это чёрное окно можно закрыть.')
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return
+    threading.Thread(target=autostart_apply, args=(cfg.get('autostart', True),), daemon=True).start()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     log(f'«Ставки», версия {VERSION}. Окно программы: {url}')
     flag = HERE / 'restarting.flag'
     if flag.exists():                 # перезапуск после обновления: окно уже открыто, оно само переподключится
