@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-55"
+VERSION = "2026.11.21-56"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1144,13 +1144,32 @@ class ExtStats:
         return out
 
     def find_fotmob(self, home_en, away_en, start_ts):
+        """матч FotMob по времени ±20 мин и названиям (полное и короткое). С -56: если обе команды не сошлись на 0.6,
+        достаточно одной почти точно (≥0.9) — при условии, что в это время такой матч ровно один (команда не играет
+        два матча сразу). Промахи с ближайшими по времени матчами — в fm_miss (отчёт для разработки)."""
+        def sim(name, x):
+            return max(en_sim(name, x.get('name') or ''), en_sim(name, x.get('shortName') or '') if x.get('shortName') else 0)
+        best, loose, near = None, [], []
         for x in self.fm_list(start_ts):
-            if abs((x.get('timeTS') or 0) / 1000 - start_ts) > 20 * 60:
+            dt = abs((x.get('timeTS') or 0) / 1000 - start_ts)
+            if dt > 20 * 60:
                 continue
-            same = self.pair((x.get('home') or {}).get('name', ''), (x.get('away') or {}).get('name', ''),
-                             home_en, away_en)
-            if same is not None:
-                return x, same
+            h, a = x.get('home') or {}, x.get('away') or {}
+            near.append((round(dt / 60), h.get('name'), a.get('name')))
+            for same, s1, s2 in ((True, sim(home_en, h), sim(away_en, a)), (False, sim(home_en, a), sim(away_en, h))):
+                if min(s1, s2) >= 0.6:
+                    if best is None or s1 + s2 > best[0]:
+                        best = (s1 + s2, x, same)
+                elif max(s1, s2) >= 0.9:
+                    loose.append((x, same))
+        if best:
+            return best[1], best[2]
+        if len({x.get('id') for x, _ in loose}) == 1:
+            return loose[0]
+        if not hasattr(self, 'fm_miss'):
+            self.fm_miss = []
+        self.fm_miss = ([m for m in self.fm_miss if (m['home'], m['away']) != (home_en, away_en)]
+                        + [{'home': home_en, 'away': away_en, 'start': start_ts, 'near': sorted(near)[:5]}])[-40:]
         return None, None
 
     def stats_page(self, browser, home_en, away_en, start_ts):
@@ -3234,25 +3253,46 @@ class Collector:
         self.con.commit()
 
     def sofa_link_step(self):
-        """страница матча на Sofascore для окна «что там было» (владелец 22.11: статистика — на Sofascore)"""
+        """страницы матчей со статистикой для окна «что там было». С -56 (владелец 22.11: «долго ищет»): раз в 15 с ВСЕ
+        ненайденные матчи сразу сверяются со списками дней FotMob (один запрос на день, кэш 30 мин); Sofascore — запасной,
+        по одному матчу за раз и только если FotMob матч не нашёл."""
         now = time.time()
         if now - getattr(self, 'sofa_last', 0) < 15 or self.browser is None:
             return
         self.sofa_last = now
-        row = self.con.execute(
-            "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
+        rows = self.con.execute(
+            "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
             " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE m.home_en IS NOT NULL AND p.strategy='Б'"
             " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
-            " GROUP BY p.match_id ORDER BY ABS(p.start_ts - ?) LIMIT 1", (now - 3600, now)).fetchone()
-        if not row:
+            " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)).fetchall()
+        if not rows:
             return
-        mid, st, he, ae = row
-        url = self.ext.stats_page(self.browser, he, ae, st)
-        if url is None:
-            return                              # Sofascore не открылся — попробуем позже
+        ext = self.ext
+        fm_ok = ext.page(self.browser, 'fotmob', 'https://www.fotmob.com/') is not None
+        miss = []
+        for mid, st, he, ae in rows:
+            m = ext.find_fotmob(he, ae, st)[0] if fm_ok else None
+            if m and m.get('id'):
+                self.save_link(mid, f"https://www.fotmob.com/match/{m['id']}", now)
+            else:
+                miss.append((mid, st, he, ae))
+        sofa_ok = miss and ext.page(self.browser, 'sofascore', 'https://www.sofascore.com/ru/football') is not None
+        if sofa_ok:
+            mid, st, he, ae = miss.pop(0)
+            e, _ = ext.find_sofa(he, ae, st)
+            if e and e.get('slug') and e.get('customId'):
+                self.save_link(mid, f"https://www.sofascore.com/ru/football/match/{e['slug']}/{e['customId']}", now)
+            else:
+                self.save_link(mid, '', now)
+        if fm_ok:
+            # Sofascore не пускает (или не открылся) — промах FotMob считается попыткой
+            for mid, *_ in (miss if not sofa_ok or getattr(ext, 'blocked', {}).get('sofascore', 0) > now else []):
+                self.save_link(mid, '', now)
+        self.con.commit()
+
+    def save_link(self, mid, url, now):
         self.con.execute('INSERT INTO sofa_link VALUES (?,?,1,?) ON CONFLICT (match_id) DO UPDATE SET url=excluded.url,'
                          ' tries=tries+1, last_try=excluded.last_try', (mid, url, now))
-        self.con.commit()
 
     def ext_step(self):
         """один сыгранный матч с открытой бумажной ставкой → Sofascore/FotMob (раз в 10 с, до 5 попыток раз в 30 мин)"""
@@ -3810,7 +3850,8 @@ def build_report(con):
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                       for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
            'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError(),
-           'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', [])}
+           'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
+           'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
