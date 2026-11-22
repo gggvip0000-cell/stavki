@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-64"
+VERSION = "2026.11.21-65"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2315,6 +2315,7 @@ a.btn .nm{font-size:15px;white-space:nowrap;overflow:hidden;min-width:0;text-dec
 a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;font-weight:800;flex:none}
 .info{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:#9aa6b2;margin:5px 2px 0}.info b{color:#e6e6e6}.info .evx{color:#5fd38d;font-weight:800}
 .okm{color:#5fd38d;font-weight:800;font-size:14px}
+td.chg,tr.chg>td{background:#ffd40026!important;box-shadow:inset 0 0 0 2px #ffd400aa!important;animation:chgf 1.2s ease-in-out infinite}@keyframes chgf{50%{background:#ffd40059!important}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
 .fact{font-size:12px;color:#aab4be;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
@@ -2521,7 +2522,9 @@ function decided(b){
  if(!(n>line))return '';
  return over?'<span class="pos">✓ уже выиграна</span><div class="mu sm">'+n+' больше '+line+'</div>':'<span class="neg">✗ уже проиграна</span><div class="mu sm">'+n+' больше '+line+'</div>';
 }
+let POPSEL=null;
 function popBets(sel){
+ POPSEL=sel;
  const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
  const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -2547,10 +2550,10 @@ function popBets(sel){
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
-  h+='<tr><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
+  h+='<tr'+(isChg('b:'+b.id)?' class="chg" data-ck="b:'+b.id+'"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
    +(b.status==='open'&&b.bk_url?' <a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'')+'<div class="sm">'+e(b.league)+'</div></td><td><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'+e(b.bk)+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td>'+res+'</td></tr>'}
  if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
- document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex'}
+ document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex';watchChg()}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
 // timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
 function matchClock(t,mins){
@@ -2565,12 +2568,45 @@ function closePop(){document.getElementById('pop').style.display='none'}
 document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
  if(ev.target.id==='pop')closePop()});
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
+// -65 (владелец 22.11: «когда цифра меняется — пусть подсвечивается: новая ставка, смена статуса; и в раскрывающемся так же»):
+// PV — прошлые значения ячеек, PB — прошлые статусы ставок; изменилось — CHG[ключ]=когда. Подсветка снимается через 3 с
+// после того, как ячейка/строка впервые видна на экране (как «НОВАЯ»), или через 10 мин, если так и не показалась.
+let PV=null,PB=null,CHG={},CHV={};
+try{PV=JSON.parse(localStorage.getItem('pv')||'null');PB=JSON.parse(localStorage.getItem('pb')||'null');CHG=JSON.parse(localStorage.getItem('pchg')||'{}');CHV=JSON.parse(localStorage.getItem('pchv')||'{}')}catch(e){}
+const isChg=k=>!!CHG[k]&&!(CHV[k]&&Date.now()-CHV[k]>3000);
+function saveChg(){try{localStorage.setItem('pv',JSON.stringify(PV));localStorage.setItem('pb',JSON.stringify(PB));localStorage.setItem('pchg',JSON.stringify(CHG));localStorage.setItem('pchv',JSON.stringify(CHV))}catch(e){}}
+function dropChg(k){delete CHG[k];saveChg();for(const el of document.querySelectorAll('.chg[data-ck]'))if(el.dataset.ck===k)el.classList.remove('chg')}
+let COBS=null;
+function watchChg(){
+ if(COBS)COBS.disconnect();if(!('IntersectionObserver' in window))return;
+ COBS=new IntersectionObserver(es=>{for(const e of es){if(!e.isIntersecting||document.visibilityState!=='visible')continue;
+  const k=e.target.dataset.ck;if(!k)continue;if(!CHV[k]){CHV[k]=Date.now();saveChg()}
+  setTimeout(()=>dropChg(k),Math.max(0,3000-(Date.now()-CHV[k])));COBS.unobserve(e.target)}},{threshold:0.5});
+ for(const el of document.querySelectorAll('.chg[data-ck]'))COBS.observe(el)}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchChg()});
+function trackChg(p){
+ const now=Date.now(),cur={},first=PV===null;
+ const put=(sel,g)=>{cur[sel+'|all']=g.n||0;cur[sel+'|выигрыш']=g.w||0;cur[sel+'|проигрыш']=g.l||0;cur[sel+'|возврат']=g.push||0;cur[sel+'|open']=(g.n||0)-(g.done||0);cur[sel+'|итог']=g.done?Math.round(g.profit_rub||0):null};
+ const groups={};for(const g of p.simple||[]){put(g.part+'|'+g.name,g);const G=groups[g.part]=groups[g.part]||{n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const k in G)G[k]+=g[k]||0}
+ for(const part in groups)put(part+'|*',groups[part]);
+ if(p.simple_total)put('*|*',p.simple_total);
+ if(!first)for(const k in cur)if(k in PV&&PV[k]!==cur[k]&&!CHG['c:'+k]){CHG['c:'+k]=now;delete CHV['c:'+k]}
+ PV=cur;
+ const bs={};for(const b of p.bets||[])bs[b.id]=b.status;
+ if(PB!==null)for(const id in bs)if(PB[id]!==bs[id]&&!CHG['b:'+id]){CHG['b:'+id]=now;delete CHV['b:'+id]}
+ PB=bs;
+ for(const k in CHG)if(now-CHG[k]>600000||(CHV[k]&&now-CHV[k]>3000))delete CHG[k];
+ for(const k in CHV)if(!CHG[k]&&now-CHV[k]>600000)delete CHV[k];
+ saveChg();
+}
 function renderPaper(p){
  LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
+ trackChg(p);
  const z=x=>x?x:'·';
- const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
- const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td>'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
+ const ck=(sel,k)=>{const key='c:'+sel+'|'+k;return isChg(key)?' chg" data-ck="'+key.replace(/"/g,'&quot;'):''};
+ const c=(v,cl,sel,k)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+k+'">'+(cl==='n'?v:z(v))+'</span>':(cl==='n'?v:z(v)))+'</td>';
+ const cells=(g,sel)=>c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done,'',sel,'open')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(g.profit_rub,' ₽'):'<span class="mu">—</span>')+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
  h+='<table class="ptab"><tr><th>Вид ставки</th><th>Сделано</th><th>✓ Выиграно</th><th>✗ Проиграно</th><th>↩ Возврат</th><th>Ждут</th><th>Итог</th></tr>';
@@ -2584,6 +2620,9 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr></table>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
+ const pe=document.getElementById('pop');
+ if(pe&&pe.style.display==='flex'&&POPSEL){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
+ watchChg();
 }
 
 
