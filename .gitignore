@@ -8,3 +8,6 @@ __pycache__/
 restart_update.flag
 prohod.pid
 vneshnie/
+pin_state.pkl
+pin_state.tmp
+stavki_hot.tmp

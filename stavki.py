@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-90"
+VERSION = "2026.11.21-91"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3193,6 +3193,12 @@ class Collector:
         if 'Винлайн' in MY_BOOKMAKERS:
             self.feeds.append(WinlineFeed())
         self.pin = PinnacleFeed()
+        try:                                       # -91: цены Pinnacle с прошлого запуска (перезапуск при обновлении)
+            n = load_pin_state(self.pin)
+            if n:
+                log(f'Pinnacle: взял с прошлого запуска цены {n} матчей (у каждой своё время — устаревшие не берутся)')
+        except Exception as e:
+            log('цены Pinnacle с прошлого запуска не взял: ' + str(e).splitlines()[0][:150])
         self.pin_start_try = 0
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
         self.bk_known = dict(con.execute('SELECT event_id, match_id FROM bk_events').fetchall())
@@ -3261,6 +3267,9 @@ class Collector:
                 self.start_pin()
             return
         if self.pin.mode == 'thread':
+            with STATE.lock:
+                if not STATE.matches:              # -91: цены с прошлого запуска ждут, пока загрузится список матчей
+                    return
             with self.pin.lock:
                 changed, self.pin.pending = list(self.pin.pending), set()
             self.pin_apply(changed)
@@ -3337,6 +3346,10 @@ class Collector:
 
     def shutdown_for_update(self):
         log('закрываю браузер и перезапускаюсь для обновления')
+        try:
+            save_pin_state(self.pin)
+        except Exception as e:
+            log('не сохранил цены Pinnacle: ' + str(e).splitlines()[0][:150])
         try:
             (HERE / 'restart_update.flag').write_text(str(time.time()))     # -78: после обновления не слать «запущена»
         except Exception:
@@ -4187,7 +4200,19 @@ class Collector:
         t_cycle, n_cycle = time.time(), 0
         while True:
             if STATE.restart_requested:
-                self.shutdown_for_update()
+                # -91 (владелец 22.11: «после обновления то, что уже было найдено, не обнулялось… если обновляю визуал»):
+                # поменялось только окно — подменяем без перезапуска, цены и контора остаются как были
+                hot = False
+                try:
+                    hot = hot_update()
+                except Exception as e:
+                    log('обновление без перезапуска не вышло: ' + str(e).splitlines()[0][:150])
+                if hot:
+                    with STATE.lock:
+                        STATE.restart_requested = False
+                        STATE.status['restarting'] = False
+                else:
+                    self.shutdown_for_update()
             if STATE.razvedka_requested:
                 STATE.razvedka_requested = False
                 try:
@@ -5436,6 +5461,79 @@ def build_report(con):
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
     return buf.getvalue()
+
+
+PIN_STATE = HERE / 'pin_state.pkl'
+
+
+def save_pin_state(pin):
+    """-91: перед перезапуском для обновления — цены Pinnacle и сопоставление матчей на диск (каждая цена — со своим
+    временем, после запуска свежесть проверяется как обычно; файл старше 15 мин не берётся)"""
+    import pickle
+    with pin.lock:
+        data = {'saved': time.time(), 'leagues': pin.leagues, 'regular': pin.regular, 'special': pin.special,
+                'match_map': pin.match_map, 'fair': pin.fair, 'fair_parts': pin.fair_parts, 'fair_league': pin.fair_league,
+                'taken': pin.taken, 'pin_written': pin.pin_written}
+        blob = pickle.dumps(data)
+    tmp = PIN_STATE.with_suffix('.tmp')
+    tmp.write_bytes(blob)
+    os.replace(tmp, PIN_STATE)
+
+
+def load_pin_state(pin, max_age=900):
+    import pickle
+    if not PIN_STATE.exists():
+        return 0
+    try:
+        data = pickle.loads(PIN_STATE.read_bytes())
+    finally:
+        try:
+            PIN_STATE.unlink()                 # только один раз — при следующем обычном запуске не подхватится
+        except Exception:
+            pass
+    if time.time() - data.get('saved', 0) > max_age:
+        return 0
+    with pin.lock:
+        for k in ('leagues', 'regular', 'special', 'match_map', 'fair', 'fair_parts', 'fair_league', 'taken', 'pin_written'):
+            getattr(pin, k).update(data.get(k) or {})
+        pin.pending |= set(pin.fair)           # основной цикл перенесёт их в окно, как только появится список матчей
+    return len(pin.fair)
+
+
+def strip_page(text):
+    """текст программы без окна (PAGE) и номера версии — по нему видно, менялось ли что-то кроме окна"""
+    text = re.sub(r'^PAGE = r""".*?"""', 'PAGE = …', text, count=1, flags=re.S | re.M)
+    return re.sub(r'^VERSION = "[^"]*"', 'VERSION = …', text, count=1, flags=re.M)
+
+
+def hot_update():
+    """-91: скачать новую версию; если поменялись только окно (PAGE) и номер версии — записать файл и подменить окно
+    на ходу, без перезапуска. Иначе — False (обычный перезапуск через Stavki.bat)."""
+    import ast
+    url = REPO_RAW + 'stavki.py?t=' + str(int(time.time()))
+    req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        new = r.read().decode('utf-8')
+    compile(new, 'stavki.py', 'exec')
+    cur = (HERE / 'stavki.py').read_text(encoding='utf-8')
+    if strip_page(new) != strip_page(cur):
+        return False
+    vals = {}
+    for node in ast.parse(new).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ('PAGE', 'VERSION'):
+            vals[node.targets[0].id] = ast.literal_eval(node.value)
+    if set(vals) != {'PAGE', 'VERSION'} or vkey(vals['VERSION']) <= vkey(VERSION):
+        return False
+    tmp = HERE / 'stavki_hot.tmp'
+    tmp.write_text(new, encoding='utf-8')
+    os.replace(tmp, HERE / 'stavki.py')
+    globals()['PAGE'], globals()['VERSION'] = vals['PAGE'], vals['VERSION']
+    with STATE.lock:
+        STATE.status['version'] = vals['VERSION']
+        STATE.status['update_available'] = None
+    log(f'обновлено без перезапуска до {vals["VERSION"]}: поменялось только окно')
+    return True
 
 
 def remote_version():
