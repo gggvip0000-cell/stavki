@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-59"
+VERSION = "2026.11.21-60"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2481,6 +2481,17 @@ let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
 function pcol(g){PCOL[g]=!PCOL[g];try{localStorage.setItem('pcol',JSON.stringify(PCOL))}catch(e){}renderPaper(LASTP)}
 let LASTP=null;
 const ST_NAME={'all':'все','выигрыш':'выиграно','проигрыш':'проиграно','возврат':'возврат','open':'ждут матча'};
+// -60 (владелец 22.11: «ставка проиграла уже, я так полагаю» — угловые 5:1 при М 4.5): тоталы и инд. тоталы
+// только растут — если счёт уже больше линии, «Б» выиграна, «М» проиграна целиком (для любых линий, и с возвратом)
+function decided(b){
+ if(b.status!=='open'||!b.live||!b.oc||b.start_ts>Date.now()/1000)return '';
+ const k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft'),sc=b.live[k];if(!sc)return '';
+ const m=/\(([-\d.]+)\)/.exec(b.oc);if(!m)return '';const line=parseFloat(m[1]);
+ const n=b.base==='total'?sc[0]+sc[1]:(b.base==='tt1'?sc[0]:(b.base==='tt2'?sc[1]:null));
+ if(n==null||!(n>line))return '';
+ const over=b.oc.startsWith('Больше');
+ return over?'<span class="pos">✓ уже выиграна</span><div class="mu sm">'+n+' больше '+line+'</div>':'<span class="neg">✗ уже проиграна</span><div class="mu sm">'+n+' больше '+line+'</div>';
+}
 function popBets(sel){
  const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
  const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||b.status===st));
@@ -2500,7 +2511,7 @@ function popBets(sel){
     left='<div class="livem">● '+matchClock(lv.timer,mins)+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
    else left='<div class="mu sm">закончился, ждём результат</div>'}
   else left='<div class="mu sm">сыгран</div>';
-  let res=b.status==='open'?'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>':(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  let res=b.status==='open'?(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>'):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
@@ -3784,7 +3795,7 @@ def paper_stats(con, stake_rub):
                             'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
                             'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
                             'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
-                            'odds': odds, 'ev': ev, 'status': status, 'res': [rh, ra] if rh is not None else None,
+                            'odds': odds, 'ev': ev, 'status': status, 'oc': oc, 'res': [rh, ra] if rh is not None else None,
                             'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
                             'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
                             'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
