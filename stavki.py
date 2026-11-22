@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-81"
+VERSION = "2026.11.21-82"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3817,6 +3817,11 @@ class Collector:
         sc = {p: (a, b, ts) for p, a, b, ts in
               self.con.execute('SELECT part, s1, s2, ts FROM bk_scores WHERE match_id=?', (mid,))}
         res = self.con.execute('SELECT home, away FROM results WHERE match_id=?', (mid,)).fetchone()
+        if not res:
+            # -82 (владелец 22.11: угловые Чоннам — Ансан «ждём результат», а ставки на голы того же времени уже рассчитаны):
+            # итог матча для сверки голов — не только с odds.ru (он бывает с опозданием или не бывает), но и с FotMob/Sofascore
+            res = self.con.execute('SELECT ft1, ft2 FROM ext_scores WHERE match_id=? AND done=1 AND ft1 IS NOT NULL',
+                                   (mid,)).fetchone()
         d = {'hthg': None, 'htag': None, 'hc': None, 'ac': None}
         if 'h1' in sc and (not res or (sc['h1'][0] <= res[0] and sc['h1'][1] <= res[1])):
             d['hthg'], d['htag'] = sc['h1'][:2]
@@ -5032,6 +5037,10 @@ def build_report(con):
            'cand': rows('SELECT * FROM cand ORDER BY first_seen'),
            'ext_scores': rows('SELECT * FROM ext_scores'),
            'bk_scores_parts': rows('SELECT part, COUNT(*) AS n FROM bk_scores GROUP BY part'),
+           # -82: по матчам с открытыми ставками — что видел лайв конторы и что дал odds.ru (22.11 угловые Чоннам — Ансан
+           # «ждём результат», а по отчёту не понять, был ли счёт угловых в лайве PARI)
+           'open_bk_scores': rows("SELECT * FROM bk_scores WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open')"),
+           'open_results': rows("SELECT * FROM results WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open')"),
            'counts': {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                       for t in ('matches', 'results', 'stats', 'pin', 'bk_events', 'bk_scores')},
            'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError(),
