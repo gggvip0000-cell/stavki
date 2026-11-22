@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-85"
+VERSION = "2026.11.21-86"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4227,7 +4227,7 @@ class Collector:
                         self.nbk_ts = time.time()
                         site = self.nbk_queue.pop(0)
                         try:
-                            r = new_bk_recon(self.browser, wait_ms=12000, sites=[site])['sites']
+                            r = new_bk_recon(self.browser, wait_ms=25000, sites=[site])['sites']
                         except Exception as e:
                             r = [{'bk': site[0], 'home': site[1], 'error': str(e).splitlines()[0][:200], 'verdict': 'ошибка разведки'}]
                         self.new_bk['sites'] = [x for x in self.new_bk['sites'] if x['bk'] != site[0]] + r
@@ -4241,6 +4241,12 @@ class Collector:
                     if self.rules_q and time.time() - self.rules_ts > 180 and self.browser is not None:
                         self.rules_ts = time.time()
                         self.rules.append(rules_recon(self.browser, *self.rules_q.pop(0)))
+                    # -86: страницы матчей у открывшихся контор — через 6 мин после запуска, по одной раз в 3 мин
+                    if getattr(self, 'evr_q', None) is None:
+                        self.evr_q, self.evr_ts, self.evr = list(EVENT_RECON_SITES), time.time() + 180 - 90, []
+                    if self.evr_q and time.time() - self.evr_ts > 180 and self.browser is not None:
+                        self.evr_ts = time.time()
+                        self.evr.append(bk_event_recon(self.browser, *self.evr_q.pop(0)))
                     if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
@@ -5096,9 +5102,74 @@ class Watchdog:
 # уже подключённых (Фонбет, PARI, Винлайн), не пустивших (BetBoom, Лига Ставок), не принимающих ставки (Тенниси с 01.09.2026,
 # Спортбет — не онлайн). Адреса сайтов — по памяти, НЕ проверены: что открылось — видно в отчёте (final_url, текст).
 # Программа заходит как есть: если сайт закрыт защитой — записываем «не пускает» и дальше не пробуем.
-NEW_BK_SITES = (('Мелбет', 'https://melbet.ru/'), ('Бетсити', 'https://betcity.ru/'), ('Олимп', 'https://www.olimp.bet/'),
-                ('Марафон', 'https://www.marathonbet.ru/'), ('Леон', 'https://leon.ru/'), ('BETTERY', 'https://bettery.ru/'),
-                ('Бет-М', 'https://betm.ru/'), ('Зенит', 'https://zenit.win/'), ('Балтбет', 'https://baltbet.ru/'))
+# Итог 22.11 (отчёт 10:56): открылись Мелбет, Олимп, Марафон, Зенит, BETTERY (платформа Фонбета — та же линия, не
+# независимая); не пускает Леон; Бет-М — соединение отклонено; Бетсити — пустая страница. С -86 проверяются только
+# не проверенные до конца: Балтбет и Бетсити (дольше ждём)
+NEW_BK_SITES = (('Балтбет', 'https://baltbet.ru/'), ('Бетсити', 'https://betcity.ru/'))
+# -86, пункт 2: открывшиеся независимые конторы — страница одного матча: есть ли угловые, что за цены, откуда данные
+EVENT_RECON_SITES = (('Олимп', 'https://www.olimp.bet/line/futbol-1', '/line/futbol-1/'),
+                     ('Марафон', 'https://www.marathonbet.ru/su/betting/Football/Russia/Premier+League+-+22433', '/su/betting/Football/'),
+                     ('Зенит', 'https://zenit.win/line/football/l_246211_russia-premier-league', '/line/football/'),
+                     ('Мелбет', 'https://melbet.ru/ru/sport/pre-match/football', '/ru/sport/pre-match/football/'))
+
+
+def bk_event_recon(browser, name, line_url, prefix, wait_ms=15000):
+    """-86: страница линии футбола → самая «глубокая» ссылка с тем же началом адреса (страница матча) → 15 с записи:
+    ответы json (начало и куски вокруг «углов»), кадры websocket, текст страницы (в нём видно рынки и кф).
+    Только читает страницы, ничего не нажимает и не ставит. Только в отчёт."""
+    from urllib.parse import urlparse
+    pg = browser.new_page(locale='ru-RU', viewport={'width': 1400, 'height': 900})
+    resp, wss = [], []
+    rec = {'bk': name, 'line_url': line_url}
+    try:
+        pg.goto(line_url, wait_until='domcontentloaded', timeout=60000)
+        pg.wait_for_timeout(8000)
+        links = pg.eval_on_selector_all('a[href]', 'as => as.map(a => a.href)')
+        cand = [h for h in links if urlparse(h).path.startswith(prefix) and '/live' not in h]
+        cand.sort(key=lambda h: -len([x for x in urlparse(h).path.split('/') if x]))
+        rec['links_found'] = len(cand)
+        rec['event_url'] = ev = cand[0] if cand else None
+        if not ev:
+            rec['line_text'] = pg.inner_text('body')[:3000]
+            return rec
+
+        def on_resp(r):
+            try:
+                ct = (r.headers or {}).get('content-type', '')
+                if ('json' in ct or 'text/plain' in ct) and len(resp) < 60:
+                    b = r.text()
+                    item = {'url': r.url[:300], 'status': r.status, 'len': len(b), 'head': b[:4000]}
+                    sn = [b[max(0, m.start() - 150): m.end() + 250] for m in re.finditer(r'углов|corner', b, re.I)][:8]
+                    if sn:
+                        item['corner_snips'] = sn
+                    resp.append(item)
+            except Exception:
+                pass
+
+        def on_ws(ws):
+            w = {'url': ws.url[:300], 'frames': []}
+            wss.append(w)
+
+            def fr(pl):
+                if len(w['frames']) < 6:
+                    w['frames'].append({'bin': len(pl)} if isinstance(pl, (bytes, bytearray)) else {'text': str(pl)[:3000]})
+            ws.on('framereceived', fr)
+        pg.on('response', on_resp)
+        pg.on('websocket', on_ws)
+        pg.goto(ev, wait_until='domcontentloaded', timeout=60000)
+        pg.wait_for_timeout(wait_ms)
+        txt = pg.inner_text('body')
+        rec.update(final_url=pg.url, page_text=txt[:8000], corner_mentions=len(re.findall(r'углов', txt, re.I)),
+                   responses=resp, websockets=wss)
+        return rec
+    except Exception as e:
+        rec['error'] = str(e).splitlines()[0][:200]
+        return rec
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
 BLOCK_MARKS = ('qrator', 'доступ запрещён', 'доступ запрещен', 'заблокирован системой защиты', 'just a moment',
                'checking your browser', 'ddos-guard', 'attention required', 'access denied', 'вы не робот')
 
@@ -5256,6 +5327,7 @@ def build_report(con):
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
     rep['rules_recon'] = getattr(COLLECTOR, 'rules', None)
+    rep['bk_event_recon'] = getattr(COLLECTOR, 'evr', None)
     rep['new_bk_recon'] = getattr(COLLECTOR, 'new_bk', None)
     # -84, пункт 3: где цена Pinnacle к началу сдвинулась больше чем на 15% — история её цены и с каким матчем Pinnacle
     # он сопоставлен (22.11: Мельбурн Виктори 1.40 → 2.13 — проверить, не чужой ли матч)
