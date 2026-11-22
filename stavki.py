@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-102"
+VERSION = "2026.11.21-103"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -383,6 +383,13 @@ STRATEGIES = [
      lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0, 'ev'),
     ('В', 'перевес от 3%, шанс от 55%, лучший по перевесу',
      lambda v: v['ev'] >= 0.03 and v['chance'] >= 0.55 and v['odds'] <= 4.0, 'ev'),
+    # -103 (владелец 22.11 «да», по поиску правил на прошлых матчах): только для проверки, владельцу не показываются.
+    # Г — перевес 8%+ (в истории CLV в 2.5 раза выше среднего на обеих половинах); Д — только угловые от 3%
+    # (вживую угловые в плюсе по CLV при любом перевесе; Б на угловых — то же, но от 5%)
+    ('Г', 'перевес от 8%, кф до 4, лучший по надёжности (проверка)',
+     lambda v: v['ev'] >= 0.08 and v['odds'] <= 4.0, 'rel'),
+    ('Д', 'только угловые: перевес от 3%, кф до 4, лучший по надёжности (проверка)',
+     lambda v: v['ev'] >= 0.03 and v['odds'] <= 4.0 and split_fam(event_of(v))[0] == 'c_', 'rel'),
 ]
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
@@ -2450,6 +2457,10 @@ def db_open():
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
     migrate_old_paper(con)
+    try:
+        backfill_new_strategies(con)
+    except Exception as e:
+        log('способы Г/Д по журналу: ' + str(e)[:150])
     return con
 
 
@@ -2468,6 +2479,40 @@ def pick_for_strategies(rows):
             if c:
                 out.append((code, max(c, key=lambda v: (v[key], v['odds']))))
     return out
+
+
+def backfill_new_strategies(con, codes=('Г', 'Д')):
+    """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
+    для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
+    if con.execute(f"SELECT COUNT(*) FROM paper2 WHERE strategy IN ({','.join('?' * len(codes))})", codes).fetchone()[0]:
+        return
+    meta = {m: (t, lg) for m, t, lg in con.execute('SELECT match_id, title, league FROM matches')}
+    rows = []
+    for r in con.execute('SELECT first_seen, match_id, bookmaker, src, market_name, outcome, line, start_ts, odds, fair,'
+                         ' ev, pin_age, fam FROM cand WHERE fair IS NOT NULL AND odds IS NOT NULL').fetchall():
+        v = dict(zip(['created', 'match_id', 'bookmaker', 'src', 'market_name', 'outcome', 'line', 'start_ts', 'odds',
+                      'fair', 'ev', 'pin_age', 'market'], r))
+        if v['bookmaker'] in JOURNAL_ONLY:
+            continue
+        v['match'], v['league'] = meta.get(v['match_id'], ('', ''))
+        v['chance'], v['rel'] = chance_rel(v['odds'], v['fair'])
+        rows.append(v)
+    picks = []
+    for t in sorted({v['created'] for v in rows}):
+        for code, v in pick_for_strategies([v for v in rows if v['created'] == t]):
+            if code in codes:
+                picks.append((code, v))
+    n = 0
+    for code, v in picks:
+        n += con.execute('INSERT OR IGNORE INTO paper2 (created, match_id, title, league, start_ts, strategy, event, src,'
+                         ' bookmaker, market_name, outcome, line, odds, fair, ev, rel, pin_age, fam) VALUES'
+                         ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                         (v['created'], v['match_id'], v['match'], v['league'], v['start_ts'], code,
+                          event_group(event_of(v)), v['src'], v['bookmaker'], v['market_name'], v['outcome'], v['line'],
+                          v['odds'], v['fair'], v['ev'], v['rel'], v.get('pin_age'), event_of(v))).rowcount
+    con.commit()
+    if n:
+        log(f'способы Г/Д: по журналу записано задним числом {n} ставок')
 
 
 def migrate_old_paper(con):
