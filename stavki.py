@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-60"
+VERSION = "2026.11.21-61"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2444,15 +2444,16 @@ async function tick(){
      for(const v of vs){
       const [,side,title]=vw(v);const star=best.has(v);
       const nw=isNew(v);
-      h+='<div class="bet'+(nw?' nbet':'')+'"><div class="mkt">'+(nw?'<span class="newb2">НОВАЯ</span> ':'')+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
+      h+='<div class="bet'+(nw?' nbet':'')+'"'+(nw?' data-nk="'+esc(nkey(v)).replace(/"/g,'&quot;')+'"':'')+'><div class="mkt">'+(nw?'<span class="newb2">НОВАЯ</span> ':'')+esc(title)+(star?' <span class="star">★ лучший</span>':'')+'</div>'
        +'<a class="btn '+side+(star?' best':'')+'" href="'+url+'" target="_blank" title="открыть матч на сайте конторы"><span class="nm">'+esc(v.bet||betText(v))+'</span><span class="od">'+Number(v.odds).toFixed(2)+'</span></a>'
        +'<div class="info"><span class="'+(v.chance>=0.55?'hich':(v.chance<0.40?'loch':'midch'))+'" title="шанс: до 40% — красная, 40–55% — спокойная, от 55% — жёлтая">шанс <b>'+Math.round(v.chance*100)+'%</b></span><span class="evx">+'+(v.ev*100).toFixed(1)+'%</span><span>брать от <b>'+(v.p_win?(1+thr-(v.p_push||0))/v.p_win:v.fair*(1+thr)).toFixed(2)+'</b></span><span>честная '+v.fair.toFixed(2)+'</span>'+okMark(v)+'</div></div>'}
      h+='</div>'}
     h+='</div>'}
    h+='</div>'}
-  for(const k in NEWK)if(Date.now()-NEWK[k]>600000)delete NEWK[k];
-  try{localStorage.setItem('seen',JSON.stringify(SEEN));localStorage.setItem('newk',JSON.stringify(NEWK))}catch(e){}
-  document.getElementById('cols').innerHTML=h;
+  for(const k in NEWK)if(Date.now()-NEWK[k]>600000||(NEWV[k]&&Date.now()-NEWV[k]>3000))delete NEWK[k];
+  for(const k in NEWV)if(!NEWK[k]&&Date.now()-NEWV[k]>600000)delete NEWV[k];
+  try{localStorage.setItem('seen',JSON.stringify(SEEN));localStorage.setItem('newk',JSON.stringify(NEWK));localStorage.setItem('newv',JSON.stringify(NEWV))}catch(e){}
+  document.getElementById('cols').innerHTML=h;watchNew();
   // ставка — одной строкой: длинная уменьшается, пока не поместится
   for(const b of document.querySelectorAll('.bl,.btn .nm')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
   renderPaper(d.paper);
@@ -2474,7 +2475,22 @@ async function tick(){
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
 let NEWK={};try{NEWK=JSON.parse(localStorage.getItem('newk')||'{}')}catch(e){}
-const isNew=v=>!!NEWK[v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome];
+// -61 (владелец 22.11: «я её увидел — пусть через 3 секунды пропадает»): NEWV — когда «НОВАЯ» впервые была на экране
+// (карточка видна хотя бы наполовину и вкладка открыта); через 3 с после этого подсветка снимается
+let NEWV={};try{NEWV=JSON.parse(localStorage.getItem('newv')||'{}')}catch(e){}
+const nkey=v=>v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome;
+const isNew=v=>{const k=nkey(v);return !!NEWK[k]&&!(NEWV[k]&&Date.now()-NEWV[k]>3000)};
+function dropNew(k){delete NEWK[k];try{localStorage.setItem('newk',JSON.stringify(NEWK))}catch(e){}
+ for(const el of document.querySelectorAll('.bet.nbet')){if(el.dataset.nk!==k)continue;el.classList.remove('nbet');const t=el.querySelector('.newb2');if(t)t.remove()}}
+let NOBS=null;
+function watchNew(){
+ if(NOBS)NOBS.disconnect();if(!('IntersectionObserver' in window))return;
+ NOBS=new IntersectionObserver(es=>{for(const e of es){if(!e.isIntersecting||document.visibilityState!=='visible')continue;
+  const k=e.target.dataset.nk;if(!k)continue;
+  if(!NEWV[k]){NEWV[k]=Date.now();try{localStorage.setItem('newv',JSON.stringify(NEWV))}catch(x){}}
+  setTimeout(()=>dropNew(k),Math.max(0,3000-(Date.now()-NEWV[k])));NOBS.unobserve(e.target)}},{threshold:0.5});
+ for(const el of document.querySelectorAll('.bet.nbet'))NOBS.observe(el)}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchNew()});
 let SCOL={};try{SCOL=JSON.parse(localStorage.getItem('scol')||'{}')}catch(e){}
 function scol(k){SCOL[k]=!SCOL[k];try{localStorage.setItem('scol',JSON.stringify(SCOL))}catch(e){}tick()}
 let PCOL={};try{PCOL=JSON.parse(localStorage.getItem('pcol')||'{}')}catch(e){}
@@ -3330,7 +3346,8 @@ class Collector:
                          ' tries=tries+1, last_try=excluded.last_try', (mid, url, now))
 
     def ext_step(self):
-        """один сыгранный матч с открытой бумажной ставкой → Sofascore/FotMob (раз в 10 с, до 5 попыток раз в 30 мин)"""
+        """один сыгранный матч с открытой бумажной ставкой → Sofascore/FotMob (раз в 10 с). С -61 (владелец 22.11: «опять
+        долго ждёт результат»): с 105-й минуты от начала, пока матч не окончен — каждые 5 мин (до 40 попыток), а не раз в 30 мин"""
         now = time.time()
         if now - self.ext_last < 10 or self.browser is None:
             return
@@ -3338,8 +3355,8 @@ class Collector:
         row = self.con.execute(
             "SELECT p.match_id, p.start_ts, m.home_en, m.away_en FROM paper2 p JOIN matches m ON m.match_id = p.match_id"
             " LEFT JOIN ext_scores x ON x.match_id = p.match_id WHERE p.status='open' AND p.start_ts < ?"
-            " AND m.home_en IS NOT NULL AND (x.match_id IS NULL OR (x.done=0 AND x.tries < 5 AND x.last_try < ?))"
-            " ORDER BY p.start_ts LIMIT 1", (now - 115 * 60, now - 1800)).fetchone()
+            " AND m.home_en IS NOT NULL AND (x.match_id IS NULL OR (x.done=0 AND x.tries < 40 AND x.last_try < ?))"
+            " ORDER BY p.start_ts LIMIT 1", (now - 105 * 60, now - 300)).fetchone()
         if not row:
             return
         mid, start_ts, home_en, away_en = row
@@ -3352,6 +3369,8 @@ class Collector:
                          (mid, d.get('src'), d.get('ext_id'), *(ft or (None, None)), *(ht or (None, None)),
                           *(c or (None, None)), 1 if ft else 0, now))
         self.con.commit()
+        if ft:
+            self.settle_paper()                  # -61: итог пришёл — рассчитать сразу, не ждать обновления списка
 
     def ext_result(self, mid):
         r = self.con.execute('SELECT ft1, ft2, ht1, ht2, c1, c2 FROM ext_scores WHERE match_id=? AND done=1',
