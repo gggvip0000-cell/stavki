@@ -29,7 +29,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-66"
+VERSION = "2026.11.21-67"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3765,11 +3765,16 @@ class Collector:
                     try:
                         if getattr(self, 'bb', None) is None:
                             self.bb = BasketMeasure(self.con)
-                        self.bb.step(next((x for x in self.feeds if x.name == 'Фонбет'), None),
-                                     self.pin if getattr(self.pin, 'headers', None) else None)
+                            self.hk = HockeyMeasure(self.con)
+                        fb = next((x for x in self.feeds if x.name == 'Фонбет'), None)
+                        pn = self.pin if getattr(self.pin, 'headers', None) else None
+                        for sm in (self.bb, self.hk):
+                            try:
+                                sm.step(fb, pn)
+                            except Exception as e:
+                                sm.err = 'шаг: ' + str(e).splitlines()[0][:150]
                     except Exception as e:
-                        if getattr(self, 'bb', None) is not None:
-                            self.bb.err = 'шаг: ' + str(e).splitlines()[0][:150]
+                        add_error('замер баскетбола/хоккея: ' + str(e).splitlines()[0][:120], 'замер')
                     if getattr(self, 'recon_ts', None) is None:
                         self.recon_ts = time.time() - 1500          # первая разведка видов спорта — через 5 мин после запуска
                     if time.time() - self.recon_ts > 1800:
@@ -4002,15 +4007,23 @@ def lat_sim(a, b):
 
 
 class BasketMeasure:
-    """Pinnacle-баскетбол по лигам по очереди + Фонбет-баскетбол из уже идущей прямой линии → журнал bb_cand"""
+    """Pinnacle по лигам по очереди + Фонбет из уже идущей прямой линии → журнал <table>. С -67 — для любого вида спорта:
+    баскетбол (bb_cand) и хоккей (hk_cand). journal — какие рынки идут в журнал (правила совпадают), остальные — только
+    в сверку линий check: средняя разница шансов Фонбета (без маржи) и Pinnacle на одной линии."""
+    SPORT, FON_SPORT, PIN_SPORT, TABLE = 'баскетбол', BB_FON_SPORT, BB_PIN_SPORT, 'bb_cand'
+    ML_CODES, NO_DRAW = (921, 923), True
+    JOURNAL = {'1x2', 'total', 'ah', 'tt1', 'tt2'}
+    pin_req = 0
 
     def __init__(self, con):
         self.con = con
-        con.execute('CREATE TABLE IF NOT EXISTS bb_cand (fon_id INT, fam TEXT, line REAL, side INT, outcome TEXT,'
+        con.execute(f'CREATE TABLE IF NOT EXISTS {self.TABLE} (fon_id INT, fam TEXT, line REAL, side INT, outcome TEXT,'
                     ' teams TEXT, pin_teams TEXT, league TEXT, start_ts REAL, first_seen REAL, odds REAL, p_win REAL,'
                     ' p_push REAL, ev REAL, close_p REAL, close_push REAL, close_ts REAL, clv REAL,'
                     ' PRIMARY KEY (fon_id, fam, line, side))')
         con.commit()
+        self.check = {}          # (id Фонбета, fam, line) -> (шанс Фонбета без маржи, шанс Pinnacle) — последние
+        self.periods = collections.Counter()   # какие рынки Pinnacle вообще есть: (type, period, с ничьей?)
         self.leagues, self.leagues_ts, self.last = {}, 0, 0
         self.pin = {}            # id матча Pinnacle -> {home, away, start, league, fair, ts}
         self.map = {}            # id события Фонбета -> (id Pinnacle, перевёрнуты ли хозяева) или None
@@ -4020,12 +4033,12 @@ class BasketMeasure:
 
     def poll_pin(self, pin):
         now = time.time()
-        if now - getattr(self, 'pin_req', 0) < 3:       # не чаще раза в 3 с — футбольный Pinnacle главнее
+        if now - BasketMeasure.pin_req < 3:      # не чаще раза в 3 с на все виды спорта вместе — футбольный Pinnacle главнее
             return False
-        self.pin_req = now
+        BasketMeasure.pin_req = now
         if now - self.leagues_ts > 600:
             self.leagues_ts = now
-            for lg in pin.get(f'/sports/{BB_PIN_SPORT}/leagues?all=false'):
+            for lg in pin.get(f'/sports/{self.PIN_SPORT}/leagues?all=false'):
                 if lg.get('matchupCount', 0) > 0 and not lg.get('isHidden'):
                     self.leagues.setdefault(lg['id'], {'last': 0, 'next': None})['name'] = lg.get('name', '')
 
@@ -4062,6 +4075,8 @@ class BasketMeasure:
         lg['next'] = min(starts) if starts else None
         fairs = {}
         for k in markets or []:
+            if k.get('matchupId') in self.pin:
+                self.periods[(k.get('type'), k.get('period'), any(q.get('designation') == 'draw' for q in k.get('prices') or []))] += 1
             if k.get('status', 'open') != 'open' or k.get('period') != 0 or k.get('matchupId') not in self.pin:
                 continue
             pr = {q.get('designation'): q for q in k.get('prices') or []}
@@ -4109,11 +4124,10 @@ class BasketMeasure:
                                      'swapped': res[1], 'score': round(best_s, 2)}])[-200:]
         return res
 
-    @staticmethod
-    def fon_odds(fs):
+    def fon_odds(self, fs):
         out = {}
-        a, b = fs.get(921, {}).get('v'), fs.get(923, {}).get('v')
-        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a > 1 and b > 1 and 922 not in fs:
+        a, b = fs.get(self.ML_CODES[0], {}).get('v'), fs.get(self.ML_CODES[1], {}).get('v')
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and a > 1 and b > 1 and not (self.NO_DRAW and 922 in fs):
             out[('1x2', None)] = [a, b]
         for fam, plist in (('total', F_TOTALS), ('ah', F_AH), ('tt1', F_TT1), ('tt2', F_TT2)):
             for x, y in plist:
@@ -4142,7 +4156,7 @@ class BasketMeasure:
         def is_bb(sid):
             sp, hops = feed.sports.get(sid), 0
             while sp and hops < 8:
-                if sp.get('id') == BB_FON_SPORT:
+                if sp.get('id') == self.FON_SPORT:
                     return True
                 sp, hops = feed.sports.get(sp.get('parentId')), hops + 1
             return False
@@ -4174,41 +4188,68 @@ class BasketMeasure:
                         fl[(fam, ln)] = (p, po, ts)
                 fair = fl
             for (fam, ln), odds in self.fon_odds(feed.factors.get(ev['id'], {})).items():
+                fp = fair.get((fam, ln))
+                if fp and ln is not None or (fp and fam == '1x2'):
+                    try:
+                        self.check[(ev['id'], fam, ln)] = (fair_power(odds)[0], fp[0][0], ev.get('startTime', 0))
+                    except Exception:
+                        pass
+                if fam not in self.JOURNAL:
+                    continue
                 for side in (0, 1):
                     r = true_ev(fair, fam, ln, side, odds[side])
                     if r is None:
                         continue
                     ev_, pw, pp = r
                     key = (ev['id'], fam, ln if ln is not None else -999, side)
-                    row = self.con.execute('SELECT 1 FROM bb_cand WHERE fon_id=? AND fam=? AND line=? AND side=?',
+                    row = self.con.execute(f'SELECT 1 FROM {self.TABLE} WHERE fon_id=? AND fam=? AND line=? AND side=?',
                                            key).fetchone()
                     if row:
-                        self.con.execute('UPDATE bb_cand SET close_p=?, close_push=?, close_ts=? WHERE fon_id=? AND fam=?'
+                        self.con.execute(f'UPDATE {self.TABLE} SET close_p=?, close_push=?, close_ts=? WHERE fon_id=? AND fam=?'
                                          ' AND line=? AND side=?', (pw, pp, m.get('ts'), *key))
                     elif ev_ >= 0.03 and odds[side] <= 4:
                         oc = (['П1', 'П2'][side] if fam == '1x2' else outcome_names(fam, ln)[side])
-                        self.con.execute('INSERT INTO bb_cand (fon_id, fam, line, side, outcome, teams, pin_teams, league,'
+                        self.con.execute(f'INSERT INTO {self.TABLE} (fon_id, fam, line, side, outcome, teams, pin_teams, league,'
                                          ' start_ts, first_seen, odds, p_win, p_push, ev, close_p, close_push, close_ts)'
                                          ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                          (*key, oc, f"{ev.get('team1')} — {ev.get('team2')}",
                                           f"{m['home']} — {m['away']}", m.get('league'), ev.get('startTime'), now,
                                           odds[side], pw, pp, ev_, pw, pp, m.get('ts')))
-        self.con.execute('UPDATE bb_cand SET clv = odds * close_p + close_push - 1 WHERE clv IS NULL AND start_ts < ?'
+        for k in [k for k, v in self.check.items() if v[2] < now - 86400]:
+            self.check.pop(k, None)
+        self.con.execute(f'UPDATE {self.TABLE} SET clv = odds * close_p + close_push - 1 WHERE clv IS NULL AND start_ts < ?'
                          ' AND close_p IS NOT NULL', (now,))
         self.con.commit()
         self.stat = {'fon_events': n_ev, 'matched': n_map, 'pin_matchups': len(self.pin), 'pin_leagues': len(self.leagues),
                      'made': now_str()}
 
     def report(self):
-        rows = self.con.execute('SELECT * FROM bb_cand ORDER BY first_seen').fetchall()
-        cols = [c[1] for c in self.con.execute('PRAGMA table_info(bb_cand)')]
+        rows = self.con.execute(f'SELECT * FROM {self.TABLE} ORDER BY first_seen').fetchall()
+        cols = [c[1] for c in self.con.execute(f'PRAGMA table_info({self.TABLE})')]
+        chk = {}
+        for (eid, fam, ln), (pf, pp, _st) in self.check.items():
+            chk.setdefault(fam, []).append(pf - pp)
+        check = {fam: {'n': len(v), 'mean_gap': sum(v) / len(v), 'abs_gap': sum(abs(x) for x in v) / len(v)}
+                 for fam, v in chk.items()}
         done = [r for r in rows if r[cols.index('clv')] is not None]
         clv = [r[cols.index('clv')] for r in done]
-        return {'stat': getattr(self, 'stat', None), 'error': self.err, 'match_log': self.log[-60:],
+        return {'sport': self.SPORT, 'stat': getattr(self, 'stat', None), 'error': self.err, 'match_log': self.log[-60:],
+                'line_check': check, 'pin_markets': [[*k, v] for k, v in self.periods.most_common(40)],
                 'n': len(rows), 'n_closed': len(done), 'clv_mean': (sum(clv) / len(clv)) if clv else None,
                 'clv_pos_share': (sum(c > 0 for c in clv) / len(clv)) if clv else None,
                 'rows': [dict(zip(cols, r)) for r in rows]}
 
+
+
+class HockeyMeasure(BasketMeasure):
+    """-67, хоккей. Pinnacle: «Game-period bets include overtime and penalty shootouts», победителю буллитов — один гол
+    (pinnacle.com/en/future/betting-rules). Фонбет: «Исходы» 921/922/923 — с ничьей (основное время), «Итоговая победа»
+    7035/7036 — без ничьей. В журнал — только итоговая победа против moneyline Pinnacle (правила совпадают по названию).
+    Тоталы/форы/инд. тоталы Фонбета — только в сверку линий: если Фонбет считает их по основному времени, его шанс «больше»
+    будет заметно ниже, чем у Pinnacle (тот с ОТ и буллитом)."""
+    SPORT, FON_SPORT, PIN_SPORT, TABLE = 'хоккей', 2, 19, 'hk_cand'
+    ML_CODES, NO_DRAW = (7035, 7036), False
+    JOURNAL = {'1x2'}
 
 
 def sports_recon(col):
@@ -4280,12 +4321,13 @@ def build_report(con):
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
-    bb = getattr(COLLECTOR, 'bb', None)
-    if bb is not None:
-        try:
-            rep['basketball'] = bb.report()
-        except Exception as e:
-            rep['basketball'] = {'error': str(e)[:200]}    # собирается в потоке программы (браузер — не из окна)
+    for key, attr in (('basketball', 'bb'), ('hockey', 'hk')):
+        sm = getattr(COLLECTOR, attr, None)
+        if sm is not None:
+            try:
+                rep[key] = sm.report()
+            except Exception as e:
+                rep[key] = {'error': str(e)[:200]}    # собирается в потоке программы (браузер — не из окна)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('report.json', json.dumps(rep, ensure_ascii=False, default=str))
