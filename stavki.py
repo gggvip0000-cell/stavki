@@ -5225,17 +5225,24 @@ class Collector:
                             self.olimp = olimp_recon(self.browser)
                         except Exception as e:
                             self.olimp = {'error': str(e).splitlines()[0][:200]}
-                    # -127: раз в 30 мин, пока идут матчи с нашими ставками (было раз в 3 ч); последние 3 — в отчёте
-                    if time.time() - getattr(self, 'bksr_ts', 0) > 1800 and self.browser is not None:
+                    # -127: разведка источника виджета «Статистика» PARI. Владелец 24.11: «пусть раз в минуту… чтобы
+                    # обновлялась чуть ли не онлайн». Разведка открывает целую страницу и держит цикл программы ~20 с, поэтому
+                    # раз в минуту она остановила бы цены на треть времени. Пока источник не найден — раз в 5 мин, каждый раз
+                    # другой матч; нашёлся (угловые в тексте виджета) — раз в 3 ч. «Онлайн» будет чтение найденного
+                    # источника по всем матчам сразу, как поток PARI (следующая версия).
+                    found = any((x or {}).get('corner_text') for x in getattr(self, 'bk_stats_hist', []))
+                    every = 3 * 3600 if found else 300
+                    if time.time() - getattr(self, 'bksr_ts', 0) > every and self.browser is not None:
                         try:
-                            r = bk_stats_recon(self.browser, self.con)
-                            if r is not None:                 # нашёлся идущий матч — следующая разведка через 30 мин
+                            r = bk_stats_recon(self.browser, self.con, wait_ms=8000,
+                                               skip=[(x or {}).get('match_id') for x in getattr(self, 'bk_stats_hist', [])[-2:]])
+                            if r is not None:                 # нашёлся идущий матч
                                 self.bk_stats = r
-                                self.bk_stats_hist = (getattr(self, 'bk_stats_hist', []) + [r])[-3:]
+                                self.bk_stats_hist = (getattr(self, 'bk_stats_hist', []) + [r])[-5:]
                                 # сайт показал проверку «вы не робот» — больше не ходим (обход защиты не делаем)
                                 self.bksr_ts = time.time() + (10 ** 9 if r.get('blocked') else 0)
                             else:
-                                self.bksr_ts = time.time() - 1800 + 600     # идущего матча нет — проверить через 10 мин
+                                self.bksr_ts = time.time() - every + 120     # идущего матча нет — проверить через 2 мин
                         except Exception as e:
                             self.bk_stats = {'error': str(e).splitlines()[0][:200]}
                             self.bksr_ts = time.time()
@@ -5903,7 +5910,7 @@ def rules_recon(browser, name, url, wait_ms=8000):
             pass
 
 
-def bk_stats_recon(browser, con, wait_ms=12000):
+def bk_stats_recon(browser, con, wait_ms=12000, skip=()):
     """-76 (владелец 22.11: «у PARI есть статистика на этот матч — угловые, карточки, офсайды, — а тут она не появляется»).
     Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у PARI, где у нас открыта ставка, и записать, откуда
     сайт берёт статистику. Только в отчёт.
@@ -5920,10 +5927,12 @@ def bk_stats_recon(browser, con, wait_ms=12000):
         " EXISTS(SELECT 1 FROM bk_scores s WHERE s.match_id = p.match_id AND s.part = 'c') AS hasc"
         " FROM paper2 p WHERE p.status='open' AND p.bk_url LIKE 'http%' AND p.bookmaker IN ('Фонбет','PARI')"
         " AND p.start_ts < ? AND p.start_ts > ? GROUP BY p.match_id"
-        " ORDER BY (cor AND NOT hasc) DESC, cor DESC, p.start_ts DESC LIMIT 1",
+        " ORDER BY (cor AND NOT hasc) DESC, cor DESC, p.start_ts DESC LIMIT 6",
         (now - 10 * 60, now - 100 * 60)).fetchall()
     if not rows_:
         return None
+    # -127: каждый раз другой матч (последние разведанные — в конец очереди)
+    rows_ = [x for x in rows_ if x[2] not in set(skip or ())] or rows_
     url, title, mid, cor, hasc = rows_[0]
     # -86: страница матча на fon.bet показала программе капчу «вы не робот» (отчёт 22.11 10:56). Обходить не делаем;
     # виджет статистики владелец видел на PARI — номера событий у Фонбета и PARI общие, адрес тот же, меняется только сайт.
