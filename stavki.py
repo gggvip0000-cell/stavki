@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-116"
+VERSION = "2026.11.24-117"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -568,8 +568,9 @@ def pin_diag_text(d, err):
     elif d.get('page_error'):
         why = 'страница pinnacle.com не открылась — включён ли VPN?'
     else:
-        why = 'страница pinnacle.com открылась без цен — включён ли VPN?'
-    return f'Pinnacle не отвечает: {why} ({err})'
+        why = ('страница pinnacle.com открылась без цен — включён ли VPN и не закрыта ли его страна для Pinnacle '
+               '(не принимает США, Великобританию, Францию, Германию, Нидерланды, Испанию, Италию, Португалию, Австралию)')
+    return f'{why} ({err})'
 
 
 def _pin_diag_short(d):
@@ -2946,7 +2947,7 @@ async function tick(){
   const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
   let h='';
   const ORD=['Олимп','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // -115: Олимп вместо Фонбета (владелец 24.11)   // Фонбет и PARI — рядом (владелец 21.11)
-  const bkCols=[...d.mine].sort((a,c)=>oi(a)-oi(c));
+  const bkCols=ORD.filter(b=>d.mine.includes(b));   // -117 (владелец 24.11: «фон надо убрать»): только Олимп, PARI, Винлайн
   const main=v=>/^(1x2|total|ah|tt1|tt2|match_winner|total_points)$/.test(v.market||'')?1:0;
   const vw=v=>v.view||['m','',v.market_name||'',9];
   // ★ лучший — как раньше: в матче у конторы лучшая по надёжности среди ставок бумаги
@@ -3748,8 +3749,7 @@ class Collector:
             with STATE.lock:
                 STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error,
                                                      'diag': _pin_diag_short(self.pin.diag)}
-            add_error(self.pin.last_error if self.pin.last_error.startswith('Pinnacle') else 'Pinnacle: ' + self.pin.last_error,
-                      'Pinnacle')
+            add_error('Pinnacle: ' + self.pin.last_error, 'Pinnacle')
 
     def poll_pin(self):
         if self.pin.mode is None:
