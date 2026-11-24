@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-125"
+VERSION = "2026.11.24-126"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2704,7 +2704,29 @@ def db_open():
         backfill_new_strategies(con)
     except Exception as e:
         log('способы Г/Д по журналу: ' + str(e)[:150])
+    try:
+        copy_view_rows(con)
+    except Exception as e:
+        log('перенос таблиц П/Р в С/Т: ' + str(e)[:150])
     return con
+
+
+def copy_view_rows(con):
+    """-126 (владелец 24.11: «ты сохранишь тут то, что осталось, убрав лишнее?»): новые видимые таблицы без МАТЧА начинаются
+    с того, что уже было в прежних: С ← ставки П на угловые и 1-й тайм, Т ← то же из Р (перед матчем; иначе Т пришлось бы
+    копить с нуля). Выбор ставки в событии угловых/1-го тайма у П и С (Р и Т) одинаков — это те же самые ставки.
+    Один раз: только если у нового способа ещё нет ни одной ставки."""
+    cols = [r[1] for r in con.execute('PRAGMA table_info(paper2)') if r[1] not in ('id', 'strategy')]
+    part = "(substr(COALESCE(fam, event), 1, 2) = 'c_' OR substr(COALESCE(fam, event), 1, 3) = 'h1_')"
+    n = 0
+    for src_code, dst_code in (('П', 'С'), ('Р', 'Т')):
+        if con.execute('SELECT 1 FROM paper2 WHERE strategy=? LIMIT 1', (dst_code,)).fetchone():
+            continue
+        n += con.execute(f"INSERT OR IGNORE INTO paper2 (strategy, {', '.join(cols)}) SELECT ?, {', '.join(cols)}"
+                         f" FROM paper2 WHERE strategy=? AND {part}", (dst_code, src_code)).rowcount
+    con.commit()
+    if n:
+        log(f'таблицы без МАТЧА: перенесено {n} ставок из П/Р')
 
 
 def pick_for_strategies(rows):
@@ -2741,7 +2763,7 @@ def pick_for_strategies(rows):
 ONE_PER_MATCH = {c for c, _d, _f, k in STRATEGIES if k == 'match'}
 
 
-def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н', 'П', 'С')):
+def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н', 'П')):
     """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
     для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
     have = {c for (c,) in con.execute('SELECT DISTINCT strategy FROM paper2')}
