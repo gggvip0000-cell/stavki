@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-117"
+VERSION = "2026.11.24-118"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2895,7 +2895,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <p class="st"><label><input type="checkbox" id="aust" onchange="fetch('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:this.checked})})"> Запускать программу вместе с Windows</label> <span id="aumsg"></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
-const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400','Олимп':'#2f6fe0'};   // цвета с сайтов контор (снимки разведки 21.11)
+const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400','Олимп':'#be3026'};   // цвета с сайтов контор (снимки разведки 21.11; Олимп — шапка olimp.bet, снимок владельца 24.11)
 function fmt(s){if(s==null)return '—';if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
 function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
  const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
