@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-123"
+VERSION = "2026.11.24-124"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3294,9 +3294,10 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // PVIEW — какой способ показан (П «как появилась» / Р «перед матчем»), у каждого свой учёт увиденного
 let PVIEW='П';try{PVIEW=localStorage.getItem('pview')||'П'}catch(e){}
 let PSEEN=null,DELTA={},CHGB={};
-function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen_'+PVIEW)||'null')}catch(e){}}
+// -124: новый отсчёт «+N/−N» (у таблицы П в первые минуты после обновления все ставки, записанные задним числом, считались новыми)
+function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen2_'+PVIEW)||'null')}catch(e){}}
 loadSeen();
-function saveSeen(){try{localStorage.setItem('pseen_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
+function saveSeen(){try{localStorage.setItem('pseen2_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
 function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP)}
 function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
 const RES=['выигрыш','проигрыш','возврат'];
@@ -3351,19 +3352,22 @@ function renderPaper(p){
  // -123: переключатель двух таблиц одного способа (угловые + аутсайдеры): ставка как появилась / за 5–15 мин до начала
  if(p.views){h+='<div class="pvsw">';for(const [code,nm] of [['П','Как появилась'],['Р','Перед матчем']]){const v=p.views[code];h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+(v&&v.simple_total?' · '+v.simple_total.n:'')+'</button>'}
   h+='<span class="pvh">угловые + в матче и 1-м тайме только на аутсайдера · '+(PVIEW==='Р'?'ставка за 5–15 мин до начала':'ставка, как только появилась')+'</span></div>'}
- if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки'+(PVIEW==='Р'?' — они записываются за 5–15 мин до начала матча':'')+'</div></div>';return}
+ // -124 (владелец 24.11: «хотя бы пустая пока, но могла бы уже быть табличка»): пустая таблица — с теми же колонками и частями
+ const EMPTY=!p.simple||!p.simple.length,Z={n:0,w:0,l:0,push:0,done:0,profit_rub:0};
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
  h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
- const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
+ const groups=[];for(const g of p.simple||[]){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
+ if(EMPTY)for(const [pt,kc] of [['МАТЧ','m'],['1-Й ТАЙМ','h1'],['УГЛОВЫЕ','c']])h+='<tr class="grp"><td><span class="chev"> </span><span class="kind ks '+kc+'">'+pt+'</span></td>'+cells(Z,pt+'|*')+'</tr>';
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
   const closed=pclosed(G.part);
   h+='<tr class="grp" onclick="if(!event.target.closest(\'[data-pop]\'))pcol(\''+G.part+'\')"><td><span class="chev">'+(closed?'▸':'▾')+'</span><span class="kind ks '+G.kc+'">'+G.part+'</span> <span class="gn">'+G.rows.length+' вид'+(G.rows.length==1?'':(G.rows.length<5?'а':'ов'))+'</span></td>'+cells(s,G.part+'|*')+'</tr>';
   if(!closed)for(const r of G.rows){const nm=r.name||r.val;const sn=SHN[nm];h+='<tr class="sub"><td>'+(sn?'<span class="lg">'+nm+'</span><span class="sh">'+sn+'</span>':nm)+'</td>'+cells(r,G.part+'|'+r.name)+'</tr>'}
  }
- h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total,'*|*')+'</tr>';
+ h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total||Z,'*|*')+'</tr>';
  const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
+ if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW==='Р'?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':'')+'</div>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
  fitTable(el);
