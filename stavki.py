@@ -3,7 +3,7 @@
 
 Берёт коэффициенты с odds.ru (15 контор, в том числе Pinnacle) через обычный браузер,
 считает честную цену по Pinnacle и показывает ставки российских контор, где коэффициент
-выше честной цены. Окно программы: http://localhost:8765 — обновляется само.
+выше честной цены. Окно программы: http://localhost:8770 — обновляется само.
 Ничего не ставит и никуда не входит.
 """
 import datetime
@@ -11,6 +11,7 @@ import difflib
 import json
 import math
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 import sqlite3
@@ -31,15 +32,16 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-115"
+VERSION = "2026.11.24-116"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 PINNACLE_ID = 18
+MONTAZH_PORT = 8765             # адрес программы монтажа владельца — не занимать
 
 DEFAULT_CONFIG = {
-    "port": 8765,
+    "port": 8770,                 # 8765 занят программой монтажа владельца (24.11)
     "hours_ahead": 24,            # какие матчи брать: начало в ближайшие N часов
     "markets": ["match_winner", "total_points"],
     "leagues_only": [],           # пусто = все лиги, где есть Pinnacle; иначе список id лиг odds.ru
@@ -552,6 +554,30 @@ def en_names_of(ev):
     return None, None
 
 
+def pin_diag_text(d, err):
+    """-116: понятная причина отказа Pinnacle по тому, что видела страница сайта"""
+    api = d.get('page_api') or []
+    codes = [c for c, _ in api]
+    txt = (d.get('title', '') + ' ' + d.get('text', '')).lower()
+    if any(w in txt for w in ('not available in your', 'restricted', 'jurisdiction', 'недоступ', 'your location', 'region')):
+        why = 'сайт Pinnacle пишет, что недоступен из этой страны — смените страну/сервер VPN'
+    elif codes and all(c in (401, 403) for c in codes):
+        why = 'Pinnacle отказал и самому своему сайту (403) — дело в адресе VPN, не в программе; смените сервер VPN'
+    elif codes and any(c == 200 for c in codes):
+        why = 'сам сайт цены получил, а программе отказ — пришлите отчёт для разработки'
+    elif d.get('page_error'):
+        why = 'страница pinnacle.com не открылась — включён ли VPN?'
+    else:
+        why = 'страница pinnacle.com открылась без цен — включён ли VPN?'
+    return f'Pinnacle не отвечает: {why} ({err})'
+
+
+def _pin_diag_short(d):
+    d = d or {}
+    return {k: d.get(k) for k in ('ts', 'page_url', 'title', 'text', 'page_error', 'page_api', 'keys', 'last_http',
+                                  'last_page_fetch') if d.get(k)}
+
+
 class PinnacleFeed:
     """Цены Pinnacle с его сайта (через VPN владельца): лиги по очереди, ближайшие матчи — чаще."""
     name = 'Pinnacle'
@@ -582,13 +608,26 @@ class PinnacleFeed:
         self.mode = None            # 'thread' — свой поток напрямую; 'browser' — через окно браузера
         self.pending = set()        # id odds.ru с новой ценой — забирает основной цикл
         self.thread = None
+        self.diag = {}              # -116: что видели при последнем запуске (страница, её запросы к API, ключи)
 
     def http_get(self, path):
         import gzip
         req = urllib.request.Request(PIN_API + path, headers=dict(
             self.headers, **{'Accept-Encoding': 'gzip', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                              'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0 Safari/537.36'}))
-        with urllib.request.urlopen(req, timeout=20) as r:
+        try:
+            r = urllib.request.urlopen(req, timeout=20)
+        except urllib.error.HTTPError as e:      # -116: в ошибке — и начало ответа (ключ? страна?), для разбора
+            try:
+                t = e.read()[:300]
+                if e.headers.get('Content-Encoding') == 'gzip':
+                    t = gzip.decompress(t)
+                t = t.decode('utf-8', 'replace')
+            except Exception:
+                t = ''
+            self.diag['last_http'] = {'s': e.code, 'path': path[:60], 't': t[:200], 'ts': time.time()}
+            raise RuntimeError(f'Pinnacle ответил {e.code} на {path[:60]}' + (f': {t[:80]}' if t else ''))
+        with r:
             body = r.read()
             if r.headers.get('Content-Encoding') == 'gzip':
                 body = gzip.decompress(body)
@@ -619,35 +658,66 @@ class PinnacleFeed:
                 time.sleep(min(30, 2 * self.fails))
 
     def start(self, browser):
+        """-116 (24.11: «Pinnacle ответил 403», у владельца VPN включён): ключ — из запросов самой страницы, иначе
+        сохранённый, иначе открытый; пробуются по очереди. Записывается, что получила от Pinnacle сама страница
+        (её собственные запросы к API): отказ и ей — дело в адресе (VPN), а не в программе."""
         self.page = browser.new_page(locale='en-US')
         hdr = {}
+        seen = []                               # ответы API на запросы самой страницы: (код, адрес)
 
         def on_req(r):
             if 'arcadia.pinnacle.com' in r.url and 'x-api-key' in r.headers:
                 hdr.update({k: v for k, v in r.headers.items() if k.lower() in ('x-api-key', 'x-device-uuid')})
+
+        def on_resp(r):
+            try:
+                if 'arcadia.pinnacle.com' in r.url and len(seen) < 40:
+                    seen.append((r.status, r.url.split('/0.1', 1)[-1][:60]))
+            except Exception:
+                pass
         self.page.on('request', on_req)
+        self.page.on('response', on_resp)
+        d = {'ts': time.time(), 'page_url': '', 'title': '', 'text': '', 'page_api': seen, 'keys': []}
+        self.diag = d
         try:
             self.page.goto(PIN_SITE, wait_until='domcontentloaded', timeout=90000)
             self.page.wait_for_timeout(8000)
             self.page_url = self.page.url
+            d['page_url'] = self.page.url[:120]
+            try:
+                d['title'] = (self.page.title() or '')[:120]
+                d['text'] = re.sub(r'\s+', ' ', self.page.inner_text('body', timeout=3000) or '')[:300]
+            except Exception:
+                pass
         except Exception as e:
+            d['page_error'] = str(e).splitlines()[0][:120]
             log('Pinnacle: страница сайта не открылась (' + str(e).splitlines()[0][:80] + '), пробую напрямую')
-        if hdr.get('x-api-key'):
-            save_config_keys({'pinnacle_key': hdr['x-api-key']})
-        else:                       # скрытое окно сайт мог не обслужить — открытый ключ сайта из прошлого раза
-            hdr['x-api-key'] = load_config().get('pinnacle_key') or PIN_PUBLIC_KEY
-        self.headers = dict(hdr, Referer='https://www.pinnacle.com/', Accept='application/json')
-        try:
-            self.http_get('/sports/29/leagues?all=false')
-            self.mode = 'thread'
-        except Exception as e:
-            log('Pinnacle напрямую (без браузера) не ответил: ' + str(e).splitlines()[0][:100])
+        keys = []
+        for k, src in ((hdr.get('x-api-key'), 'страница'), (load_config().get('pinnacle_key'), 'сохранённый'),
+                       (PIN_PUBLIC_KEY, 'открытый')):
+            if k and k not in [x for x, _ in keys]:
+                keys.append((k, src))
+        base = {k: v for k, v in hdr.items() if k.lower() != 'x-api-key'}
+        self.mode = None
+        for key, src in keys:
+            self.headers = dict(base, **{'x-api-key': key}, Referer='https://www.pinnacle.com/', Accept='application/json')
+            try:
+                self.http_get('/sports/29/leagues?all=false')
+                d['keys'].append((src, 200))
+                self.mode = 'thread'
+                if key != load_config().get('pinnacle_key'):
+                    save_config_keys({'pinnacle_key': key})
+                break
+            except Exception as e:
+                d['keys'].append((src, (self.diag.get('last_http') or {}).get('s') or str(e)[:60]))
+                log(f'Pinnacle напрямую (ключ: {src}) не ответил: ' + str(e).splitlines()[0][:100])
+        if self.mode is None:
             self.mode = 'browser'
-        if self.mode == 'browser':
+            self.headers = dict(base, **{'x-api-key': keys[0][0]}, Referer='https://www.pinnacle.com/', Accept='application/json')
             try:
                 self.get('/sports/29/leagues?all=false')
             except Exception as e:
-                raise RuntimeError('Pinnacle не отвечает — включён ли VPN? (' + str(e).splitlines()[0][:80] + ')')
+                raise RuntimeError(pin_diag_text(d, str(e).splitlines()[0][:80]))
         else:
             if not (self.thread and self.thread.is_alive()):
                 self.thread = threading.Thread(target=self.run_thread, daemon=True)
@@ -658,9 +728,23 @@ class PinnacleFeed:
         if self.mode == 'thread':
             return self.http_get(path)
         r = self.page.context.request.get(PIN_API + path, headers=self.headers, timeout=15000)
-        if r.status != 200:
-            raise RuntimeError(f'Pinnacle ответил {r.status} на {path[:60]}')
-        j = json.loads(r.text())
+        st, body = r.status, None
+        if st != 200:
+            # -116: как сам сайт — запросом изнутри страницы (её адрес, её куки)
+            hd = {k: v for k, v in self.headers.items() if k.lower() in ('x-api-key', 'x-device-uuid', 'accept')}
+            try:
+                rr = self.page.evaluate("""async ([u, h]) => { try { const r = await fetch(u, {headers: h});
+                    return {s: r.status, t: await r.text()} } catch (e) { return {s: 0, t: String(e)} } }""",
+                                        [PIN_API + path, hd]) or {}
+            except Exception as e:
+                rr = {'s': 0, 't': str(e)[:100]}
+            self.diag['last_page_fetch'] = {'s': rr.get('s'), 'path': path[:60], 't': str(rr.get('t'))[:200],
+                                            'ctx': st, 'ts': time.time()}
+            if rr.get('s') == 200:
+                body = rr.get('t')
+            else:
+                raise RuntimeError(f'Pinnacle ответил {st} на {path[:60]}')
+        j = json.loads(body if body is not None else r.text())
         if not isinstance(j, list):
             raise RuntimeError(f'Pinnacle прислал не то на {path[:60]}')
         return j
@@ -3662,8 +3746,10 @@ class Collector:
             self.pin.mode = None
             self.pin.last_error = str(e).splitlines()[0][:160]
             with STATE.lock:
-                STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error}
-            add_error('Pinnacle: ' + self.pin.last_error, 'Pinnacle')
+                STATE.status['feeds']['Pinnacle'] = {'last_ok': None, 'error': self.pin.last_error,
+                                                     'diag': _pin_diag_short(self.pin.diag)}
+            add_error(self.pin.last_error if self.pin.last_error.startswith('Pinnacle') else 'Pinnacle: ' + self.pin.last_error,
+                      'Pinnacle')
 
     def poll_pin(self):
         if self.pin.mode is None:
@@ -6658,6 +6744,15 @@ def load_config():
             print('config.json не прочитан, беру настройки по умолчанию:', e)
     else:
         p.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding='utf-8')
+    # -115: 8765 — привычный адрес программы монтажа владельца. Две программы на одном
+    # адресе мешали друг другу (24.11: монтаж не открывался). Старый config.json переводим на 8770.
+    if cfg.get('port') == MONTAZH_PORT:
+        cfg['port'] = DEFAULT_CONFIG['port']
+        try:
+            save_config_keys({'port': cfg['port']})
+            print(f'Адрес программы сменён на {cfg["port"]}: {MONTAZH_PORT} занят программой монтажа.')
+        except Exception as e:
+            print('не смог записать новый адрес в config.json:', e)
     return cfg
 
 
