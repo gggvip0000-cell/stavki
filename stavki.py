@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-121"
+VERSION = "2026.11.24-122"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -407,6 +407,15 @@ STRATEGIES = [
      lambda v: v['rel'] >= 0.05 and v['odds'] <= 4.0, 'rel'),
     ('З', 'надёжность от 0.08, кф до 4 (проверка)',
      lambda v: v['rel'] >= 0.08 and v['odds'] <= 4.0, 'rel'),
+    # -122 (владелец 24.11 «давай добавим все 3»; разбор отчёта 21:14: ставки на фаворита (шанс ≥50%) выиграли 35 раз
+    # из обещанных 51 во всех частях, на аутсайдера — 31 из 24; одна ставка на матч — пары вроде «тотал М 3.5» +
+    # «инд. тотал М 2.5» — одна и та же ставка дважды; перед началом цена Pinnacle точнее всего)
+    ('К', 'как Б, но без ставок на фаворита (шанс до 50%) (проверка)',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and v['chance'] < 0.5, 'rel'),
+    ('Л', 'как Б, но только за 5–15 мин до начала матча (проверка)',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and 300 <= v['start_ts'] - time.time() <= 900, 'rel'),
+    ('Н', 'как Б, но одна ставка на матч — лучшая по надёжности (проверка)',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0, 'match'),
 ]
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
@@ -2688,13 +2697,30 @@ def pick_for_strategies(rows):
     out = []
     for vs in groups.values():
         for code, _desc, cond, key in STRATEGIES:
+            if key == 'match':
+                continue
             c = [v for v in vs if cond(v)]
             if c:
                 out.append((code, max(c, key=lambda v: (v[key], v['odds']))))
+    # -122: способ «одна ставка на матч» — лучшая по надёжности среди всех событий матча (запись — только если у матча
+    # ещё нет ставки этого способа, проверяет record_paper / backfill)
+    for code, _desc, cond, key in STRATEGIES:
+        if key != 'match':
+            continue
+        by = {}
+        for vs in groups.values():
+            for v in vs:
+                if cond(v):
+                    by.setdefault((v['match_id'], v['src']), []).append(v)
+        for c in by.values():
+            out.append((code, max(c, key=lambda v: (v['rel'], v['odds']))))
     return out
 
 
-def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З')):
+ONE_PER_MATCH = {c for c, _d, _f, k in STRATEGIES if k == 'match'}
+
+
+def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н')):
     """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
     для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
     have = {c for (c,) in con.execute('SELECT DISTINCT strategy FROM paper2')}
@@ -2704,18 +2730,25 @@ def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З')):
     meta = {m: (t, lg) for m, t, lg in con.execute('SELECT match_id, title, league FROM matches')}
     rows = []
     for r in con.execute('SELECT first_seen, match_id, bookmaker, src, market_name, outcome, line, start_ts, odds, fair,'
-                         ' ev, pin_age, fam FROM cand WHERE fair IS NOT NULL AND odds IS NOT NULL').fetchall():
+                         ' ev, pin_age, fam, odds_age FROM cand WHERE fair IS NOT NULL AND odds IS NOT NULL').fetchall():
         v = dict(zip(['created', 'match_id', 'bookmaker', 'src', 'market_name', 'outcome', 'line', 'start_ts', 'odds',
-                      'fair', 'ev', 'pin_age', 'market'], r))
+                      'fair', 'ev', 'pin_age', 'market', 'odds_age'], r))
         if v['bookmaker'] in JOURNAL_ONLY:
             continue
+        if v['bookmaker'] == 'Олимп' and (v['odds_age'] is None or v['odds_age'] > OLIMP_MAX_AGE):
+            continue                           # -122: старые строки Олимпа без проверки свежести цены — не берём
         v['match'], v['league'] = meta.get(v['match_id'], ('', ''))
         v['chance'], v['rel'] = chance_rel(v['odds'], v['fair'])
         rows.append(v)
     picks = []
+    one = set()
     for t in sorted({v['created'] for v in rows}):
         for code, v in pick_for_strategies([v for v in rows if v['created'] == t]):
             if code in codes:
+                if code in ONE_PER_MATCH:
+                    if (code, v['match_id'], v['src']) in one:
+                        continue
+                    one.add((code, v['match_id'], v['src']))
                 picks.append((code, v))
     n = 0
     for code, v in picks:
@@ -4099,6 +4132,9 @@ class Collector:
         added = 0
         try:
             for code, v in pick_for_strategies([v for v in rows if v['bookmaker'] not in JOURNAL_ONLY]):
+                if code in ONE_PER_MATCH and cur.execute('SELECT 1 FROM paper2 WHERE strategy=? AND match_id=? AND src=?',
+                                                         (code, v['match_id'], v['src'])).fetchone():
+                    continue
                 cur.execute('INSERT OR IGNORE INTO paper2 (created, match_id, title, league, start_ts, strategy, event,'
                             ' src, bookmaker, market_name, outcome, line, odds, fair, ev, rel, pin_age, fam, bk_url) VALUES'
                             ' (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
