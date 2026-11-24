@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-118"
+VERSION = "2026.11.24-119"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3245,6 +3245,9 @@ window.addEventListener('resize',()=>{const el=document.getElementById('paper');
 // -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
 function renderPaper(p){
+ // -119 (владелец 24.11: «пари и фон можно считать просто за пари — ставки в фоне могли быть сделаны и в пари»; кф совпали
+ // в 518 из 521 одинаковых ставок журнала): старые ставки Фонбета показываются как PARI, ссылка — на тот же матч на pari.ru
+ for(const b of (p&&p.bets)||[])if(b.bk==='Фонбет'){b.bk='PARI';if(b.bk_url)b.bk_url=b.bk_url.replace('https://fon.bet/','https://pari.ru/')}
  LASTP=p;
  const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
  trackChg(p);
