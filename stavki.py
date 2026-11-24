@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-119"
+VERSION = "2026.11.24-120"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2294,6 +2294,7 @@ class OlimpFeed:
         self.comp_ts = {}       # id чемпионата → когда обновлён
         self.comp_start = {}    # id чемпионата → ближайшее начало матча
         self.cdet, self.cdet_ts, self.cdet_try = {}, {}, {}   # -110: роспись «УГЛ»-события, когда получена, когда пробовали
+        self.hot = {}           # -120: id чемпионата / «УГЛ»-события → когда в нём нашлась ставка с перевесом
         self.stat = {'full_bytes': 0, 'full_events': 0, 'comp_fetches': 0, 'corner_details': 0}
 
     def start(self, browser):
@@ -2351,9 +2352,14 @@ class OlimpFeed:
                     continue
                 # -108: матчи в ближайший час — раз в 60 с (цена в журнал — не старше 2 мин), 3 ч — 90 с, 12 ч — 6 мин
                 every = 60 if left < 3600 else (90 if left < 3 * 3600 else (360 if left < 12 * 3600 else None))
+                # -120 (владелец 24.11: у ставки за 22 ч до матча «кф не обновлялся 7 мин»): чемпионат, где сейчас есть
+                # ставка с перевесом, — раз в 60 с при любом времени до матча и первым в очереди
+                hot = now - self.hot.get(cid, 0) < 600
+                if hot:
+                    every = 60
                 if every and now - self.comp_ts.get(cid, 0) > every:
-                    due.append((left, cid))
-            for _, cid in sorted(due)[:4]:         # -108: по 4 за опрос (было 2 — чемпионат ждал очереди по 4–5 мин)
+                    due.append((0 if hot else 1, left, cid))
+            for _, _, cid in sorted(due)[:4]:         # -108: по 4 за опрос (было 2 — чемпионат ждал очереди по 4–5 мин)
                 self.comp_ts[cid] = now
                 self.take(olimp_events(json.loads(self.get(f'competitions-with-events?vids%5B%5D={cid}%3A'))), now)
                 self.stat['comp_fetches'] += 1
@@ -2365,9 +2371,12 @@ class OlimpFeed:
                 if left <= 60:
                     continue
                 every = 60 if left < 3600 else (90 if left < 3 * 3600 else (600 if left < 12 * 3600 else None))
+                hot = now - self.hot.get('u' + uid, 0) < 600
+                if hot:
+                    every = 60
                 if every and now - self.cdet_try.get(uid, 0) > every:
-                    cdue.append((left, uid))
-            for _, uid in sorted(cdue)[:2]:
+                    cdue.append((0 if hot else 1, left, uid))
+            for _, _, uid in sorted(cdue)[:2]:
                 self.cdet_try[uid] = now
                 for e in olimp_events(json.loads(self.get(f'events?vids%5B%5D={uid}%3A&main=false'))):
                     if str(e.get('id')) == uid:
@@ -2383,6 +2392,21 @@ class OlimpFeed:
             self.cdet_ts.pop(uid, None)
         self.last_ok = now
         self.fails = 0
+
+    def hurry(self, eid, corners=False):
+        """-120: в матче нашлась ставка с перевесом — его чемпионат (и угловые) обновлять раз в 60 с, 10 мин"""
+        now = time.time()
+        e = self.ev.get(str(eid))
+        if not e:
+            return
+        if not corners:
+            self.hot[str(e.get('competitionId') or '')] = now
+            return
+        uid = self.kid.get(str(eid))
+        ce = self.cev.get(uid) if uid else None
+        if ce:
+            self.hot[str(ce.get('competitionId') or '')] = now
+            self.hot['u' + uid] = now
 
     def football(self):
         now = time.time()
@@ -4629,6 +4653,8 @@ class Collector:
                               'bk_title': f"{ev.get('team1', '')} — {ev.get('team2', '')}" if ev.get('team1') else None,
                               'mo': (f.match_odds(ev) if hasattr(f, 'match_odds') else
                                      [(f.factors.get(ev['id'], {}).get(c) or {}).get('v') for c in F_MATCH_ODDS])}
+                    if ev_ >= 0.03 and hasattr(f, 'hurry'):
+                        f.hurry(ev['id'], corners=key[0].startswith('c'))
                     if now - pts > 60 and ev_ >= 0.03:
                         urgent.append(mid)
         with STATE.lock:
