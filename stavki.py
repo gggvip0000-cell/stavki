@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-124"
+VERSION = "2026.11.24-125"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -425,9 +425,19 @@ STRATEGIES = [
     ('Р', 'то же, что П, но только за 5–15 мин до начала матча — видимый, перед матчем',
      lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_' or v['chance'] < 0.5)
      and 300 <= (v.get('start_ts') or 0) - time.time() <= 900, 'rel'),
+    # -125 (владелец 24.11: «почему МАТЧ остался? ты же его убрать хотел»): видимый способ без МАТЧА — угловые при любом шансе +
+    # 1-й тайм только на аутсайдера (отчёт 21:14: CLV +4.2% / +4.5% по половинам, 84% лучше закрытия, ~32 ставки в день;
+    # с МАТЧЕМ-аутсайдером было +3.3%, у самого МАТЧА-аутсайдера +1.2%). МАТЧ на аутсайдера по-прежнему пишется в П и К.
+    ('С', 'угловые + 1-й тайм только на аутсайдера (шанс до 50%), без МАТЧА, перевес от 5%, кф до 4 — видимый, как появилась',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_'
+                                                          or (split_fam(event_of(v))[0] == 'h1_' and v['chance'] < 0.5)), 'rel'),
+    ('Т', 'то же, что С, но только за 5–15 мин до начала матча — видимый, перед матчем',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_'
+                                                          or (split_fam(event_of(v))[0] == 'h1_' and v['chance'] < 0.5))
+     and 300 <= (v.get('start_ts') or 0) - time.time() <= 900, 'rel'),
 ]
-VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матчем'))   # -123: способы, которые видит владелец (переключатель в окне)
-MAIN_CODE = 'П'                    # основной: его ставки — в Telegram и в сводке
+VIEW_CODES = (('С', 'как появилась'), ('Т', 'перед матчем'))   # -123/-125: способы, которые видит владелец (переключатель в окне)
+MAIN_CODE = 'С'                    # основной: его ставки — в Telegram и в сводке
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
 
@@ -2731,7 +2741,7 @@ def pick_for_strategies(rows):
 ONE_PER_MATCH = {c for c, _d, _f, k in STRATEGIES if k == 'match'}
 
 
-def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н', 'П')):
+def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н', 'П', 'С')):
     """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
     для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
     have = {c for (c,) in con.execute('SELECT DISTINCT strategy FROM paper2')}
@@ -3292,19 +3302,23 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // в окне ставок изменившиеся выделены и не гаснут; закрыл окно — эти ставки (и ушедшие из этой клетки) считаются увиденными.
 // -123 (владелец 24.11: «две таблицы… одна принимает ставки, как было, а вторая именно перед матчем… переключаться»):
 // PVIEW — какой способ показан (П «как появилась» / Р «перед матчем»), у каждого свой учёт увиденного
-let PVIEW='П';try{PVIEW=localStorage.getItem('pview')||'П'}catch(e){}
+let PVIEW='С';try{PVIEW=localStorage.getItem('pview2')||'С'}catch(e){}
 let PSEEN=null,DELTA={},CHGB={};
 // -124: новый отсчёт «+N/−N» (у таблицы П в первые минуты после обновления все ставки, записанные задним числом, считались новыми)
 function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen2_'+PVIEW)||'null')}catch(e){}}
 loadSeen();
 function saveSeen(){try{localStorage.setItem('pseen2_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
-function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP)}
+function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview2',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP)}
 function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
 const RES=['выигрыш','проигрыш','возврат'];
 function moneyCols(c,pr){const o={};if(!RES.includes(c))return o;pr=pr||0;o['итог']=pr;if(c==='выигрыш')o['выиграл']=pr;if(c==='проигрыш')o['проиграл']=pr;return o}
 function trackChg(p){
  const bets=p.bets||[],cur={};for(const b of bets)cur[b.id]={c:catOf(b),p:b.profit_rub||0};
- if(PSEEN===null){PSEEN=cur;saveSeen()}
+ // -125: первые 10 мин после начала отсчёта «увидено» — всё, что меняется (ставки, записанные задним числом при обновлении,
+ // рассчитываются в первые минуты), сразу считается увиденным, чтобы не было «+N» на всю таблицу
+ let t0=0;try{t0=+localStorage.getItem('pseen2t_'+PVIEW)||0}catch(e){}
+ if(PSEEN===null||!t0){PSEEN=cur;if(!t0){t0=Date.now();try{localStorage.setItem('pseen2t_'+PVIEW,t0)}catch(e){}}saveSeen()}
+ else if(Date.now()-t0<600000){PSEEN=cur;saveSeen()}
  for(const id in PSEEN)if(!(id in cur))delete PSEEN[id];
  DELTA={};CHGB={};
  const add=(rows,col,v)=>{for(const r of rows){const k=r+'|'+col;DELTA[k]=(DELTA[k]||0)+v}};
@@ -3335,7 +3349,7 @@ window.addEventListener('resize',()=>{const el=document.getElementById('paper');
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
 function renderPaper(p){
  // -123: выбранный способ (П/Р) подставляется в общие поля — дальше всё как раньше
- if(p&&p.views){const v=p.views[PVIEW]||p.views['П'];if(v)p=Object.assign({},p,{simple:v.simple,simple_total:v.simple_total,bets:v.bets})}
+ if(p&&p.views){const v=p.views[PVIEW]||p.views['С'];if(v)p=Object.assign({},p,{simple:v.simple,simple_total:v.simple_total,bets:v.bets})}
  // -119 (владелец 24.11: «пари и фон можно считать просто за пари — ставки в фоне могли быть сделаны и в пари»; кф совпали
  // в 518 из 521 одинаковых ставок журнала): старые ставки Фонбета показываются как PARI, ссылка — на тот же матч на pari.ru
  for(const b of (p&&p.bets)||[])if(b.bk==='Фонбет'){b.bk='PARI';if(b.bk_url)b.bk_url=b.bk_url.replace('https://fon.bet/','https://pari.ru/')}
@@ -3350,14 +3364,14 @@ function renderPaper(p){
  const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+dl(sel,k)+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  // -123: переключатель двух таблиц одного способа (угловые + аутсайдеры): ставка как появилась / за 5–15 мин до начала
- if(p.views){h+='<div class="pvsw">';for(const [code,nm] of [['П','Как появилась'],['Р','Перед матчем']]){const v=p.views[code];h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+(v&&v.simple_total?' · '+v.simple_total.n:'')+'</button>'}
-  h+='<span class="pvh">угловые + в матче и 1-м тайме только на аутсайдера · '+(PVIEW==='Р'?'ставка за 5–15 мин до начала':'ставка, как только появилась')+'</span></div>'}
+ if(p.views){h+='<div class="pvsw">';for(const [code,nm] of [['С','Как появилась'],['Т','Перед матчем']]){const v=p.views[code];h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+(v&&v.simple_total?' · '+v.simple_total.n:'')+'</button>'}
+  h+='<span class="pvh">угловые + 1-й тайм только на аутсайдера · '+(PVIEW==='Т'?'ставка за 5–15 мин до начала':'ставка, как только появилась')+'</span></div>'}
  // -124 (владелец 24.11: «хотя бы пустая пока, но могла бы уже быть табличка»): пустая таблица — с теми же колонками и частями
  const EMPTY=!p.simple||!p.simple.length,Z={n:0,w:0,l:0,push:0,done:0,profit_rub:0};
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
  h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple||[]){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
- if(EMPTY)for(const [pt,kc] of [['МАТЧ','m'],['1-Й ТАЙМ','h1'],['УГЛОВЫЕ','c']])h+='<tr class="grp"><td><span class="chev"> </span><span class="kind ks '+kc+'">'+pt+'</span></td>'+cells(Z,pt+'|*')+'</tr>';
+ if(EMPTY)for(const [pt,kc] of [['1-Й ТАЙМ','h1'],['УГЛОВЫЕ','c']])h+='<tr class="grp"><td><span class="chev"> </span><span class="kind ks '+kc+'">'+pt+'</span></td>'+cells(Z,pt+'|*')+'</tr>';
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
   const closed=pclosed(G.part);
@@ -3367,7 +3381,7 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total||Z,'*|*')+'</tr>';
  const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
- if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW==='Р'?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':'')+'</div>';
+ if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW==='Т'?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':'')+'</div>';
  if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
  fitTable(el);
@@ -4581,7 +4595,7 @@ class Collector:
         for mid, st, he, ae, url, lg in self.con.execute(
                 "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en, m.url, MAX(p.league) FROM paper2 p"
                 " LEFT JOIN matches m ON m.match_id = p.match_id"
-                " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy IN ('Б','П','Р')"
+                " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy IN ('Б','П','Р','С','Т')"
                 " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
                 " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)):
             he, ae = en_names_any(he, ae, url)
