@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-126"
+VERSION = "2026.11.25-127"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4566,19 +4566,26 @@ class Collector:
         if now - getattr(self, 'fml_last', 0) < 8 or self.browser is None:
             return
         self.fml_last = now
+        st = self.fml_stat = getattr(self, 'fml_stat', None) or {}       # -127: счётчики для отчёта
         row = self.con.execute(
             "SELECT p.match_id, l.url, m.home_en, m.away_en FROM paper2 p JOIN sofa_link l ON l.match_id = p.match_id"
             " JOIN matches m ON m.match_id = p.match_id LEFT JOIN ext_live x ON x.match_id = p.match_id"
             " WHERE p.status='open' AND p.start_ts < ? AND p.start_ts > ? AND l.url LIKE '%fotmob.com/match/%'"
             " AND (x.ts IS NULL OR x.ts < ?) GROUP BY p.match_id ORDER BY COALESCE(x.ts, 0) LIMIT 1",
             (now, now - 150 * 60, now - 90)).fetchone()
-        if not row or self.ext.page(self.browser, 'fotmob', 'https://www.fotmob.com/') is None:
+        if not row:
+            st['no_match'] = st.get('no_match', 0) + 1
+            return
+        if self.ext.page(self.browser, 'fotmob', 'https://www.fotmob.com/') is None:
+            st['no_page'] = st.get('no_page', 0) + 1
             return
         mid, url, he, ae = row
         fid = url.rstrip('/').split('/')[-1]
         j = self.ext.get('fotmob', f'https://www.fotmob.com/api/data/matchDetails?matchId={fid}') or {}
         teams = (j.get('header') or {}).get('teams') or []
         if len(teams) != 2:
+            st['no_teams'] = st.get('no_teams', 0) + 1
+            st['last_bad'] = {'match_id': mid, 'fid': fid, 'keys': list(j.keys())[:10], 'ts': now}
             return
         # -63 (владелец 22.11: FotMob «Завершен», а у нас «идёт · 124 мин»): матч окончен — так и писать, а итог
         # с FotMob запросить сразу, не дожидаясь очередной 5-минутной попытки
@@ -4588,6 +4595,7 @@ class Collector:
             self.ext_last = 0
         same = self.ext.pair(teams[0].get('name', ''), teams[1].get('name', ''), he or '', ae or '')
         if same is None:
+            st['pair_none'] = st.get('pair_none', 0) + 1
             # хозяева неизвестны (нет английских названий) — не пишем: перевёрнутые угловые испортят инд. тотал
             self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,NULL,NULL,NULL,NULL,?,?)',
                              (mid, now, fin))
@@ -4601,6 +4609,7 @@ class Collector:
                     c = list(it['stats'])
         if same is False:
             ft, c = ft[::-1], (c[::-1] if c else None)
+        st['ok_corners' if c else 'ok_no_corners'] = st.get('ok_corners' if c else 'ok_no_corners', 0) + 1
         self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,?,?,?,?,?,?)',
                          (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now, fin))
         self.con.commit()
@@ -5216,15 +5225,17 @@ class Collector:
                             self.olimp = olimp_recon(self.browser)
                         except Exception as e:
                             self.olimp = {'error': str(e).splitlines()[0][:200]}
-                    if time.time() - getattr(self, 'bksr_ts', 0) > 3 * 3600 and self.browser is not None:
+                    # -127: раз в 30 мин, пока идут матчи с нашими ставками (было раз в 3 ч); последние 3 — в отчёте
+                    if time.time() - getattr(self, 'bksr_ts', 0) > 1800 and self.browser is not None:
                         try:
                             r = bk_stats_recon(self.browser, self.con)
-                            if r is not None:                 # нашёлся идущий матч — следующая разведка через 3 ч
+                            if r is not None:                 # нашёлся идущий матч — следующая разведка через 30 мин
                                 self.bk_stats = r
+                                self.bk_stats_hist = (getattr(self, 'bk_stats_hist', []) + [r])[-3:]
                                 # сайт показал проверку «вы не робот» — больше не ходим (обход защиты не делаем)
                                 self.bksr_ts = time.time() + (10 ** 9 if r.get('blocked') else 0)
                             else:
-                                self.bksr_ts = time.time() - 3 * 3600 + 600     # идущего матча нет — проверить через 10 мин
+                                self.bksr_ts = time.time() - 1800 + 600     # идущего матча нет — проверить через 10 мин
                         except Exception as e:
                             self.bk_stats = {'error': str(e).splitlines()[0][:200]}
                             self.bksr_ts = time.time()
@@ -5892,43 +5903,68 @@ def rules_recon(browser, name, url, wait_ms=8000):
             pass
 
 
-def bk_stats_recon(browser, con, wait_ms=20000):
+def bk_stats_recon(browser, con, wait_ms=12000):
     """-76 (владелец 22.11: «у PARI есть статистика на этот матч — угловые, карточки, офсайды, — а тут она не появляется»).
-    Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у Фонбета/PARI, где у нас открыта ставка, 20 с записывать
-    ответы сайта (адрес, начало тела, если в нём есть угловые/статистика) и текст страницы — чтобы найти, откуда виджет
-    статистики берёт угловые. Ничего не нажимает. Только в отчёт."""
+    Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у PARI, где у нас открыта ставка, и записать, откуда
+    сайт берёт статистику. Только в отчёт.
+    -127 (владелец 24.11: «как много матчей без данных, хотя с сайта БК их можно взять, они там есть» — 9 матчей
+    Национальной лиги Англии и Уэльса: угловых нет ни в потоке PARI, который читает программа, ни на FotMob). Разведка 25.11
+    00:03 (Вулверхэмптон — Дерби) показала запрос ssis/api/v1/eventPreview — вероятный источник виджета «Статистика», но
+    его ответ не записался (в нём не было искомых слов), а виджет в тексте страницы не появился. Теперь: матч, где у нас
+    ставка на угловые, а угловых в потоке нет; окно шире; записываются ответы ВСЕХ запросов к серверам сайта (не только со
+    словами), кадры websocket, вложенные окна (iframe); нажимается вкладка «Статистика», если она есть (только открыть
+    вкладку — ни ставок, ни входа), и записывается текст после этого."""
     now = time.time()
-    row = con.execute("SELECT bk_url, title FROM paper2 WHERE status='open' AND bk_url LIKE 'http%' AND bookmaker IN ('Фонбет','PARI')"
-                      " AND start_ts < ? AND start_ts > ? ORDER BY (fam LIKE 'c_%') DESC, start_ts DESC LIMIT 1",
-                      (now - 10 * 60, now - 100 * 60)).fetchone()
-    if not row:
+    rows_ = con.execute(
+        "SELECT p.bk_url, p.title, p.match_id, (COALESCE(p.fam, p.event) LIKE 'c!_%' ESCAPE '!') AS cor,"
+        " EXISTS(SELECT 1 FROM bk_scores s WHERE s.match_id = p.match_id AND s.part = 'c') AS hasc"
+        " FROM paper2 p WHERE p.status='open' AND p.bk_url LIKE 'http%' AND p.bookmaker IN ('Фонбет','PARI')"
+        " AND p.start_ts < ? AND p.start_ts > ? GROUP BY p.match_id"
+        " ORDER BY (cor AND NOT hasc) DESC, cor DESC, p.start_ts DESC LIMIT 1",
+        (now - 10 * 60, now - 100 * 60)).fetchall()
+    if not rows_:
         return None
-    url, title = row
+    url, title, mid, cor, hasc = rows_[0]
     # -86: страница матча на fon.bet показала программе капчу «вы не робот» (отчёт 22.11 10:56). Обходить не делаем;
-    # виджет статистики владелец видел на PARI (снимок 22.11: Чоннам — Ансан, угловые 0:0 на 45:23) — номера событий у
-    # Фонбета и PARI общие, адрес тот же, меняется только сайт. Если и PARI покажет проверку — разведка останавливается.
+    # виджет статистики владелец видел на PARI — номера событий у Фонбета и PARI общие, адрес тот же, меняется только сайт.
+    # Если и PARI покажет проверку — разведка останавливается.
     url = re.sub(r'^https?://(www\.)?fon\.bet/', 'https://pari.ru/', url)
-    seen, hits = [], []
-    pg = browser.new_page(locale='ru-RU')
+    seen, hits, bodies, wsf = [], [], [], []
+    words = ('corner', 'угл', 'statist', 'yellow', 'offside')
+    pg = browser.new_page(locale='ru-RU', viewport={'width': 1600, 'height': 1000})
     try:
         def on_resp(r):
             try:
                 u = r.url
-                if len(seen) < 300:
+                if len(seen) < 400:
                     seen.append(u[:200])
+                host = u.split('/')[2] if '//' in u else ''
+                static = bool(re.search(r'\.(js|css|woff2?|svg|png|jpe?g|gif|webp|ico)(\?|$)', u.split('#')[0]))
                 ct = (r.headers or {}).get('content-type', '')
-                if 'json' not in ct and 'text' not in ct:
+                if 'json' not in ct and 'text' not in ct and 'javascript' not in ct:
                     return
+                if static or 'factorsCatalog' in u or (host.startswith('cdn-') and 'locale' in u):
+                    return                     # скрипты, стили, справочники рынков — не источник статистики
                 body = r.text()
-                low = body[:200000].lower()
-                if any(w in low for w in ('corner', 'угл', 'statist', 'yellow', 'offside')) and len(hits) < 40:
-                    k = max(0, min(low.find(w) for w in ('corner', 'угл', 'statist', 'yellow', 'offside') if w in low) - 300)
+                if len(bodies) < 80:
+                    bodies.append({'url': u[:400], 'status': getattr(r, 'status', None), 'ct': ct[:60], 'len': len(body),
+                                   'body': body[:20000] if len(body) <= 300000 else body[:3000]})
+                low = body[:300000].lower()
+                if any(w in low for w in words) and len(hits) < 40:
+                    k = max(0, min(low.find(w) for w in words if w in low) - 300)
                     hits.append({'url': u[:300], 'len': len(body), 'part': body[k:k + 2500]})
             except Exception:
                 pass
         pg.on('response', on_resp)
         ws_urls = []
-        pg.on('websocket', lambda ws: ws_urls.append(ws.url[:200]))
+
+        def on_ws(ws):
+            ws_urls.append(ws.url[:200])
+            def fr(p):
+                if len(wsf) < 40:
+                    wsf.append({'ws': ws.url[:120], 'data': (p if isinstance(p, str) else repr(p))[:1500]})
+            ws.on('framereceived', fr)
+        pg.on('websocket', on_ws)
         pg.goto(url, wait_until='domcontentloaded', timeout=60000)
         pg.wait_for_timeout(wait_ms)
         try:
@@ -5936,8 +5972,32 @@ def bk_stats_recon(browser, con, wait_ms=20000):
         except Exception as x:
             text = 'текст не получен: ' + str(x)[:80]
         blocked = bool(re.search(r'не с роботом|не робот|пройдите капчу|captcha', text, re.I))
-        return {'made': now_str(), 'match': title, 'url': url, 'responses': seen, 'websockets': ws_urls, 'hits': hits,
-                'page_text': text, 'blocked': blocked}
+        clicked, text2 = [], ''
+        if not blocked:
+            try:
+                loc = pg.get_by_text(re.compile('Статистик', re.I))
+                for i in range(min(loc.count(), 3)):
+                    el = loc.nth(i)
+                    try:
+                        if el.is_visible():
+                            el.click(timeout=3000)
+                            clicked.append((el.inner_text(timeout=2000) or '')[:60])
+                            pg.wait_for_timeout(wait_ms)
+                            break
+                    except Exception as x:
+                        clicked.append('не нажалось: ' + str(x).splitlines()[0][:80])
+                text2 = pg.inner_text('body')[:12000] if clicked else ''
+            except Exception as x:
+                clicked.append('ошибка: ' + str(x).splitlines()[0][:100])
+        try:
+            frames = [f.url[:300] for f in pg.frames][:20]
+        except Exception:
+            frames = []
+        corner_txt = [text2[max(0, m.start() - 200):m.start() + 300] for m in re.finditer('Углов', text2)][:5]
+        return {'made': now_str(), 'match': title, 'match_id': mid, 'corner_bet': bool(cor), 'corners_in_stream': bool(hasc),
+                'url': url, 'responses': seen, 'bodies': bodies, 'websockets': ws_urls, 'ws_frames': wsf, 'frames': frames,
+                'hits': hits, 'page_text': text, 'clicked': clicked, 'page_text_after': text2, 'corner_text': corner_txt,
+                'blocked': blocked}
     except Exception as x:
         return {'made': now_str(), 'match': title, 'url': url, 'error': str(x).splitlines()[0][:200]}
     finally:
@@ -6386,7 +6446,7 @@ def new_bk_recon(browser, wait_ms=25000, sites=None):
             def on_resp(r):
                 try:
                     ct = (r.headers or {}).get('content-type', '')
-                    item = {'url': r.url[:300], 'status': r.status, 'ct': ct[:60]}
+                    item = {'url': r.url[:300], 'status': getattr(r, 'status', None), 'ct': ct[:60]}
                     if ('json' in ct or 'text/plain' in ct) and len(resp) < 150:
                         b = r.text()
                         item['len'] = len(b)
@@ -6569,6 +6629,11 @@ def build_report(con):
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
+    rep['bk_stats_hist'] = getattr(COLLECTOR, 'bk_stats_hist', [])
+    # -127: что дал FotMob в лайве по открытым ставкам и как прошли его опросы (угловые в окне у идущих матчей)
+    rep['open_ext_live'] = rows("SELECT * FROM ext_live WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open'"
+                                " OR settled > ?)", (time.time() - 6 * 3600,))
+    rep['fml_stat'] = getattr(COLLECTOR, 'fml_stat', None)
     rep['rules_recon'] = getattr(COLLECTOR, 'rules', None)
     rep['bk_event_recon'] = getattr(COLLECTOR, 'evr', None)
     rep['olimp_recon'] = getattr(COLLECTOR, 'olimp', None)
