@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-122"
+VERSION = "2026.11.24-123"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -413,10 +413,21 @@ STRATEGIES = [
     ('К', 'как Б, но без ставок на фаворита (шанс до 50%) (проверка)',
      lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and v['chance'] < 0.5, 'rel'),
     ('Л', 'как Б, но только за 5–15 мин до начала матча (проверка)',
-     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and 300 <= v['start_ts'] - time.time() <= 900, 'rel'),
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and 300 <= (v.get('start_ts') or 0) - time.time() <= 900, 'rel'),
     ('Н', 'как Б, но одна ставка на матч — лучшая по надёжности (проверка)',
      lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0, 'match'),
+    # -123 (владелец 24.11: «изменить видимую мной таблицу, собрав туда лучший способ»; выбор по отчёту 21:14 — CLV +3.3% на обеих
+    # половинах, 74% лучше закрытия, ~49 ставок в день): угловые при любом шансе (лучше закрытия и на фаворитах, 77%) + в МАТЧЕ
+    # и 1-м тайме только на аутсайдера (на фаворита 35 побед из 51 обещанных). «Р» — то же, но ставка за 5–15 мин до начала
+    # (владелец: «две таблицы… одна принимает ставки, как было, а вторая именно перед матчем», переключаются в окне)
+    ('П', 'угловые + в МАТЧЕ и 1-м тайме только на аутсайдера (шанс до 50%), перевес от 5%, кф до 4 — видимый, как появилась',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_' or v['chance'] < 0.5), 'rel'),
+    ('Р', 'то же, что П, но только за 5–15 мин до начала матча — видимый, перед матчем',
+     lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_' or v['chance'] < 0.5)
+     and 300 <= (v.get('start_ts') or 0) - time.time() <= 900, 'rel'),
 ]
+VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матчем'))   # -123: способы, которые видит владелец (переключатель в окне)
+MAIN_CODE = 'П'                    # основной: его ставки — в Telegram и в сводке
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
 
@@ -2720,7 +2731,7 @@ def pick_for_strategies(rows):
 ONE_PER_MATCH = {c for c, _d, _f, k in STRATEGIES if k == 'match'}
 
 
-def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н')):
+def backfill_new_strategies(con, codes=('Г', 'Д', 'Е', 'Ж', 'З', 'К', 'Н', 'П')):
     """-103: новые способы проверки — один раз задним числом по журналу cand (там первая цена каждой ставки от 3%;
     для «Г» берутся только случаи, где уже первая цена была от 8%). Дальше они пишутся вживую, как остальные."""
     have = {c for (c,) in con.execute('SELECT DISTINCT strategy FROM paper2')}
@@ -2929,6 +2940,7 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .big{font-size:15px}
 .pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
+.pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
 .pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
 .pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
 .ptab th:first-child,.ptab td:first-child{text-align:left}.ptab td:last-child{text-align:right;font-weight:700}.ptab th:last-child{text-align:right}
@@ -3278,9 +3290,14 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // последний раз «увидел». Ставка, чьё место изменилось (или новая), даёт «+1» в клетке, где она сейчас, и «−1» в клетке,
 // где была (во всех строках: вид, группа, «Всего»); в деньгах — её ₽. Сбрасывается ТОЛЬКО нажатием: открыл цифру —
 // в окне ставок изменившиеся выделены и не гаснут; закрыл окно — эти ставки (и ушедшие из этой клетки) считаются увиденными.
+// -123 (владелец 24.11: «две таблицы… одна принимает ставки, как было, а вторая именно перед матчем… переключаться»):
+// PVIEW — какой способ показан (П «как появилась» / Р «перед матчем»), у каждого свой учёт увиденного
+let PVIEW='П';try{PVIEW=localStorage.getItem('pview')||'П'}catch(e){}
 let PSEEN=null,DELTA={},CHGB={};
-try{PSEEN=JSON.parse(localStorage.getItem('pseen')||'null')}catch(e){}
-function saveSeen(){try{localStorage.setItem('pseen',JSON.stringify(PSEEN))}catch(e){}}
+function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen_'+PVIEW)||'null')}catch(e){}}
+loadSeen();
+function saveSeen(){try{localStorage.setItem('pseen_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
+function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP)}
 function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
 const RES=['выигрыш','проигрыш','возврат'];
 function moneyCols(c,pr){const o={};if(!RES.includes(c))return o;pr=pr||0;o['итог']=pr;if(c==='выигрыш')o['выиграл']=pr;if(c==='проигрыш')o['проиграл']=pr;return o}
@@ -3316,6 +3333,8 @@ window.addEventListener('resize',()=>{const el=document.getElementById('paper');
 // -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
 function renderPaper(p){
+ // -123: выбранный способ (П/Р) подставляется в общие поля — дальше всё как раньше
+ if(p&&p.views){const v=p.views[PVIEW]||p.views['П'];if(v)p=Object.assign({},p,{simple:v.simple,simple_total:v.simple_total,bets:v.bets})}
  // -119 (владелец 24.11: «пари и фон можно считать просто за пари — ставки в фоне могли быть сделаны и в пари»; кф совпали
  // в 518 из 521 одинаковых ставок журнала): старые ставки Фонбета показываются как PARI, ссылка — на тот же матч на pari.ru
  for(const b of (p&&p.bets)||[])if(b.bk==='Фонбет'){b.bk='PARI';if(b.bk_url)b.bk_url=b.bk_url.replace('https://fon.bet/','https://pari.ru/')}
@@ -3329,7 +3348,10 @@ function renderPaper(p){
  const cells=(g,sel)=>{const [pa,na]=sel.split('|'),se=settleOf(p,pa,na),lv=liveOf(p,pa,na),mo=moneyOf(p,pa,na);return c(g.n,'n',sel,'all')+c(g.w,'w',sel,'выигрыш')+c(g.l,'l',sel,'проигрыш')+c(g.push,'p',sel,'возврат')+c(g.n-g.done-se-lv,'',sel,'open')+c(lv,'lvc',sel,'live')+c(se,'stl',sel,'settle')+mcell(mo.w,'mw',sel,'выиграл','выигрыш')+mcell(mo.l,'ml',sel,'проиграл','проигрыш')+'<td class="'+ck(sel,'итог').replace(/^ /,'')+'">'+(g.done?sg(mo.t,'<span class="lg"> ₽</span>'):'<span class="mu">—</span>')+dl(sel,'итог')+'</td>'};
  const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+dl(sel,k)+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
- if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки</div></div>';return}
+ // -123: переключатель двух таблиц одного способа (угловые + аутсайдеры): ставка как появилась / за 5–15 мин до начала
+ if(p.views){h+='<div class="pvsw">';for(const [code,nm] of [['П','Как появилась'],['Р','Перед матчем']]){const v=p.views[code];h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+(v&&v.simple_total?' · '+v.simple_total.n:'')+'</button>'}
+  h+='<span class="pvh">угловые + в матче и 1-м тайме только на аутсайдера · '+(PVIEW==='Р'?'ставка за 5–15 мин до начала':'ставка, как только появилась')+'</span></div>'}
+ if(!p.simple||!p.simple.length){el.innerHTML=h+'<div class="st">пока ни одной ставки'+(PVIEW==='Р'?' — они записываются за 5–15 мин до начала матча':'')+'</div></div>';return}
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
  h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
@@ -4143,7 +4165,7 @@ class Collector:
                              v['bookmaker'], v['market_name'], v['outcome'], v['line'], v['odds'], v['fair'],
                              v['ev'], v['rel'], v.get('pin_age'), event_of(v), v.get('bk_url')))
                 added += cur.rowcount
-                if cur.rowcount and code == 'Б' and v['src'] == 'сайт' and TG:
+                if cur.rowcount and code == MAIN_CODE and v['src'] == 'сайт' and TG:
                     TG.send(tg_text(v, code))
             for v in rows:
                 if v['ev'] >= CAND_MIN_EV and v['odds'] <= 4.0:
@@ -4555,7 +4577,7 @@ class Collector:
         for mid, st, he, ae, url, lg in self.con.execute(
                 "SELECT p.match_id, MIN(p.start_ts), m.home_en, m.away_en, m.url, MAX(p.league) FROM paper2 p"
                 " LEFT JOIN matches m ON m.match_id = p.match_id"
-                " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy='Б'"
+                " LEFT JOIN sofa_link l ON l.match_id = p.match_id WHERE p.strategy IN ('Б','П','Р')"
                 " AND (l.match_id IS NULL OR (l.url = '' AND l.tries < 3 AND l.last_try < ?))"
                 " GROUP BY p.match_id ORDER BY ABS(MIN(p.start_ts) - ?) LIMIT 300", (now - 3600, now)):
             he, ae = en_names_any(he, ae, url)
@@ -5253,23 +5275,6 @@ def paper_stats(con, stake_rub):
                 'odds': round(odds, 2) if odds else None,
                 'clv': round(100 * clv, 1) if clv is not None else None, 'nclv': nclv or 0}
     out = {'stake_rub': stake_rub, 'strategies': [], 'cand': [], 'last': [], 'cuts': [], 'simple': []}
-    # то, что видит владелец: способ Б, цены с сайта конторы — по видам ставок
-    for (fam,) in con.execute("SELECT DISTINCT COALESCE(fam, event) FROM paper2 WHERE strategy='Б' AND src='сайт'"):
-        a = agg("strategy='Б' AND src='сайт' AND COALESCE(fam, event) = ?", (fam,))
-        if a['n']:
-            pre, base = split_fam(fam or '')
-            name = paper_kind_name(fam)
-            out['simple'].append(dict(a, val=market_label(fam) if fam else '—', name=name,
-                                      part={'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
-                                      kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm'),
-                                      order=({'': 0, 'h1_': 1, 'c_': 2}.get(pre, 3),
-                                             ['1x2', 'total', 'ah', 'tt1', 'tt2'].index(base)
-                                             if base in ('1x2', 'total', 'ah', 'tt1', 'tt2') else 9)))
-    # группы как на сайте Фонбета: МАТЧ, 1-Й ТАЙМ, УГЛОВЫЕ; внутри — Исход, Тотал, Фора, Инд. тоталы
-    out['simple'].sort(key=lambda r: r['order'])
-    out['simple_total'] = agg("strategy='Б' AND src='сайт'")
-    # сами ставки — для окна «что там было» по нажатию на цифру в таблице (владелец 21.11)
-    out['bets'] = []
     live = {}                                  # счёт идущих матчей из лайва Фонбета/PARI (свежее 3 мин)
     for lmid, part, a1, a2, cm, tsec, tdir, tupd in con.execute(
             'SELECT match_id, part, s1, s2, comment, tsec, tdir, tupd FROM bk_scores WHERE ts > ?', (time.time() - 180,)):
@@ -5289,21 +5294,46 @@ def paper_stats(con, stake_rub):
             d['ft'] = [f1, f2]
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
     surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
-    for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early in con.execute(
-            "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-            " profit, res_h, res_a, bk_url, fair, early"
-            " FROM paper2 WHERE strategy='Б' AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC"):
-        pre = split_fam(fam or '')[0]
-        out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
-                            'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
-                            'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
-                            'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
-                            'odds': odds, 'ev': ev, 'status': status, 'oc': oc, 'res': [rh, ra] if rh is not None else None,
-                            'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
-                            'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
-                            'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
-                            'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub),
-                            'early': bool(early)})
+    # -123: то, что видит владелец — способы VIEW_CODES (П «как появилась», Р «перед матчем»), цены с сайта конторы;
+    # сверху (simple/simple_total/bets) — основной MAIN_CODE (сводка Telegram), все — в out['views'] для переключателя окна
+    out['views'] = {}
+    main_out = out
+    for code, vname in VIEW_CODES:
+        out = {'simple': [], 'bets': [], 'name': vname}
+        for (fam,) in con.execute("SELECT DISTINCT COALESCE(fam, event) FROM paper2 WHERE strategy=? AND src='сайт'", (code,)):
+            a = agg("strategy=? AND src='сайт' AND COALESCE(fam, event) = ?", (code, fam))
+            if a['n']:
+                pre, base = split_fam(fam or '')
+                name = paper_kind_name(fam)
+                out['simple'].append(dict(a, val=market_label(fam) if fam else '—', name=name,
+                                          part={'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
+                                          kc={'': 'm', 'h1_': 'h1', 'c_': 'c'}.get(pre, 'm'),
+                                          order=({'': 0, 'h1_': 1, 'c_': 2}.get(pre, 3),
+                                                 ['1x2', 'total', 'ah', 'tt1', 'tt2'].index(base)
+                                                 if base in ('1x2', 'total', 'ah', 'tt1', 'tt2') else 9)))
+        # группы как на сайте Фонбета: МАТЧ, 1-Й ТАЙМ, УГЛОВЫЕ; внутри — Исход, Тотал, Фора, Инд. тоталы
+        out['simple'].sort(key=lambda r: r['order'])
+        out['simple_total'] = agg("strategy=? AND src='сайт'", (code,))
+        out['bets'] = []
+        for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early in con.execute(
+                "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
+                " profit, res_h, res_a, bk_url, fair, early"
+                " FROM paper2 WHERE strategy=? AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC", (code,)):
+            pre = split_fam(fam or '')[0]
+            out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
+                                'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''),
+                                'name': paper_kind_name(fam), 'side': bet_view(fam or 'total', oc)[1],
+                                'bet': bet_info({'match': title or '', 'market': fam, 'outcome': oc, 'market_name': ''})[0],
+                                'odds': odds, 'ev': ev, 'status': status, 'oc': oc, 'res': [rh, ra] if rh is not None else None,
+                                'base': split_fam(fam or '')[1], 'live': live.get(mid) if status == 'open' else None,
+                                'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
+                                'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
+                                'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub),
+                                'early': bool(early)})
+        main_out['views'][code] = out
+    out = main_out
+    for k in ('simple', 'simple_total', 'bets'):
+        out[k] = out['views'][MAIN_CODE][k]
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
     need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
     noname = sum(1 for he, ae, u in con.execute(
@@ -5312,8 +5342,8 @@ def paper_stats(con, stake_rub):
     out['sofa'] = {'found': sl[0] or 0, 'notfound': sl[1] or 0, 'need': need, 'noname': noname,
                    'error': (getattr(COLLECTOR, 'ext', None) and (COLLECTOR.ext.last_error
                                                                    or getattr(COLLECTOR.ext, 'last_http', ''))) or ''}
-    out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy='Б' AND src='сайт'"
-                                " AND status='нет данных'").fetchone()[0]
+    out['nodata'] = con.execute("SELECT COUNT(*) FROM paper2 WHERE strategy=? AND src='сайт'"
+                                " AND status='нет данных'", (MAIN_CODE,)).fetchone()[0]
     # для расчётов программы (владельцу не показываются): разрезы способа Б
     # разрезы основного способа Б (цены с сайта конторы): вид ставки, кф, перевес, за сколько до матча найдена
     cuts = [('Вид ставки', "COALESCE(fam, event)"),
