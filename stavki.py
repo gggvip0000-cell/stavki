@@ -31,7 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-114"
+VERSION = "2026.11.21-115"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     "batch_matches": 6,           # сколько матчей запрашивать одновременно
     "direct_poll_sec": 5,
     "paper_stake_rub": 100,       # условная ставка на бумаге; пороги способов — в STRATEGIES
-    "my_bookmakers_list": ["Фонбет", "PARI", "Винлайн"],   # конторы, где есть счёт (выбор владельца 21.11)
+    "my_bookmakers_list": ["Фонбет", "PARI", "Винлайн", "Олимп"],   # конторы, где есть счёт (выбор владельца 21.11)
     "refresh_events_sec": 120,
     "headless": True,
     "telegram_token": "",         # заполняется кнопкой «Подключить Telegram» в окне
@@ -398,6 +398,9 @@ STRATEGIES = [
     # З: «надёжность» от 0.08 (CLV +12.5%, ставок мало). Только для проверки, владельцу не показываются.
     ('Е', 'перевес от 5% и шанс от 45%, кф до 4, лучший по надёжности (проверка)',
      lambda v: v['ev'] >= 0.05 and v['chance'] >= 0.45 and v['odds'] <= 4.0, 'rel'),
+    # -115 (владелец 24.11 «да»): Олимп с перевесом от 8% — отчёт 24.11: CLV +10.6% (26 записей, 17 матчей), после налога +2.5%
+    ('И', 'только Олимп: перевес от 8%, кф до 4, лучший по надёжности (проверка)',
+     lambda v: v['ev'] >= 0.08 and v['odds'] <= 4.0 and v['bookmaker'] == 'Олимп', 'rel'),
     ('Ж', 'надёжность от 0.05, кф до 4 (проверка)',
      lambda v: v['rel'] >= 0.05 and v['odds'] <= 4.0, 'rel'),
     ('З', 'надёжность от 0.08, кф до 4 (проверка)',
@@ -952,7 +955,12 @@ class DirectFeed:
         kids = {}
         for e in self.events.values():
             if e.get('parentId') and e.get('name') in FB_PARTS and not e.get('_blocked'):
-                kids.setdefault(e['parentId'], []).append((e['id'], FB_PARTS[e['name']]))
+                root = e['parentId']
+                # -115: «1-й тайм угловые» — подсобытие «угловых» (level 3), а не самого матча — относим к матчу
+                pe = self.events.get(root)
+                if pe and pe.get('parentId') and (pe.get('level') or 1) > 1:
+                    root = pe['parentId']
+                kids.setdefault(root, []).append((e['id'], FB_PARTS[e['name']]))
         self.kids = kids
 
     def load_geo(self):
@@ -2100,7 +2108,9 @@ OL_MK = {1: ('1x2', 'res'), 5: ('total', 'tot'), 166: ('total', 'tot'), 4: ('ah'
          7: ('tt1', 'tot'), 8: ('tt2', 'tot'), 2412: ('tt1', 'tot'), 2413: ('tt2', 'tot'),
          10: ('h1_1x2', 'res'), 12: ('h1_total', 'tot'), 171: ('h1_total', 'tot'), 169: ('h1_ah', 'ah'),
          43: ('h1_tt1', 'tot'), 44: ('h1_tt2', 'tot')}
-JOURNAL_ONLY = {'Олимп'}
+# -115 (владелец 24.11 «да»): Олимп — в окно, на бумагу и в Telegram вместо Фонбета (отчёт 24.11: свежие цены Олимпа ≤2 мин,
+# основные рынки CLV +5.3%, 79% лучше закрытия, 74 матча); Фонбет = та же линия, что PARI, — только журнал (и лайв/ссылки)
+JOURNAL_ONLY = {'Фонбет'}
 OLIMP_MAX_AGE = 120     # -108: цена Олимпа в журнал — не старше 2 мин (иначе на сайте её могло уже не быть)
 
 
@@ -2160,6 +2170,17 @@ def olimp_events(data):
         elif isinstance(x, list):
             st.extend(x)
     return out
+
+
+OL_TR = dict(zip('абвгдеёжзийклмнопрстуфхцчшщъыьэюя',
+                 ['a', 'b', 'v', 'g', 'd', 'e', 'e', 'zh', 'z', 'i', 'y', 'k', 'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'f',
+                  'h', 'ts', 'ch', 'sh', 'sch', '', 'y', '', 'e', 'yu', 'ya']))
+
+
+def olimp_slug(s):
+    """«Лига Чемпионов UEFA. Общий этап» → liga-chempionov-uefa-obschiy-etap; «1/8 финала» → 18-finala (по адресам сайта)"""
+    s = ''.join(OL_TR.get(ch, ch) for ch in (s or '').lower().replace('/', ''))
+    return re.sub(r'[^a-z0-9]+', '-', s).strip('-')
 
 
 class OlimpFeed:
@@ -2305,7 +2326,15 @@ class OlimpFeed:
         return list(m) + [None, None, None]
 
     def event_url(self, ev):
-        return None                   # адрес матча на сайте Олимпа с «слагом» — пока не строим (в окно Олимп не идёт)
+        """-115: страница матча на olimp.bet — /line/futbol-1/<чемпионат-слаг>-<id>/<команда-команда>-<дд-мм-гггг>-<id>
+        (образец разведки 22.11: liga-chempionov-uefa-obschiy-etap-8337793/galatasaray-aston-villa-24-11-2026-86242415)"""
+        o = ev.get('_ol') or {}
+        try:
+            d = datetime.datetime.fromtimestamp(int(o['startDateTime']), MSK)
+            return (f"https://www.olimp.bet/line/futbol-1/{olimp_slug(o.get('competitionName'))}-{o['competitionId']}/"
+                    f"{olimp_slug((o.get('team1Name') or '') + ' ' + (o.get('team2Name') or ''))}-{d:%d-%m-%Y}-{o['id']}")
+        except Exception:
+            return None
 
     def match_to_oddsru(self, ev, matches):
         eid = ev['id']
@@ -2397,7 +2426,8 @@ class State:
                 m = self.matches.get(v['match_id'], {})
                 if m and m.get('start', 0) < now + 60:
                     continue
-                rows.append(dict(v, age=int(now - v['updated']), held=int(now - v['first_seen']),
+                rows.append(dict(v, age=int(now - (v.get('odds_ts') if v['bookmaker'] == 'Олимп' and v.get('odds_ts')
+                                                  else v['updated'])),   # -115: у Олимпа — когда цена матча снята (опрос по очереди) held=int(now - v['first_seen']),
                                  match=v.get('bk_title') or m.get('title', ''), league=m.get('league', ''),
                                  start=m.get('start_str', ''), start_ts=m.get('start', 0), url=m.get('url', ''),
                                  source=v.get('source', 'odds.ru'),
@@ -2780,7 +2810,7 @@ td,th{padding:4px 16px 4px 8px;border-bottom:1px solid #222c38;font-size:13px;te
 <p class="st"><label><input type="checkbox" id="aust" onchange="fetch('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:this.checked})})"> Запускать программу вместе с Windows</label> <span id="aumsg"></span></p><div id="more"></div></details></main>
 <script>
 const PAGE_VERSION='__VERSION__';
-const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400'};   // цвета с сайтов контор (снимки разведки 21.11)
+const COLORS={'Фонбет':'#e80024','PARI':'#00ad9b','Винлайн':'#fa6400','Олимп':'#2f6fe0'};   // цвета с сайтов контор (снимки разведки 21.11)
 function fmt(s){if(s==null)return '—';if(s<60)return s+' с';if(s<3600)return Math.floor(s/60)+' мин';return Math.floor(s/3600)+' ч '+Math.floor(s%3600/60)+' мин'}
 function when(ts){const d=new Date(ts*1000),n=new Date();const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});
  const dd=d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'}),nd=n.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'});
@@ -2831,7 +2861,7 @@ async function tick(){
   const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99);
   const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
   let h='';
-  const ORD=['Фонбет','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // Фонбет и PARI — рядом (владелец 21.11)
+  const ORD=['Олимп','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // -115: Олимп вместо Фонбета (владелец 24.11)   // Фонбет и PARI — рядом (владелец 21.11)
   const bkCols=[...d.mine].sort((a,c)=>oi(a)-oi(c));
   const main=v=>/^(1x2|total|ah|tt1|tt2|match_winner|total_points)$/.test(v.market||'')?1:0;
   const vw=v=>v.view||['m','',v.market_name||'',9];
@@ -3931,7 +3961,7 @@ class Collector:
             v['odds_age'] = round(now - v['odds_ts'], 1) if v.get('odds_ts') else None
             # -108 (отчёт 22.11 19:26: Олимп CLV +6.7%, но строки за ~17 мин до начала, а цена Олимпа обновляется раз в
             # несколько минут — такую цену на сайте могло уже не быть): Олимп в журнал — только с ценой не старше 2 мин
-            if v['bookmaker'] in JOURNAL_ONLY and (v['odds_age'] is None or v['odds_age'] > OLIMP_MAX_AGE):
+            if v['bookmaker'] == 'Олимп' and (v['odds_age'] is None or v['odds_age'] > OLIMP_MAX_AGE):
                 continue
             if split_fam(fam)[0]:
                 with STATE.lock:
@@ -4022,7 +4052,7 @@ class Collector:
         по одной (лучшей) на матч для каждой конторы"""
         by = {}
         for v in STATE.snapshot()['values']:
-            if v.get('source') != 'сайт' or v['bookmaker'] not in ('Фонбет', 'PARI'):
+            if v.get('source') != 'сайт' or v['bookmaker'] not in ('PARI', 'Олимп'):
                 continue
             fam = event_of(v)
             if fam not in ('c_tt1', 'c_tt2') or not str(v.get('outcome', '')).startswith('Меньше'):
@@ -4047,7 +4077,7 @@ class Collector:
             self.expr_ts = now
             by = self.expr_legs(now)
             if by:
-                bk = max(by, key=lambda b: (len(by[b]), b == 'Фонбет'))
+                bk = max(by, key=lambda b: (len(by[b]), b == 'PARI'))
                 legs_all = sorted(by[bk].values(), key=lambda l: -l['ev'])
                 for size in self.EXPR_SIZES:
                     used = set()
@@ -5635,7 +5665,7 @@ class Watchdog:
         pin = feeds.get('Pinnacle') or {}
         if now - self.started > 900 and (not pin.get('last_ok') or now - pin['last_ok'] > 900):
             out['pin'] = 'Нет свежих цен Pinnacle больше 15 минут — проверьте VPN на ноутбуке.'
-        for name in ('PARI', 'Фонбет', 'Винлайн'):
+        for name in ('PARI', 'Олимп', 'Винлайн'):
             f = feeds.get(name)
             if f is None:
                 continue
@@ -5648,7 +5678,7 @@ class Watchdog:
             feeds = {k: dict(v) for k, v in (STATE.status.get('feeds') or {}).items()}
             tracked = STATE.status.get('tracked')
         lines = [f'✅ Работаю · {datetime.datetime.now(MSK):%d.%m %H:%M}' + (f' · матчей в работе {tracked}' if tracked else '')]
-        for name in ('Pinnacle', 'PARI', 'Фонбет', 'Винлайн'):
+        for name in ('Pinnacle', 'PARI', 'Олимп', 'Винлайн'):
             f = feeds.get(name)
             if f is None:
                 continue
@@ -6635,6 +6665,8 @@ def main():
     global MY_BOOKMAKERS, STATS_DB, STATS_STAKE
     cfg = load_config()
     MY_BOOKMAKERS = list(cfg.get('my_bookmakers_list') or [])
+    if 'Олимп' not in MY_BOOKMAKERS:                # -115: Олимп вместо Фонбета (владелец 24.11)
+        MY_BOOKMAKERS.append('Олимп')
     con = db_open()
     STATS_DB = sqlite3.connect(str(HERE / 'stavki.sqlite3'), check_same_thread=False)
     STATS_STAKE = cfg.get('paper_stake_rub', 100)
