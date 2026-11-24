@@ -3,7 +3,7 @@
 
 Берёт коэффициенты с odds.ru (15 контор, в том числе Pinnacle) через обычный браузер,
 считает честную цену по Pinnacle и показывает ставки российских контор, где коэффициент
-выше честной цены. Окно программы: http://localhost:8765 — обновляется само.
+выше честной цены. Окно программы: http://localhost:8770 — обновляется само.
 Ничего не ставит и никуда не входит.
 """
 import datetime
@@ -31,15 +31,16 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.21-114"
+VERSION = "2026.11.24-115"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 PINNACLE_ID = 18
+MONTAZH_PORT = 8765             # адрес программы монтажа владельца — не занимать
 
 DEFAULT_CONFIG = {
-    "port": 8765,
+    "port": 8770,                 # 8765 занят программой монтажа владельца (24.11)
     "hours_ahead": 24,            # какие матчи брать: начало в ближайшие N часов
     "markets": ["match_winner", "total_points"],
     "leagues_only": [],           # пусто = все лиги, где есть Pinnacle; иначе список id лиг odds.ru
@@ -6628,6 +6629,15 @@ def load_config():
             print('config.json не прочитан, беру настройки по умолчанию:', e)
     else:
         p.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding='utf-8')
+    # -115: 8765 — привычный адрес программы монтажа владельца. Две программы на одном
+    # адресе мешали друг другу (24.11: монтаж не открывался). Старый config.json переводим на 8770.
+    if cfg.get('port') == MONTAZH_PORT:
+        cfg['port'] = DEFAULT_CONFIG['port']
+        try:
+            save_config_keys({'port': cfg['port']})
+            print(f'Адрес программы сменён на {cfg["port"]}: {MONTAZH_PORT} занят программой монтажа.')
+        except Exception as e:
+            print('не смог записать новый адрес в config.json:', e)
     return cfg
 
 
