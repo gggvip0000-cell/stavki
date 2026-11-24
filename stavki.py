@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.24-120"
+VERSION = "2026.11.24-121"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -466,7 +466,9 @@ PIN_SITE = 'https://www.pinnacle.com/en/soccer/matchups/'
 PIN_PUBLIC_KEY = 'CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R'   # открытый ключ, который сайт сам шлёт гостям (разведка 21.11)
 EN_DROP = {'fc', 'cf', 'sc', 'ac', 'afc', 'cd', 'sd', 'ud', 'fk', 'sk', 'club', 'de', 'the', 'calcio', 'football',
            'futbol', 'clube', 'cp', 'sv', 'vfb', 'vfl', 'tsg', 'bk', 'if', 'ik', 'aik', 'ca', 'cs', 'as', 'ss', 'us',
-           'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l'}
+           'rc', 'rcd', 'og', 'nk', 'hnk', 'fsv', 'spvgg', 'balompie', 'real', '1', '1913', '1899', 's', 'r', 'l',
+           'al'}   # -121: арабское «Аль-» — у любых двух «Al X» / «Al Y» сходство было 0.75 (24.11 Аль-Сиб — Аль-Шорта
+                   # рассчитан по чужому матчу FotMob 1:5 вместо 2:0)
 EN_ALIAS = {'internazionale': 'inter', 'utd': 'united', 'st': 'saint', 'munchen': 'munich', 'monchengladbach': 'gladbach',
             'koln': 'cologne', 'psg': 'paris', 'man': 'manchester', 'brom': 'bromwich', 'wolves': 'wolverhampton',
             'peterboro': 'peterborough', 'hearts': 'heart', 'nottm': 'nottingham', 'nott': 'nottingham',
@@ -1346,16 +1348,23 @@ class ExtStats:
                 return f"https://www.sofascore.com/ru/football/match/{e['slug']}/{e['customId']}"
         return '' if opened else None
 
-    def fotmob(self, home_en, away_en, start_ts):
+    def fotmob(self, home_en, away_en, start_ts, fid=None):
+        # -121: был первый попавшийся матч ±20 мин с похожими названиями (24.11 Аль-Сиб — Аль-Шорта: взят чужой матч
+        # «Al … — Al …» 1:5). Теперь — матч из найденной ссылки (fid), иначе лучший по сходству (find_fotmob)
         m, same = None, None
-        for x in self.fm_list(start_ts):
-            if abs((x.get('timeTS') or 0) / 1000 - start_ts) > 20 * 60:
-                continue
-            same = self.pair((x.get('home') or {}).get('name', ''), (x.get('away') or {}).get('name', ''),
-                             home_en, away_en)
-            if same is not None:
-                m = x
-                break
+        if fid:
+            for x in self.fm_list(start_ts):
+                if str(x.get('id')) == str(fid):
+                    m = x
+                    h, a = (x.get('home') or {}), (x.get('away') or {})
+                    same = self.pair(h.get('name', ''), a.get('name', ''), home_en, away_en)
+                    if same is None:
+                        same = self.pair(h.get('shortName') or '', a.get('shortName') or '', home_en, away_en)
+                    break
+            if m is not None and same is None:
+                m = None
+        if m is None:
+            m, same = self.find_fotmob(home_en, away_en, start_ts)
         if not m:
             return None
         d = {'src': 'fotmob', 'ext_id': str(m['id'])}
@@ -1389,7 +1398,7 @@ class ExtStats:
             d = {k: (v[1], v[0]) if isinstance(v, tuple) else v for k, v in d.items()}
         return d
 
-    def lookup(self, browser, home_en, away_en, start_ts):
+    def lookup(self, browser, home_en, away_en, start_ts, fid=None):
         """объединяет Sofascore и FotMob: недостающее у первого берётся у второго"""
         out = {}
         for key, url, fn in (('sofascore', 'https://www.sofascore.com/ru/football', self.sofa),
@@ -1398,7 +1407,7 @@ class ExtStats:
                 break
             if self.page(browser, key, url) is None:
                 continue
-            d = fn(home_en, away_en, start_ts)
+            d = fn(home_en, away_en, start_ts, fid) if key == 'fotmob' else fn(home_en, away_en, start_ts)
             if not d or not d.get('finished'):
                 continue
             for k, v in d.items():
@@ -2567,6 +2576,7 @@ def now_str():
 STATE = State()
 MY_BOOKMAKERS = []
 STATS_DB = None
+EXT_VER = 121        # -121: версия сопоставления итогов внешних сайтов (ext_scores.ver)
 COLLECTOR = None     # работающий сборщик (для строки о Sofascore в окне и отчёта)
 STATS_STAKE = 100
 
@@ -2638,6 +2648,10 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS ext_scores (match_id INT PRIMARY KEY, src TEXT, ext_id TEXT, ft1 INT,'
                 ' ft2 INT, ht1 INT, ht2 INT, c1 INT, c2 INT, done INT DEFAULT 0, tries INT DEFAULT 0, last_try REAL)')
     con.execute('CREATE TABLE IF NOT EXISTS sofa_link (match_id INT PRIMARY KEY, url TEXT, tries INT, last_try REAL)')
+    try:                                       # -121: итог перепроверен новым сопоставлением (номер версии)
+        con.execute('ALTER TABLE ext_scores ADD COLUMN ver INT DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     # -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): счёт угловых/тайма, введённый владельцем вручную,
     # когда ни один источник его не дал (FotMob без статистики, Sofascore не пускает, в потоке PARI угловых не было)
     # -114 (штурм 22.11, владелец «да»): бумажные экспрессы из «Меньше» инд. тоталов угловых — без акций (страховки нет);
@@ -4563,7 +4577,11 @@ class Collector:
             # -78 (владелец 22.11: Мельбурн Виктори (ж) — FotMob «окончен», а расчёта нет): как в поиске ссылок (-59),
             # в адресе odds.ru пометки «женщины» нет, а на FotMob «(W)» — без неё матч не находился и итог не приходил
             home_en, away_en = home_en + '-w', away_en + '-w'
-        d = self.ext.lookup(self.browser, home_en, away_en, start_ts)
+        d = self.ext.lookup(self.browser, home_en, away_en, start_ts, self.link_fid(mid))
+        bad = self.ext_conflict(mid, d)
+        if bad:                                  # -121: итог чужого матча не принимаем
+            self.ext_log(mid, d, 'отклонён: ' + bad)
+            d = {'src': d.get('src'), 'ext_id': d.get('ext_id')}
         ft, ht, c = d.get('ft'), d.get('ht'), d.get('c')
         self.con.execute('INSERT INTO ext_scores (match_id, src, ext_id, ft1, ft2, ht1, ht2, c1, c2, done, tries, last_try)'
                          ' VALUES (?,?,?,?,?,?,?,?,?,?,1,?) ON CONFLICT (match_id) DO UPDATE SET src=excluded.src,'
@@ -4571,9 +4589,100 @@ class Collector:
                          ' c1=excluded.c1, c2=excluded.c2, done=excluded.done, tries=tries+1, last_try=excluded.last_try',
                          (mid, d.get('src'), d.get('ext_id'), *(ft or (None, None)), *(ht or (None, None)),
                           *(c or (None, None)), 1 if ft else 0, now))
+        if ft:
+            self.con.execute('UPDATE ext_scores SET ver=? WHERE match_id=?', (EXT_VER, mid))
         self.con.commit()
         if ft:
             self.settle_paper()                  # -61: итог пришёл — рассчитать сразу, не ждать обновления списка
+
+    def link_fid(self, mid):
+        """-121: номер матча FotMob из уже найденной ссылки (поиск ссылки выбирает лучший по сходству матч)"""
+        r = self.con.execute('SELECT url FROM sofa_link WHERE match_id=?', (mid,)).fetchone()
+        m = re.search(r'fotmob\.com/match/(\d+)', (r or [''])[0] or '')
+        return m.group(1) if m else None
+
+    def ext_conflict(self, mid, d):
+        """-121 (24.11 Аль-Сиб — Аль-Шорта: FotMob-итог чужого матча 1:5 при настоящем 2:0): итог внешнего сайта не
+        должен спорить с тем, что видел лайв конторы — счёт по ходу матча не больше итогового, счёт 1-го тайма тот же.
+        Возвращает причину или None."""
+        ft, ht = d.get('ft'), d.get('ht')
+        if not ft:
+            return None
+        for part, s1, s2 in self.con.execute("SELECT part, s1, s2 FROM bk_scores WHERE match_id=? AND part IN ('ft','h1')",
+                                             (mid,)):
+            if part == 'ft' and (s1 > ft[0] or s2 > ft[1]):
+                return f'в лайве конторы было {s1}:{s2}, а итог {ft[0]}:{ft[1]}'
+            if part == 'h1' and ht and (s1, s2) != tuple(ht):
+                return f'1-й тайм в лайве конторы {s1}:{s2}, а у сайта {ht[0]}:{ht[1]}'
+            if part == 'h1' and (s1 > ft[0] or s2 > ft[1]):
+                return f'1-й тайм в лайве конторы {s1}:{s2} больше итога {ft[0]}:{ft[1]}'
+        return None
+
+    def ext_log(self, mid, d, what):
+        if not hasattr(self, 'ext_checks'):
+            self.ext_checks = []
+        self.ext_checks = (self.ext_checks + [{'match_id': mid, 'src': d.get('src'), 'ext_id': d.get('ext_id'),
+                                               'ft': d.get('ft'), 'ht': d.get('ht'), 'c': d.get('c'),
+                                               'what': what, 'at': now_str()}])[-200:]
+        log(f'итог матча {mid}: {what}')
+
+    def reopen_match(self, mid):
+        """-121: рассчитанные по неверному итогу ставки матча — снова открыть, их пересчитает settle_paper"""
+        n = self.con.execute("UPDATE paper2 SET status='open', profit=NULL, settled=NULL, res_h=NULL, res_a=NULL"
+                             " WHERE match_id=? AND status IN ('выигрыш','проигрыш','возврат','нет данных')",
+                             (mid,)).rowcount
+        for eid, legs in self.con.execute("SELECT id, legs FROM expr WHERE status != 'open' AND size > 0").fetchall():
+            if any(l.get('mid') == mid for l in json.loads(legs or '[]')):
+                self.con.execute("UPDATE expr SET status='open', mult=NULL, settled=NULL WHERE id=?", (eid,))
+        return n
+
+    def ext_recheck(self):
+        """-121: один раз перепроверить уже принятые итоги внешних сайтов новым сопоставлением (раз в 12 с один матч,
+        матчи за 4 дня): другой итог — записать и пересчитать ставки матча; итог спорит с лайвом конторы — снять."""
+        now = time.time()
+        if now - getattr(self, 'ext_rc_last', 0) < 12 or self.browser is None:
+            return
+        self.ext_rc_last = now
+        row = self.con.execute(
+            "SELECT x.match_id, x.src, x.ext_id, x.ft1, x.ft2, x.ht1, x.ht2, x.c1, x.c2, m.home_en, m.away_en, m.start_ts, p.league"
+            " FROM ext_scores x JOIN matches m ON m.match_id = x.match_id"
+            " LEFT JOIN (SELECT match_id, MAX(league) AS league FROM paper2 GROUP BY match_id) p ON p.match_id = x.match_id"
+            " WHERE x.done=1 AND COALESCE(x.ver, 0) < ? AND m.start_ts > ? AND m.home_en IS NOT NULL ORDER BY m.start_ts DESC LIMIT 200",
+            (EXT_VER, now - 4 * 86400)).fetchall()
+        nxt = self.__dict__.setdefault('ext_rc_next', {})
+        row = next((r for r in row if nxt.get(r[0], 0) <= now), None)
+        if not row:
+            return
+        mid, src, eid, f1, f2, h1, h2, c1, c2, he, ae, st, lg = row
+        if is_women(lg) and not (en_tokens(he)[1] & {'w', 'women'}):
+            he, ae = he + '-w', ae + '-w'
+        old = {'src': src, 'ext_id': eid, 'ft': (f1, f2), 'ht': (h1, h2) if h1 is not None else None,
+               'c': (c1, c2) if c1 is not None else None}
+        d = self.ext.lookup(self.browser, he, ae, st, self.link_fid(mid))
+        if d.get('ft') and not self.ext_conflict(mid, d):
+            new = (tuple(d['ft']), tuple(d['ht']) if d.get('ht') else None, tuple(d['c']) if d.get('c') else None)
+            if new != (old['ft'], old['ht'], old['c']):
+                self.con.execute('UPDATE ext_scores SET src=?, ext_id=?, ft1=?, ft2=?, ht1=?, ht2=?, c1=?, c2=? WHERE match_id=?',
+                                 (d.get('src'), d.get('ext_id'), *new[0], *(new[1] or (None, None)),
+                                  *(new[2] or (None, None)), mid))
+                n = self.reopen_match(mid)
+                self.ext_log(mid, d, f'исправлен: был {old["src"]} {old["ext_id"]} {f1}:{f2}, ставок пересчитано {n}')
+            self.con.execute('UPDATE ext_scores SET ver=? WHERE match_id=?', (EXT_VER, mid))
+        elif self.ext_conflict(mid, old):
+            self.con.execute('UPDATE ext_scores SET done=0, ft1=NULL, ft2=NULL, ht1=NULL, ht2=NULL, c1=NULL, c2=NULL,'
+                             ' ver=?, tries=40 WHERE match_id=?', (EXT_VER, mid))
+            n = self.reopen_match(mid)
+            self.ext_log(mid, old, f'снят ({self.ext_conflict(mid, old) or "спорит с лайвом"}), ставок открыто {n}')
+        elif not d.get('ft') and self.__dict__.setdefault('ext_rc_try', {}).get(mid, 0) < 2:
+            self.ext_rc_try[mid] = self.ext_rc_try.get(mid, 0) + 1     # сайт не ответил / не нашёл — ещё раз через 10 мин
+            nxt[mid] = now + 600
+            return
+        else:
+            self.con.execute('UPDATE ext_scores SET ver=? WHERE match_id=?', (EXT_VER, mid))
+            if not d.get('ft'):
+                self.ext_log(mid, old, 'не подтверждён новым поиском (оставлен — с лайвом конторы не спорит)')
+        self.con.commit()
+        self.settle_paper()
 
     def manual_result(self, mid):
         """-92: счёт тайма/угловых, введённый владельцем в окне ставок (последний источник — автоматические главнее)"""
@@ -4946,6 +5055,7 @@ class Collector:
                     add_error('бумажные экспрессы: ' + str(e).splitlines()[0][:120], 'expr')
                 try:
                     self.ext_step()
+                    self.ext_recheck()
                     self.sofa_link_step()
                     self.fotmob_live_step()
                     try:
@@ -6348,6 +6458,7 @@ def build_report(con):
            'sofa_link': rows('SELECT * FROM sofa_link'), 'ext_error': ExtStatsLastError(),
            'bet_matches': rows('SELECT * FROM matches WHERE match_id IN (SELECT match_id FROM paper2)'),
            'sofa_log': getattr(getattr(COLLECTOR, 'ext', None), 'sofa_log', []),
+           'ext_checks': getattr(COLLECTOR, 'ext_checks', []),
            'fm_miss': getattr(getattr(COLLECTOR, 'ext', None), 'fm_miss', [])}
     rep['sports_recon'] = getattr(COLLECTOR, 'recon_data', None)
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
