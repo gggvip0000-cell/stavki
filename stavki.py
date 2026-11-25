@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-129"
+VERSION = "2026.11.26-130"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -447,11 +447,30 @@ STRATEGIES = [
      lambda v: v['ev'] >= 0.05 and v['odds'] <= 4.0 and (split_fam(event_of(v))[0] == 'c_'
                                                           or (split_fam(event_of(v))[0] == 'h1_' and v['chance'] < 0.5))
      and 300 <= (v.get('start_ts') or 0) - time.time() <= 900, 'rel'),
+    # -130 (владелец 26.11, Совет 26.11, вариант «В»): одиночные Олимпа с налоговым порогом. Налог 13% с выигрыша съедает
+    # ~15%·(1 − шанс) перевеса, поэтому порог зависит от шанса: перевес ≥ 15%·(1−шанс) + 4 п.п. и не меньше 5%; цена Олимпа
+    # не старше 15 с (у более старых цен CLV завышен — их на сайте могло уже не быть), линии без возврата. Журнал 21–26.11:
+    # +5.1% после налога, при цене ≤15 с +1.8%±2.1 (15 ставок) — проверка, держится ли.
+    ('У', 'Олимп, одиночные с налоговым порогом: перевес ≥ 15%·(1−шанс)+4 п.п. и ≥5%, цена ≤15 с, кф до 4 — видимый «В»',
+     lambda v: v['bookmaker'] == 'Олимп' and v['odds'] <= 4.0 and v.get('odds_age') is not None
+     and v['odds_age'] <= 15 and half_line(v) and v['ev'] >= max(0.05, 0.15 * (1 - v['chance']) + 0.04), 'ev'),
 ]
 # -129 (владелец 25.11: «МАТЧ на аутсайдера вернуть в видимую таблицу, если примерно на 100 ставках CLV держится от +3% на
 # обеих половинах»; отчёт 26.11 00:58: МАТЧ-аутсайдер способа П — 154 ставки с CLV, +5.0%, половины +4.3% (71) / +5.5% (83),
 # цена закрытия = цене входа лишь у 11%): видимые снова П и Р. С и Т пишутся дальше (способы на ходу не меняем).
-VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матчем'))   # -123/-125/-129: способы, которые видит владелец (переключатель)
+VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матчем'),
+              ('У', 'одиночные с налоговым порогом'))   # -123/-125/-129/-130: способы, которые видит владелец (переключатель)
+# -130: бумажные экспрессы Олимпа против налога (Совет 26.11, варианты «А» и «Б»): (вид, ног, перевес ноги от)
+OLIMP_EXPR = (('ЭА', 3, 0.05), ('ЭБ', 2, 0.08))
+OLIMP_EXPR_AGE = 15      # цена ноги не старше 15 с
+
+
+def half_line(v):
+    """-130: линия без возврата — исход 1Х2 или половинная (x.5)"""
+    ln = v.get('line')
+    if ln is None:
+        ln = line_of(v.get('outcome') or '') if not event_of(v).endswith('1x2') else None
+    return ln is None or abs((ln * 2) % 2 - 1) < 1e-9
 BK_PAGE_RECON = False              # -129: разведка страницы матча PARI выключена (см. отчёт 26.11 00:58)
 MAIN_CODE = 'П'                    # основной: его ставки — в Telegram и в сводке
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
@@ -2728,6 +2747,12 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS expr (id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL, size INT,'
                 ' bookmaker TEXT, legs TEXT, odds REAL, ev_prod REAL, status TEXT DEFAULT "open", mult REAL,'
                 ' settled REAL, legs_now INT)')
+    if 'kind' not in [r[1] for r in con.execute('PRAGMA table_info(expr)')]:
+        con.execute('ALTER TABLE expr ADD COLUMN kind TEXT')       # -130: ЭА/ЭБ — экспрессы Олимпа; пусто — угловые (-114)
+    # -130 (Совет 26.11: «главный неизвестный — держится ли цена, пока владелец ставит руками»): цена каждой ноги экспресса
+    # и ставки «У» ещё раз через 60/90/120 с; -1 — Олимп за это время цену не обновлял, 0 — исхода больше нет
+    con.execute('CREATE TABLE IF NOT EXISTS leg_check (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, ref INT,'
+                ' match_id INT, fam TEXT, outcome TEXT, line REAL, odds0 REAL, t0 REAL, o60 REAL, o90 REAL, o120 REAL)')
     con.execute('CREATE TABLE IF NOT EXISTS manual_scores (match_id INT, part TEXT, h INT, a INT, ts REAL,'
                 ' PRIMARY KEY (match_id, part))')
     # счёт и угловые идущих матчей с FotMob — когда у Фонбета в лайве угловых нет (владелец 22.11: «на FotMob вижу, в программе нет»)
@@ -3011,6 +3036,7 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
 .pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
+.cpn{border:1px solid #2a3442;border-radius:8px;padding:6px 10px;margin:8px 0;background:#161d26}.cph{font-size:13px;color:#cfd6e4;margin-bottom:4px}.cpl{font-size:13px;color:#cfd6e4;padding:2px 0}.cpl a{color:#cfd6e4}.cpl .kind.ks{font-size:10px}
 .pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
 .pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
 .ptab th:first-child,.ptab td:first-child{text-align:left}.ptab td:last-child{text-align:right;font-weight:700}.ptab th:last-child{text-align:right}
@@ -3364,8 +3390,12 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // PVIEW — какой способ показан (П «как появилась» / Р «перед матчем»), у каждого свой учёт увиденного
 // -129: видимые снова П/Р (с МАТЧЕМ на аутсайдера); новые ключи — свой отсчёт «увидено», старый учёт П от 24.11 не мешает
 const VMAIN='П',VPRE='Р';
+// -130 (владелец 26.11: «с этими вариантами добавь таблички, чтобы я за ними следил; после „Перед матчем“»):
+// А — экспресс из 3 ног, Б — экспресс из 2 ног (ЭА/ЭБ, купоны), В — одиночные с налоговым порогом (способ У)
+const VTABS=[[VMAIN,'Как появилась'],[VPRE,'Перед матчем'],['ЭА','А. Экспресс из 3 ног'],['ЭБ','Б. Экспресс из 2 ног'],['У','В. Одиночные с налоговым порогом']];
+const isExpr=v=>v==='ЭА'||v==='ЭБ';
 let PVIEW=VMAIN;try{PVIEW=localStorage.getItem('pview3')||VMAIN}catch(e){}
-if(PVIEW!==VMAIN&&PVIEW!==VPRE)PVIEW=VMAIN;
+if(!VTABS.some(t=>t[0]===PVIEW))PVIEW=VMAIN;
 let PSEEN=null,DELTA={},CHGB={};
 // -124: новый отсчёт «+N/−N» (у таблицы П в первые минуты после обновления все ставки, записанные задним числом, считались новыми)
 function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen3_'+PVIEW)||'null')}catch(e){}}
@@ -3412,7 +3442,35 @@ function fitTable(el){if(!isPhone())return;const t=el.querySelector('.ptab');if(
 window.addEventListener('resize',()=>{const el=document.getElementById('paper');if(el)fitTable(el)});
 // -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
+function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const v=isExpr(code)?(p.expr_views||{})[code]:(p.views||{})[code];
+  const n=isExpr(code)?(v?v.n:0):(v&&v.simple_total?v.simple_total.n:0);
+  h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+'</button>'}
+ return h+'</div>'}
+// -130: таблица экспрессов Олимпа (А/Б): итог купонов по 100 ₽, держались ли цены, CLV ног, последние купоны
+function renderExpr(p0,p){
+ const el=document.getElementById('paper');const v=(p.expr_views||{})[PVIEW]||{n:0,coupons:[]};
+ const z=x=>x?x:'·',m=x=>x?sg(x,'<span class="lg"> ₽</span>'):'<span class="mu">·</span>';
+ let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>'+vtabs(p0);
+ h+='<table class="ptab"><tr><th><span class="lg">Купоны</span><span class="sh">Купоны</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
+ h+='<tr class="tot"><td>Экспрессы</td><td class="n">'+(v.n||0)+'</td><td class="w">'+z(v.w)+'</td><td class="l">'+z(v.l)+'</td><td class="p">'+z(v.push)+'</td><td>'+z(v.wait)+'</td><td class="lvc">'+z(v.live)+'</td><td class="mw">'+m(v.won_rub)+'</td><td class="ml">'+m(v.lost_rub)+'</td><td>'+m(v.profit_rub)+'</td></tr>';
+ if(v.w||v.l||v.push)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="8" class="taxn"><span class="lg">13% с выигрыша купона, проигрыши не вычитаются</span><span class="sh">13% с выигрыша</span></td><td>'+m(v.profit_tax_rub)+'</td></tr>';
+ h+='</table>';
+ const hd=v.hold||{},cl=v.clv||{};
+ h+='<div class="st">цены всех ног держались через 90 с: '+(hd.n?hd.ok+' из '+hd.n+' купонов ('+Math.round(100*hd.ok/hd.n)+'%)':'пока не проверено')+
+    ' · кф ног лучше закрытия Pinnacle: '+(cl.n?(cl.mean>0?'+':'')+cl.mean+'% по '+cl.n+' ног':'пока нет рассчитанных ног')+'</div>';
+ if(!v.n)h+='<div class="st">пока ни одного купона — купон собирается, когда у Олимпа одновременно есть '+(PVIEW==='ЭА'?'3 ставки из разных матчей с перевесом от 5%':'2 ставки из разных матчей с перевесом от 8%')+' и свежей ценой</div>';
+ for(const c of v.coupons||[]){
+  const res=c.status==='open'?'<span class="mu">ждёт</span>':(c.profit_rub>0?'<span class="pos">✓ +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ '+c.profit_rub+' ₽</span>':'↩ возврат'));
+  h+='<div class="cpn"><div class="cph">'+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b> · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</div>';
+  for(const l of c.legs){const r=l.res?' · <span class="mu">'+l.res[0]+':'+l.res[1]+'</span>':'';
+   h+='<div class="cpl"><span class="kind ks '+(l.kind&&l.kind[1]||'m')+'">'+(l.kind&&l.kind[0]||'')+'</span> '+(l.url?'<a href="'+l.url+'" target="_blank">'+l.title+'</a>':l.title)+' · <b>'+l.bet+'</b> · кф '+l.odds.toFixed(2)+' · <span class="mu">'+when(l.start_ts).split(' · ')[0]+'</span>'+r+'</div>'}
+  h+='</div>'}
+ el.innerHTML=h+'</div>';fitTable(el);
+}
 function renderPaper(p){
+ const p0=p;
+ // -130: вкладки экспрессов — своя таблица (купоны), без учёта «+N/−N»
+ if(p&&!p.error&&isExpr(PVIEW)){LASTP=p;renderExpr(p,p);return}
  // -123: выбранный способ (П/Р) подставляется в общие поля — дальше всё как раньше
  if(p&&p.views){const v=p.views[PVIEW]||p.views[VMAIN];if(v)p=Object.assign({},p,{simple:v.simple,simple_total:v.simple_total,bets:v.bets})}
  // -119 (владелец 24.11: «пари и фон можно считать просто за пари — ставки в фоне могли быть сделаны и в пари»; кф совпали
@@ -3429,14 +3487,14 @@ function renderPaper(p){
  const mcell=(v,cl,sel,k,st)=>'<td class="'+cl+(v?' clk':'')+ck(sel,k)+'">'+(v?'<span class="num" data-pop="'+sel+'|'+st+'">'+sg(v,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>')+dl(sel,k)+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>';
  // -123: переключатель двух таблиц одного способа (угловые + аутсайдеры): ставка как появилась / за 5–15 мин до начала
- if(p.views){h+='<div class="pvsw">';for(const [code,nm] of [[VMAIN,'Как появилась'],[VPRE,'Перед матчем']]){const v=p.views[code];h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+(v&&v.simple_total?' · '+v.simple_total.n:'')+'</button>'}
-  h+='<span class="pvh">угловые + МАТЧ и 1-й тайм только на аутсайдера · '+(PVIEW===VPRE?'ставка за 5–15 мин до начала':'ставка, как только появилась')+'</span></div>'}
+ // -130 (владелец 26.11: «технический текст вообще можно убрать»): подпись под кнопками убрана
+ if(p.views)h+=vtabs(p0);
  // -124 (владелец 24.11: «хотя бы пустая пока, но могла бы уже быть табличка»): пустая таблица — с теми же колонками и частями
  const EMPTY=!p.simple||!p.simple.length,Z={n:0,w:0,l:0,push:0,done:0,profit_rub:0};
  // -88 (владелец 22.11: «а сверху „идут“ убрать тогда»): плашка «● N» убрана — теперь это колонка «Идут»
  h+='<table class="ptab"><tr><th><span class="lg">Вид ставки</span><span class="sh">Вид</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Расчёт</span><span class="sh">Расч.</span></th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
  const groups=[];for(const g of p.simple||[]){let G=groups.find(x=>x.part===g.part);if(!G){G={part:g.part,kc:g.kc,rows:[]};groups.push(G)}G.rows.push(g)}
- if(EMPTY)for(const [pt,kc] of [['1-Й ТАЙМ','h1'],['УГЛОВЫЕ','c']])h+='<tr class="grp"><td><span class="chev"> </span><span class="kind ks '+kc+'">'+pt+'</span></td>'+cells(Z,pt+'|*')+'</tr>';
+ if(EMPTY)for(const [pt,kc] of [['МАТЧ','m'],['1-Й ТАЙМ','h1'],['УГЛОВЫЕ','c']])h+='<tr class="grp"><td><span class="chev"> </span><span class="kind ks '+kc+'">'+pt+'</span></td>'+cells(Z,pt+'|*')+'</tr>';
  for(const G of groups){
   const s={n:0,w:0,l:0,push:0,done:0,profit_rub:0};for(const r of G.rows)for(const k in s)s[k]+=r[k]||0;
   const closed=pclosed(G.part);
@@ -3446,8 +3504,9 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total||Z,'*|*')+'</tr>';
  const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
- if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW===VPRE?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':'')+'</div>';
- if(p.nodata)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
+ if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW===VPRE?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':(PVIEW==='У'?' — ставка записывается, когда у Олимпа свежая цена с перевесом выше налогового порога':''))+'</div>';
+ if(PVIEW==='У'){const hv=((p0.views||{})['У']||{}).hold;if(hv&&hv.n)h+='<div class="st">цена держалась через 90 с: '+hv.ok+' из '+hv.n+' ('+Math.round(100*hv.ok/hv.n)+'%)</div>'}
+ if(p.nodata&&PVIEW===VMAIN)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  el.innerHTML=h+'</div>';
  fitTable(el);
  const pe=document.getElementById('pop');
@@ -4249,6 +4308,10 @@ class Collector:
                              v['bookmaker'], v['market_name'], v['outcome'], v['line'], v['odds'], v['fair'],
                              v['ev'], v['rel'], v.get('pin_age'), event_of(v), v.get('bk_url')))
                 added += cur.rowcount
+                if cur.rowcount and code == 'У':      # -130: держится ли цена через 60/90/120 с
+                    cur.execute('INSERT INTO leg_check (kind, ref, match_id, fam, outcome, line, odds0, t0) VALUES'
+                                ' (?,?,?,?,?,?,?,?)', ('У', cur.lastrowid, v['match_id'], event_of(v), v['outcome'],
+                                                       v['line'], v['odds'], now))
                 if cur.rowcount and code == MAIN_CODE and v['src'] == 'сайт' and TG:
                     TG.send(tg_text(v, code))
             for v in rows:
@@ -4382,6 +4445,11 @@ class Collector:
                     continue
                 f = 1 + settle_one(split_fam(l['fam'])[1], l['outcome'], l['line'], l['odds'], sc[0], sc[1])
                 l['res'] = [sc[0], sc[1]]
+                if 'clv' not in l:                      # -130: CLV ноги против последней цены Pinnacle до начала
+                    try:
+                        l['clv'] = self.closing_fair(l['mid'], l['fam'], l['outcome'], l['line'], l['start_ts'], l['odds'])[1]
+                    except Exception:
+                        l['clv'] = None
                 known += 1
                 mult *= f
                 if f <= 0:
@@ -4392,6 +4460,87 @@ class Collector:
                                  (st, round(max(mult, 0), 4), now, json.dumps(legs, ensure_ascii=False), eid))
             elif now - max(l['start_ts'] for l in legs) > 2 * 86400:
                 self.con.execute("UPDATE expr SET status='нет данных', settled=? WHERE id=?", (now, eid))
+        self.con.commit()
+
+    def olimp_legs(self, now):
+        """-130: ноги экспрессов Олимпа — цена с сайта не старше 15 с, кф до 4, линия без возврата, рынок рассчитывается
+        по счёту (матч, 1-й тайм, угловые), до матча ≥10 мин; по одной лучшей (по перевесу) на матч"""
+        by = {}
+        for v in STATE.snapshot(journal=True)['values']:
+            if v['bookmaker'] != 'Олимп' or v.get('source') != 'сайт' or not v.get('odds_ts'):
+                continue
+            if now - v['odds_ts'] > OLIMP_EXPR_AGE or v['odds'] > 4.0 or v['ev'] < 0.03:
+                continue
+            fam = event_of(v)
+            pre, base = split_fam(fam)
+            if base not in SETTLEABLE or pre in JOURNAL_FAMS or not half_line(v):
+                continue
+            if not v.get('start_ts') or v['start_ts'] < now + 600:
+                continue
+            ln = v.get('line') if v.get('line') is not None else (None if base == '1x2' else line_of(v['outcome']))
+            leg = {'mid': v['match_id'], 'fam': fam, 'outcome': v['outcome'], 'line': ln, 'odds': v['odds'],
+                   'fair': v.get('fair'), 'ev': round(v['ev'], 4), 'start_ts': v['start_ts'], 'title': v.get('match', ''),
+                   'mname': v.get('market_name', ''), 'url': v.get('bk_url') or ''}
+            if v['match_id'] not in by or leg['ev'] > by[v['match_id']]['ev']:
+                by[v['match_id']] = leg
+        return by
+
+    def olimp_expr_step(self):
+        """-130: раз в 20 с — бумажные экспрессы Олимпа «А» (3 ноги, перевес ноги ≥5%) и «Б» (2 ноги, ≥8%) из ног, свежих
+        ОДНОВРЕМЕННО; матч — не больше одного раза на вид (одна ставка на матч). Раз в 5 с — проверка цен (leg_check).
+        Расчёт — общий с экспрессами -114 (expr_step)."""
+        now = time.time()
+        if now - getattr(self, 'oexpr_ts', 0) >= 20:
+            self.oexpr_ts = now
+            legs = self.olimp_legs(now)
+            for kind, n, thr in OLIMP_EXPR:
+                used = {m for (lg,) in self.con.execute('SELECT legs FROM expr WHERE kind=?', (kind,))
+                        for m in (l['mid'] for l in json.loads(lg))}
+                pool = sorted([l for l in legs.values() if l['ev'] >= thr and l['mid'] not in used], key=lambda l: -l['ev'])
+                while len(pool) >= n:
+                    pick, pool = pool[:n], pool[n:]
+                    odds, evp = 1.0, 1.0
+                    for l in pick:
+                        odds *= l['odds']
+                        evp *= 1 + l['ev']
+                    cur = self.con.execute('INSERT INTO expr (created, size, bookmaker, legs, odds, ev_prod, legs_now, kind)'
+                                           ' VALUES (?,?,?,?,?,?,?,?)', (now, n, 'Олимп', json.dumps(pick, ensure_ascii=False),
+                                                                        round(odds, 3), round(evp - 1, 4), len(legs), kind))
+                    for l in pick:
+                        self.con.execute('INSERT INTO leg_check (kind, ref, match_id, fam, outcome, line, odds0, t0) VALUES'
+                                         ' (?,?,?,?,?,?,?,?)', (kind, cur.lastrowid, l['mid'], l['fam'], l['outcome'],
+                                                                l['line'], l['odds'], now))
+            self.con.commit()
+        if now - getattr(self, 'lchk_ts', 0) < 5:
+            return
+        self.lchk_ts = now
+        todo = self.con.execute('SELECT id, match_id, fam, outcome, line, t0, o60, o90, o120 FROM leg_check'
+                                ' WHERE t0 > ? AND (o60 IS NULL OR o90 IS NULL OR o120 IS NULL)', (now - 400,)).fetchall()
+        if not todo:
+            return
+        cur_px = {}
+        for v in STATE.snapshot(journal=True)['values']:
+            if v['bookmaker'] == 'Олимп' and v.get('source') == 'сайт':
+                cur_px[(v['match_id'], event_of(v), v['outcome'])] = (v['odds'], v.get('odds_ts') or 0)
+        olimp = next((f for f in self.feeds if getattr(f, 'name', '') == 'Олимп'), None)
+        for cid, mid, fam, oc, ln, t0, o60, o90, o120 in todo:
+            upd = {}
+            for col, sec, val in (('o60', 60, o60), ('o90', 90, o90), ('o120', 120, o120)):
+                if val is not None or now < t0 + sec:
+                    continue
+                px = cur_px.get((mid, fam, oc))
+                if px and px[1] > t0:
+                    upd[col] = px[0]                      # цена, которую Олимп показывает сейчас
+                elif px:
+                    if now > t0 + sec + 120:
+                        upd[col] = -1                     # Олимп не обновлял цену — неизвестно
+                elif olimp is not None and now - (getattr(olimp, 'last_ok', None) or 0) < 60 and now > t0 + sec + 30:
+                    upd[col] = 0                          # исхода больше нет в линии (снят или ушёл за порог перевеса)
+                elif now > t0 + sec + 180:
+                    upd[col] = -1
+            if upd:
+                self.con.execute('UPDATE leg_check SET ' + ', '.join(f'{k}=?' for k in upd) + ' WHERE id=?',
+                                 tuple(upd.values()) + (cid,))
         self.con.commit()
 
     def settle_paper(self):
@@ -5296,6 +5445,10 @@ class Collector:
                 except Exception as e:
                     add_error('бумажные экспрессы: ' + str(e).splitlines()[0][:120], 'expr')
                 try:
+                    self.olimp_expr_step()
+                except Exception as e:
+                    add_error('экспрессы Олимпа: ' + str(e).splitlines()[0][:120], 'oexpr')
+                try:
                     self.ext_step()
                     self.ext_recheck()
                     self.sofa_link_step()
@@ -5455,6 +5608,82 @@ def paper_kind_name(fam):
             'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}.get(base, market_label(fam or '—'))
 
 
+def hold_stats(con, kind):
+    """-130: сколько цен Олимпа продержались (не хуже исходной) через 60/90/120 с; -1 (не обновлялась) не считается"""
+    out = {}
+    for col in ('o60', 'o90', 'o120'):
+        r = con.execute(f'SELECT SUM({col} >= odds0 - 1e-9), SUM({col} >= 0) FROM leg_check WHERE kind=? AND {col} IS NOT NULL'
+                        f' AND {col} >= 0', (kind,)).fetchone()
+        out[col] = {'ok': r[0] or 0, 'n': r[1] or 0}
+    return out
+
+
+def expr_view(con, kind, stake_rub, live=None):
+    """-130: таблица бумажных экспрессов Олимпа для окна (вид ЭА/ЭБ): итог купонов по 100 ₽, после налога 13% с выигрыша
+    купона, держались ли цены всех ног через 90 с, CLV рассчитанных ног, последние купоны с ногами"""
+    now = time.time()
+    v = {'n': 0, 'w': 0, 'l': 0, 'push': 0, 'wait': 0, 'live': 0, 'won_rub': 0, 'lost_rub': 0, 'profit_rub': 0,
+         'profit_tax_rub': 0.0, 'nodata': 0, 'coupons': []}
+    chk = {}
+    for ref, o90, odds0 in con.execute('SELECT ref, o90, odds0 FROM leg_check WHERE kind=?', (kind,)):
+        c = chk.setdefault(ref, [0, 0, 0])
+        if o90 is None or o90 < 0:
+            c[2] += 1                                   # ещё не проверена / Олимп не обновлял
+        elif o90 >= odds0 - 1e-9:
+            c[0] += 1
+        else:
+            c[1] += 1
+    hold_ok = hold_n = 0
+    clv = []
+    for eid, created, legs_s, odds, ev_prod, status, mult in con.execute(
+            'SELECT id, created, legs, odds, ev_prod, status, mult FROM expr WHERE kind=? ORDER BY created DESC', (kind,)):
+        legs = json.loads(legs_s)
+        if status == 'нет данных':
+            v['nodata'] += 1
+            continue
+        v['n'] += 1
+        prof = None
+        if status in ('выигрыш', 'проигрыш', 'возврат') and mult is not None:
+            prof = (mult - 1) * stake_rub
+            v['profit_rub'] += prof
+            v['profit_tax_rub'] += prof * (1 - NDFL_RATE) if prof > 0 else prof
+            if prof > 0:
+                v['w'] += 1
+                v['won_rub'] += prof
+            elif prof < 0:
+                v['l'] += 1
+                v['lost_rub'] += prof
+            else:
+                v['push'] += 1
+        elif min(l['start_ts'] for l in legs) > now:
+            v['wait'] += 1
+        else:
+            v['live'] += 1
+        for l in legs:
+            if l.get('clv') is not None:
+                clv.append(l['clv'])
+        c = chk.get(eid)
+        held = None
+        if c and c[2] == 0:
+            hold_n += 1
+            held = c[1] == 0
+            hold_ok += 1 if held else 0
+        if len(v['coupons']) < 15:
+            v['coupons'].append({'created': created, 'odds': odds, 'ev': ev_prod, 'status': status, 'held': held,
+                                 'profit_rub': None if prof is None else round(prof),
+                                 'legs': [{'title': l.get('title', ''), 'start_ts': l['start_ts'], 'odds': l['odds'],
+                                           'bet': bet_info({'match': l.get('title', ''), 'market': l['fam'],
+                                                            'outcome': l['outcome'], 'market_name': ''})[0],
+                                           'kind': bet_kind(l['fam']),
+                                           'res': l.get('res'), 'url': l.get('url', '')} for l in legs]})
+    for k in ('won_rub', 'lost_rub', 'profit_rub'):
+        v[k] = round(v[k])
+    v['profit_tax_rub'] = round(v['profit_tax_rub'])
+    v['hold'] = {'ok': hold_ok, 'n': hold_n}
+    v['clv'] = {'mean': round(100 * sum(clv) / len(clv), 1) if clv else None, 'n': len(clv)}
+    return v
+
+
 def paper_stats(con, stake_rub):
     def agg(where, args=()):
         r = con.execute('SELECT COUNT(*), SUM(status!="open"), SUM(status="выигрыш"), SUM(status="проигрыш"),'
@@ -5533,6 +5762,11 @@ def paper_stats(con, stake_rub):
     out = main_out
     for k in ('simple', 'simple_total', 'bets'):
         out[k] = out['views'][MAIN_CODE][k]
+    # -130: экспрессы Олимпа «А» и «Б» и удержание цены у одиночных «В» (способ У)
+    out['expr_views'] = {kind: expr_view(con, kind, stake_rub) for kind, _n, _t in OLIMP_EXPR}
+    h = hold_stats(con, 'У')['o90']
+    if 'У' in out['views']:
+        out['views']['У']['hold'] = h
     sl = con.execute("SELECT SUM(url != ''), SUM(url = ''), COUNT(*) FROM sofa_link").fetchone()
     need = con.execute("SELECT COUNT(DISTINCT match_id) FROM paper2 WHERE strategy='Б'").fetchone()[0]
     noname = sum(1 for he, ae, u in con.execute(
@@ -6834,7 +7068,7 @@ def build_report(con):
         for e in ex:
             if not e['size']:
                 continue
-            s = summ.setdefault(str(e['size']), {'n': 0, 'done': 0, 'wins': 0, 'stake': 0, 'ret': 0.0, 'ret_tax': 0.0,
+            s = summ.setdefault((e.get('kind') or '') + str(e['size']), {'n': 0, 'done': 0, 'wins': 0, 'stake': 0, 'ret': 0.0, 'ret_tax': 0.0,
                                                  'ev_prod_mean': 0.0})
             s['n'] += 1
             s['ev_prod_mean'] += e['ev_prod'] or 0
@@ -6852,6 +7086,11 @@ def build_report(con):
         rep['expr'] = {'summary': summ, 'rows': ex}
     except Exception as e:
         rep['expr'] = {'error': str(e)[:200]}
+    try:                                       # -130: держится ли цена Олимпа через 60/90/120 с (ноги А/Б, ставки «У»)
+        rep['leg_check'] = {'summary': {k: hold_stats(con, k) for k in ('ЭА', 'ЭБ', 'У')},
+                            'rows': rows('SELECT * FROM leg_check ORDER BY id DESC LIMIT 400')}
+    except Exception as e:
+        rep['leg_check'] = {'error': str(e)[:200]}
     try:
         rep['corner_calib'] = corner_calib(con)
     except Exception as e:
