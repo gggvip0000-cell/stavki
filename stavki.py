@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.25-127"
+VERSION = "2026.11.25-128"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -185,6 +185,18 @@ JOURNAL_FAMS = ('ch_',)
 MARKET_LABEL = {'1x2': '1Х2', 'total': 'Тотал', 'ah': 'Фора', 'tt1': 'Инд. тотал хозяев', 'tt2': 'Инд. тотал гостей'}
 PART_LABEL = {'': '', 'h1_': '1-й тайм: ', 'c_': 'Угловые: ', 'ch_': 'Угловые 1-й тайм: '}
 SETTLEABLE = {'1x2', 'total', 'ah', 'tt1', 'tt2'}     # рассчитываются по счёту матча → идут на бумагу
+
+
+def lei_corners(info):
+    """-128: угловые матча (c1, c2) из табло PARI/Фонбета (liveEventInfos.subscores: alias Score.Corners, kindId 400100);
+    нет — None. «1-й тайм угловые» (10100201) — не они."""
+    for x in ((info or {}).get('subscores') or []):
+        if isinstance(x, dict) and (x.get('alias') == 'Score.Corners' or str(x.get('kindId')) == '400100'):
+            try:
+                return int(x['c1']), int(x['c2'])
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None
 
 
 def split_fam(fam):
@@ -1012,6 +1024,7 @@ class DirectFeed:
         self.page_url = ''
         self.last_error = ''
         self.miscs = {}            # id события -> счёт из лайва (score1, score2, comment)
+        self.lei = {}              # -128: id события -> liveEventInfos (табло: счёт по таймам, угловые, карточки)
 
     def start(self, browser):
         self.page = browser.new_page(locale='ru-RU')
@@ -1067,6 +1080,10 @@ class DirectFeed:
         for m in (j.get('eventMiscs') or []):
             if isinstance(m, dict) and 'id' in m:
                 self.miscs[m['id']] = dict(self.miscs.get(m['id'], {}), **m)
+        # -128: табло идущего матча (то же, что сайт показывает над росписью: счёт таймов, «угловые», «желтые карты»)
+        for x in (j.get('liveEventInfos') or []):
+            if isinstance(x, dict) and 'eventId' in x:
+                self.lei[x['eventId']] = dict(self.lei.get(x['eventId'], {}), **x)
         if j.get('packetVersion'):
             self.version = j['packetVersion']
         kids = {}
@@ -1079,6 +1096,23 @@ class DirectFeed:
                     root = pe['parentId']
                 kids.setdefault(root, []).append((e['id'], FB_PARTS[e['name']]))
         self.kids = kids
+
+    def event_detail(self, eid):
+        """-128: тот же запрос, которым страница матча на сайте PARI получает табло матча (разведка -127, отчёт 25.11
+        22:03: events/event?eventId=… → liveEventInfos.subscores с «угловые» Score.Corners). Возвращает угловые (c1, c2)
+        или None и названия всего, что есть на табло (для отчёта: есть ли угловые у матчей без подсобытия «угловые»)."""
+        j = self.fetch(f"/events/event?lang=ru&version=0&eventId={eid}&scopeMarket={self.book['scope']}")
+        info = next((x for x in (j.get('liveEventInfos') or []) if isinstance(x, dict) and x.get('eventId') == eid), None)
+        cor = lei_corners(info)
+        if cor is None:                        # в ответе есть подсобытие «угловые» со своим счётом
+            kid = next((e.get('id') for e in (j.get('events') or []) if isinstance(e, dict)
+                        and e.get('parentId') == eid and e.get('name') == 'угловые'), None)
+            m = next((x for x in (j.get('eventMiscs') or []) if isinstance(x, dict) and x.get('id') == kid), None)
+            if kid and m and isinstance(m.get('score1'), int) and isinstance(m.get('score2'), int):
+                cor = (m['score1'], m['score2'])
+        kinds = [str(x.get('kindName') or x.get('kindId')) for x in ((info or {}).get('subscores') or [])
+                 if isinstance(x, dict)]
+        return cor, kinds, info is not None
 
     def load_geo(self):
         """страны турниров (для ссылки на страницу матча): geoCategoryId → routeAlias"""
@@ -1108,7 +1142,7 @@ class DirectFeed:
                 j2 = self.fetch(f'/events/list?lang=ru&scopeMarket={sc}')
                 if len(j2.get('events') or []) > n:
                     j = j2
-            self.events, self.factors, self.miscs = {}, {}, {}
+            self.events, self.factors, self.miscs, self.lei = {}, {}, {}, {}
             self.merge(j)
             self.last_full = time.time()
             log(f'{self.name}: полная линия — событий {len(self.events)}, футбол до матча: {len(self.football())}')
@@ -3827,6 +3861,7 @@ class Collector:
         self.pin_start_try = 0
         self.stats_teams = (0, set())      # (когда собран, команды текущего сезона)
         self.bk_known = dict(con.execute('SELECT event_id, match_id FROM bk_events').fetchall())
+        self.cdet, self.csrc = {}, {}      # -128: табло матчей (угловые) и откуда взяты угловые матчей с нашей ставкой
         self.ext = ExtStats()
         con.execute("DELETE FROM sofa_link WHERE url = ''")      # не нашлись при прошлом запуске — искать заново
         con.commit()
@@ -4470,9 +4505,12 @@ class Collector:
             log(f'{f.name}: дописаны ссылки на матч у {n} ставок')
 
     def save_scores(self, f):
-        """счёт идущих матчей с сайта конторы → bk_scores (раз в 30 с); ts — когда матч последний раз был в лайве"""
+        """счёт идущих матчей с сайта конторы → bk_scores (раз в 15 с, до -128 — 30 с); ts — когда матч последний раз
+        был в лайве. -128 (владелец 24.11: «чтобы данные обновлялись почти онлайн»; угловых нет в потоке у Национальной
+        лиги Англии, Уэльса, J-лиги 2…): угловые — из подсобытия «угловые», иначе из табло потока (liveEventInfos),
+        иначе запросом табло самого матча (`event_detail`, как страница матча на сайте) — для матчей с нашей ставкой на угловые."""
         now = time.time()
-        if now - getattr(f, 'scores_ts', 0) < 30:
+        if now - getattr(f, 'scores_ts', 0) < 15:
             return
         f.scores_ts = now
         for eid, mid in list(f.match_map.items()):
@@ -4481,6 +4519,13 @@ class Collector:
                 self.bk_known[eid] = mid
         corners = {e['parentId']: e['id'] for e in f.events.values()
                    if e.get('parentId') and e.get('name') == 'угловые'}
+        # -128: матчи с открытой ставкой на угловые (любой способ и контора) — для них угловые ищутся и запросом табло матча
+        if not hasattr(self, 'cdet'):
+            self.cdet, self.csrc = {}, {}
+        cmids = {r[0] for r in self.con.execute(
+            "SELECT DISTINCT match_id FROM paper2 WHERE status='open' AND COALESCE(fam, event) LIKE 'c!_%' ESCAPE '!'"
+            " AND start_ts < ?", (now + 60,))} if isinstance(f, DirectFeed) else set()
+        need = []
 
         def two(m):
             return m and isinstance(m.get('score1'), int) and isinstance(m.get('score2'), int)
@@ -4496,8 +4541,25 @@ class Collector:
             if hm:                             # «(1-0)» появляется после перерыва — счёт первого тайма
                 rows.append(('h1', int(hm.group(1)), int(hm.group(2)), None))
             c = f.miscs.get(corners.get(e['id']))
+            cl = lei_corners(getattr(f, 'lei', {}).get(e['id']))
+            dt = self.cdet.get(mid) or {}
             if two(c):
                 rows.append(('c', c['score1'], c['score2'], c.get('comment')))
+                src = 'подсобытие'
+            elif cl is not None:
+                rows.append(('c', cl[0], cl[1], None))
+                src = 'табло потока'
+            elif dt.get('c') is not None and now - dt.get('ok_ts', 0) <= 90 and dt.get('eid') == e['id']:
+                rows.append(('c', dt['c'][0], dt['c'][1], None))
+                src = 'табло матча'
+            else:
+                src = None
+            if mid in cmids:
+                self.csrc[mid] = dict(self.csrc.get(mid, {}), title=f"{e.get('team1')} — {e.get('team2')}", bk=f.name,
+                                      src=src, c=[r for r in rows if r[0] == 'c'][-1][1:3] if src else None, ts=now,
+                                      first=self.csrc.get(mid, {}).get('first', now))
+                if src in (None, 'табло матча'):  # табло матча — спрашивать снова (раз в 15 с), иначе угловые застынут
+                    need.append((e['id'], mid))
             for part, s1, s2, cm in rows:
                 self.con.execute('INSERT INTO bk_scores (match_id, part, s1, s2, comment, ts) VALUES (?,?,?,?,?,?)'
                                  ' ON CONFLICT (match_id, part) DO UPDATE SET s1=excluded.s1, s2=excluded.s2,'
@@ -4507,9 +4569,73 @@ class Collector:
                                  (m['timerSeconds'], m.get('timerDirection'), m.get('timerUpdateTimestampMsec'), mid, 'ft'))
         self.con.commit()
         try:
+            self.corner_detail(f, need)
+        except Exception as e:
+            log(f'{f.name}: табло матча — {str(e)[:120]}')
+        try:
             self.settle_early()
         except Exception as e:
             log('досрочный расчёт: ' + str(e)[:150])
+
+    def corner_recon_target(self):
+        """-128: идущий матч с нашей ставкой на угловые, у которого угловых нет нигде: ни в потоке, ни на табло матча
+        (запрос был и ответил). Для разведки страницы — (адрес на pari.ru, название, матч) или None; ещё не
+        разведанные — первыми."""
+        try:
+            return self._corner_recon_target()
+        except Exception as e:
+            log('разведка страницы матча: выбор матча — ' + str(e)[:120])
+            return None
+
+    def _corner_recon_target(self):
+        now = time.time()
+        done = {(x or {}).get('match_id') for x in getattr(self, 'bk_stats_hist', [])}
+        feed = next((f for f in self.feeds if isinstance(f, DirectFeed) and f.name == 'PARI'), None) or \
+            next((f for f in self.feeds if isinstance(f, DirectFeed)), None)
+        if feed is None:
+            return None
+        cands = []
+        for mid, v in list(self.csrc.items()):
+            d = self.cdet.get(mid) or {}
+            if v.get('src') or now - (v.get('ts') or 0) > 60 or not d.get('n') or d.get('c') is not None or d.get('err'):
+                continue
+            ev = feed.events.get(d.get('eid'))
+            url = feed.event_url(ev) if ev else None
+            if url:
+                cands.append((mid in done, (url, v.get('title') or '', mid)))
+        cands.sort(key=lambda x: x[0])
+        return cands[0][1] if cands else None
+
+    def corner_detail(self, f, need):
+        """-128: угловые матча, которых нет в потоке, — запросом табло этого матча (events/event, как страница матча
+        на сайте). Нашлись — следующий запрос через 15 с (раз в 15–30 с, «почти онлайн»); у матча на табло угловых нет —
+        повтор через 5 мин (вдруг появятся). Не больше 6 запросов за проход (проход — раз в 15 с). Результат пишется в
+        bk_scores при следующем проходе save_scores (через 15 с), здесь — сразу, чтобы окно не ждало."""
+        now = time.time()
+        due = [(eid, mid) for eid, mid in need
+               if now - (self.cdet.get(mid) or {}).get('ts', 0) >= (15 if (self.cdet.get(mid) or {}).get('c') else 300)]
+        due.sort(key=lambda x: (self.cdet.get(x[1]) or {}).get('ts', 0))
+        wrote = False
+        for eid, mid in due[:6]:
+            d = self.cdet.setdefault(mid, {'n': 0, 'found': 0})
+            d['ts'], d['eid'], d['n'] = now, eid, d['n'] + 1
+            try:
+                cor, kinds, has_info = f.event_detail(eid)
+            except Exception as e:
+                d['err'] = str(e).splitlines()[0][:120]
+                continue
+            d['c'], d['kinds'], d['info'] = cor, kinds[:12], has_info
+            d.pop('err', None)                 # прошлая ошибка запроса — больше не мешает выбору матча для разведки
+            if cor is not None:
+                d['ok_ts'], d['found'] = now, d['found'] + 1
+                self.con.execute('INSERT INTO bk_scores (match_id, part, s1, s2, comment, ts) VALUES (?,?,?,?,?,?)'
+                                 ' ON CONFLICT (match_id, part) DO UPDATE SET s1=excluded.s1, s2=excluded.s2,'
+                                 ' comment=excluded.comment, ts=excluded.ts', (mid, 'c', cor[0], cor[1], None, now))
+                if mid in self.csrc:
+                    self.csrc[mid].update(src='табло матча', c=cor)
+                wrote = True
+        if wrote:
+            self.con.commit()
 
     def settle_early(self):
         """-101 (владелец 22.11: «проигранная ставка рассчитывается сразу, не дожидаясь конца матча, так же как и точно
@@ -5230,19 +5356,22 @@ class Collector:
                     # раз в минуту она остановила бы цены на треть времени. Пока источник не найден — раз в 5 мин, каждый раз
                     # другой матч; нашёлся (угловые в тексте виджета) — раз в 3 ч. «Онлайн» будет чтение найденного
                     # источника по всем матчам сразу, как поток PARI (следующая версия).
-                    found = any((x or {}).get('corner_text') for x in getattr(self, 'bk_stats_hist', []))
-                    every = 3 * 3600 if found else 300
-                    if time.time() - getattr(self, 'bksr_ts', 0) > every and self.browser is not None:
+                    # -128: отчёт 25.11 22:03 — 5 заходов на страницы матчей PARI: вкладки «Статистика» на странице нет
+                    # (есть «Популярное / Матч / Показатели команд»), угловые — в табло матча (events/event → liveEventInfos),
+                    # их теперь читает save_scores/corner_detail раз в 15 с. Разведка страницы держит цикл ~20 с, поэтому —
+                    # только для идущего матча с нашей ставкой на угловые, у которого угловых нет нигде (ни в потоке, ни на
+                    # табло матча), не чаще раза в 30 мин: что сайт показывает на странице такого матча.
+                    tgt = self.corner_recon_target()
+                    if tgt and time.time() - getattr(self, 'bksr_ts', 0) > 1800 and self.browser is not None:
                         try:
-                            r = bk_stats_recon(self.browser, self.con, wait_ms=8000,
-                                               skip=[(x or {}).get('match_id') for x in getattr(self, 'bk_stats_hist', [])[-2:]])
+                            r = bk_stats_recon(self.browser, self.con, wait_ms=8000, target=tgt)
                             if r is not None:                 # нашёлся идущий матч
                                 self.bk_stats = r
                                 self.bk_stats_hist = (getattr(self, 'bk_stats_hist', []) + [r])[-5:]
                                 # сайт показал проверку «вы не робот» — больше не ходим (обход защиты не делаем)
                                 self.bksr_ts = time.time() + (10 ** 9 if r.get('blocked') else 0)
                             else:
-                                self.bksr_ts = time.time() - every + 120     # идущего матча нет — проверить через 2 мин
+                                self.bksr_ts = time.time() - 1800 + 120      # матч не нашёлся — проверить через 2 мин
                         except Exception as e:
                             self.bk_stats = {'error': str(e).splitlines()[0][:200]}
                             self.bksr_ts = time.time()
@@ -5910,7 +6039,7 @@ def rules_recon(browser, name, url, wait_ms=8000):
             pass
 
 
-def bk_stats_recon(browser, con, wait_ms=12000, skip=()):
+def bk_stats_recon(browser, con, wait_ms=12000, skip=(), target=None):
     """-76 (владелец 22.11: «у PARI есть статистика на этот матч — угловые, карточки, офсайды, — а тут она не появляется»).
     Разведка: открыть отдельной вкладкой страницу ИДУЩЕГО матча у PARI, где у нас открыта ставка, и записать, откуда
     сайт берёт статистику. Только в отчёт.
@@ -5922,18 +6051,21 @@ def bk_stats_recon(browser, con, wait_ms=12000, skip=()):
     словами), кадры websocket, вложенные окна (iframe); нажимается вкладка «Статистика», если она есть (только открыть
     вкладку — ни ставок, ни входа), и записывается текст после этого."""
     now = time.time()
-    rows_ = con.execute(
-        "SELECT p.bk_url, p.title, p.match_id, (COALESCE(p.fam, p.event) LIKE 'c!_%' ESCAPE '!') AS cor,"
-        " EXISTS(SELECT 1 FROM bk_scores s WHERE s.match_id = p.match_id AND s.part = 'c') AS hasc"
-        " FROM paper2 p WHERE p.status='open' AND p.bk_url LIKE 'http%' AND p.bookmaker IN ('Фонбет','PARI')"
-        " AND p.start_ts < ? AND p.start_ts > ? GROUP BY p.match_id"
-        " ORDER BY (cor AND NOT hasc) DESC, cor DESC, p.start_ts DESC LIMIT 6",
-        (now - 10 * 60, now - 100 * 60)).fetchall()
-    if not rows_:
-        return None
-    # -127: каждый раз другой матч (последние разведанные — в конец очереди)
-    rows_ = [x for x in rows_ if x[2] not in set(skip or ())] or rows_
-    url, title, mid, cor, hasc = rows_[0]
+    if target:                         # -128: (адрес, название, матч) — матч без угловых нигде, выбран corner_recon_target
+        (url, title, mid), cor, hasc = target, True, False
+    else:
+        rows_ = con.execute(
+            "SELECT p.bk_url, p.title, p.match_id, (COALESCE(p.fam, p.event) LIKE 'c!_%' ESCAPE '!') AS cor,"
+            " EXISTS(SELECT 1 FROM bk_scores s WHERE s.match_id = p.match_id AND s.part = 'c') AS hasc"
+            " FROM paper2 p WHERE p.status='open' AND p.bk_url LIKE 'http%' AND p.bookmaker IN ('Фонбет','PARI')"
+            " AND p.start_ts < ? AND p.start_ts > ? GROUP BY p.match_id"
+            " ORDER BY (cor AND NOT hasc) DESC, cor DESC, p.start_ts DESC LIMIT 6",
+            (now - 10 * 60, now - 100 * 60)).fetchall()
+        if not rows_:
+            return None
+        # -127: каждый раз другой матч (последние разведанные — в конец очереди)
+        rows_ = [x for x in rows_ if x[2] not in set(skip or ())] or rows_
+        url, title, mid, cor, hasc = rows_[0]
     # -86: страница матча на fon.bet показала программе капчу «вы не робот» (отчёт 22.11 10:56). Обходить не делаем;
     # виджет статистики владелец видел на PARI — номера событий у Фонбета и PARI общие, адрес тот же, меняется только сайт.
     # Если и PARI покажет проверку — разведка останавливается.
@@ -6639,6 +6771,17 @@ def build_report(con):
     rep['winline_event_recon'] = getattr(COLLECTOR, 'wl_recon', None)
     rep['bk_stats_recon'] = getattr(COLLECTOR, 'bk_stats', None)
     rep['bk_stats_hist'] = getattr(COLLECTOR, 'bk_stats_hist', [])
+    # -128: откуда брались угловые идущих матчей с нашей ставкой на угловые (подсобытие / табло потока / табло матча / нигде)
+    # и что было на табло матча, где угловых нет (cdet.kinds) — ответ, есть ли угловые у Национальной лиги и т.п. вообще
+    try:
+        cs = dict(getattr(COLLECTOR, 'csrc', {}) or {})
+        cd = dict(getattr(COLLECTOR, 'cdet', {}) or {})
+        rep['corner_live'] = {
+            'by_src': dict(collections.Counter(str(v.get('src')) for v in cs.values())),
+            'matches': [dict(v, match_id=k, detail=cd.get(k)) for k, v in
+                        sorted(cs.items(), key=lambda kv: -(kv[1].get('ts') or 0))][:80]}
+    except Exception as e:
+        rep['corner_live'] = {'error': str(e)[:200]}
     # -127: что дал FotMob в лайве по открытым ставкам и как прошли его опросы (угловые в окне у идущих матчей)
     rep['open_ext_live'] = rows("SELECT * FROM ext_live WHERE match_id IN (SELECT match_id FROM paper2 WHERE status='open'"
                                 " OR settled > ?)", (time.time() - 6 * 3600,))
