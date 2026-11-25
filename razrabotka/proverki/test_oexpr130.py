@@ -83,7 +83,31 @@ assert v['n'] == 1 and v['w'] == 1 and v['profit_rub'] == round((2.1 * 2.1 - 1) 
 assert v['profit_tax_rub'] == round((2.1 * 2.1 - 1) * 100 * 0.87) and v['clv'] == {'mean': 5.0, 'n': 2}
 c0 = v['coupons'][0]
 assert c0['cat'] == 'выигрыш' and abs(c0['chance'] - (1.09 / 2.1) * (1.085 / 2.1)) < 1e-3, c0
-assert v['hold']['n'] == 1 and v['coupons'][0]['held'] is False and v['coupons'][0]['legs'][0]['kind'][0].startswith('МАТЧ')
+assert v['hold']['n'] == 1 and v['coupons'][0]['held'] is False
+lg0 = v['coupons'][0]['legs'][0]
+assert lg0['part'] == 'МАТЧ' and lg0['status'] == 'выигрыш' and lg0['leg'] and lg0['bk'] == 'Олимп' and lg0['res'] == [1, 0], lg0
+# -133: у открытого купона сыгранная нога получает счёт сразу; у проигранного досрочно — остальные ноги дописываются потом
+T[0] += 10
+VALS[:] = [val(30, 0.09, start=700), val(31, 0.09, start=7000)]
+C.oexpr_ts = 0; C.olimp_expr_step()
+eid = con.execute("SELECT id FROM expr WHERE kind='ЭБ' ORDER BY id DESC").fetchone()[0]
+T[0] += 3000                                         # первый матч сыгран, второй ещё нет
+C.score_for = lambda fam, mid, st: (1, 0) if mid == 30 else None
+C.expr_set_ts = 0; C.expr_step()
+lg = json.loads(con.execute('SELECT legs, status FROM expr WHERE id=?', (eid,)).fetchone()[0])
+assert lg[0]['res'] == [1, 0] and 'res' not in lg[1], lg
+C.score_for = lambda fam, mid, st: (5, 0) if mid == 30 else None     # Меньше 2.5 при 5:0 — нога проиграла → купон проиграл
+con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps([dict(l, res=None) if False else {k: x for k, x in l.items() if k != 'res'} for l in lg]), eid))
+C.expr_set_ts = 0; C.expr_step()
+assert con.execute('SELECT status FROM expr WHERE id=?', (eid,)).fetchone()[0] == 'проигрыш'
+T[0] += 7000
+C.score_for = lambda fam, mid, st: (0, 0)
+C.expr_set_ts = 0; C.expr_step()
+lg = json.loads(con.execute('SELECT legs FROM expr WHERE id=?', (eid,)).fetchone()[0])
+assert lg[1]['res'] == [0, 0] and lg[0]['res'] == [5, 0], lg
+vv = S.expr_view(con, 'ЭБ', 100)
+c = [c for c in vv['coupons'] if c['id'] == eid][0]
+assert [l['status'] for l in c['legs']] == ['проигрыш', 'выигрыш'], c['legs']
 ps = S.paper_stats(con, 100)
 assert set(ps['expr_views']) == {'ЭА', 'ЭБ'} and 'У' in ps['views']
 json.dump(ps, open('/tmp/claude-0/ps130.json', 'w'), ensure_ascii=False)

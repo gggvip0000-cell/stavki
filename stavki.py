@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-132"
+VERSION = "2026.11.26-133"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2983,6 +2983,7 @@ a.btn.h .nm{color:#9be15d}a.btn.a .nm{color:#c69cff}a.btn .od{font-size:16px;fon
  .mt tr:first-child{display:none}.mt tr{display:block;border-bottom:1px solid #2a3542;padding:6px 4px}
  .mt td{display:inline-block;border:0!important;padding:2px 6px!important;vertical-align:middle}
  .mt td:first-child,.mt td.bcell,.mt td.rcell{display:block;width:auto;max-width:none}.mt tr.mg td{display:block}
+ .mt.ext tr.exl{border-left:3px solid #ffd400}.mt.ext tr.exh td{display:block}.mt.ext tr.exsp{border:0;padding:4px}
  .bet .bl{font-size:14px}.mo{font-size:11px}
  .pp{padding:8px!important}.pp .ptab th,.pp .ptab td{padding:5px 2px}.ptab .chev{width:12px}
  .ptab tr.sub td:first-child{padding-left:8px;white-space:nowrap}.ptab tr.grp td:first-child{white-space:nowrap}
@@ -3037,6 +3038,10 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
 .pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
 .tdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ffd400;margin-left:7px;vertical-align:2px;box-shadow:0 0 0 1px #000}
+.mt.ext tr.exh td{background:#1b2533;border:1px solid #3a4a60;border-bottom:none;border-radius:8px 8px 0 0;font-size:13px;color:#cfd6e4;padding:7px 10px}
+.mt.ext tr.exl td{border-left:0;border-right:0}.mt.ext tr.exl td:first-child{border-left:3px solid #ffd400}.mt.ext tr.exl td:last-child{border-right:1px solid #3a4a60}
+.mt.ext tr.exlast td{border-bottom:1px solid #3a4a60}.mt.ext tr.exsp td{height:10px;background:transparent;border:none;padding:0}
+.exb{display:inline-block;background:#ffd400;color:#111;font-weight:700;font-size:11px;border-radius:4px;padding:2px 7px;margin-right:6px}
 .cpn{border:1px solid #2a3442;border-radius:8px;padding:6px 10px;margin:8px 0;background:#161d26}.cph{font-size:13px;color:#cfd6e4;margin-bottom:4px}.cpl{font-size:13px;color:#cfd6e4;padding:2px 0}.cpl a{color:#cfd6e4}.cpl .kind.ks{font-size:10px}
 .pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
 .pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
@@ -3324,18 +3329,9 @@ function settleOf(p,part,name){return (p.bets||[]).filter(b=>isSettleBet(b)&&(pa
 function moneyOf(p,part,name){let w=0,l=0,d=0;for(const b of p.bets||[]){if(b.status==='open'||!(part==='*'||b.part===part)||!(name==='*'||b.name===name))continue;
  const x=b.profit_rub||0;d++;if(x>0)w+=x;else l+=x}return {w:w,l:l,t:w+l,d:d}}
 function liveOf(p,part,name){return (p.bets||[]).filter(b=>isLiveBet(b)&&(part==='*'||b.part===part)&&(name==='*'||b.name===name)).length}
-function popBets(sel){
- POPSEL=sel;
- const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
- const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||(st==='live'?isLiveBet(b):st==='settle'?isSettleBet(b):st==='open'?(b.status==='open'&&b.start_ts>Date.now()/1000):b.status===st)));
- const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
- let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
- // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
- const now=Date.now()/1000,GR=['МАТЧ','1-Й ТАЙМ','УГЛОВЫЕ'];
- L.sort((x,y)=>(GR.indexOf(x.part)-GR.indexOf(y.part))||((x.status==='open')-(y.status==='open'))*-1||(x.status==='open'?x.start_ts-y.start_ts:y.start_ts-x.start_ts));
- let gp=null;
- for(const b of L){const tm=(b.title||'').split(' — ');
-  if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="8"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
+// -133: строка ставки окна «что там было» — общая для ставок таблиц и ног купонов экспрессов (у ноги — итог ноги без ₽)
+function betRow(b,now,cls){const tm=(b.title||'').split(' — ');
+ const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');let h='';
   const dt=new Date(b.start_ts*1000).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
   let left;
   if(b.start_ts>now)left='<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>';
@@ -3351,16 +3347,30 @@ function popBets(sel){
   // появилась?»): форма — сразу, как матч окончен (как колонка «Расчёт», isSettleBet); источники всё равно главнее ручного
   const needMan=isSettleBet(b)&&b.mid;
   const mk=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft');
-  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>'));
+  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.leg?(b.status==='выигрыш'?'<span class="pos">✓ сыграла</span>':(b.status==='проигрыш'?'<span class="neg">✗ не сыграла</span>':'<span>↩ возврат</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>')));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
    res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'+(b.early?'<div class="sm mu">досрочно — счёт на момент расчёта</div>':'')}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
-  h+='<tr'+(CHGB[b.id]?' class="chg"':'')+'><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
+  h+='<tr class="'+(CHGB[b.id]?'chg ':'')+(cls||'')+'"><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
    +'<div class="sm">'+e(b.league)+'</div></td><td class="bcell"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[b.part]||'m')+'">'+e(b.part)+'</span> <span class="bt '+b.side+'">'+e(b.bet)+'</span></td><td>'
-   +(b.bk_url?'<a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'<span class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'">'+e(b.bk)+'</span>')+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td class="rcell">'+res+'</td></tr>'}
+   +(b.bk_url?'<a class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'" href="'+e(b.bk_url)+'" target="_blank" title="открыть матч у конторы">'+e(b.bk)+' ↗</a>':'<span class="bkbtn" style="--c:'+(COLORS[b.bk]||'#7fb6ff')+'">'+e(b.bk)+'</span>')+'</td><td><b>'+Number(b.odds).toFixed(2)+'</b></td><td class="pos">+'+(b.ev*100).toFixed(1)+'%</td><td>'+(b.chance!=null?'<span class="chp '+(b.chance>=0.55?'hich':(b.chance<0.40?'loch':'midch'))+'">'+Math.round(b.chance*100)+'%</span>':'—')+'</td><td>'+dt+left+'</td><td class="rcell">'+res+'</td></tr>'
+ return h}
+function popBets(sel){
+ POPSEL=sel;
+ const [part,name,st]=sel.split('|');const p=LASTP;if(!p||!p.bets)return;
+ const L=p.bets.filter(b=>(part==='*'||b.part===part)&&(name==='*'||b.name===name)&&(st==='all'||(st==='live'?isLiveBet(b):st==='settle'?isSettleBet(b):st==='open'?(b.status==='open'&&b.start_ts>Date.now()/1000):b.status===st)));
+ const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ let h='<div class="mbox"><div class="mhd"><b>'+(part==='*'?'Все ставки':e(part)+(name==='*'?'':' · '+e(name)))+' — '+ST_NAME[st]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody"><table class="mt"><tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
+ // группы МАТЧ / 1-Й ТАЙМ / УГЛОВЫЕ; ждущие — ближайший матч сверху, сыгранные — последний сверху
+ const now=Date.now()/1000,GR=['МАТЧ','1-Й ТАЙМ','УГЛОВЫЕ'];
+ L.sort((x,y)=>(GR.indexOf(x.part)-GR.indexOf(y.part))||((x.status==='open')-(y.status==='open'))*-1||(x.status==='open'?x.start_ts-y.start_ts:y.start_ts-x.start_ts));
+ let gp=null;
+ for(const b of L){
+  if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="8"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
+  h+=betRow(b,now)}
  if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
  document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex';watchChg()}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
@@ -3476,11 +3486,21 @@ function renderExpr(p0,p){
  h+='<div class="st">цены всех ног держались через 90 с: '+(hd.n?hd.ok+' из '+hd.n+' купонов ('+Math.round(100*hd.ok/hd.n)+'%)':'пока не проверено')+
     ' · кф ног лучше закрытия Pinnacle: '+(cl.n?(cl.mean>0?'+':'')+cl.mean+'% по '+cl.n+' ног':'пока нет рассчитанных ног')+'</div>';
  if(!v.n)h+='<div class="st">пока ни одного купона — купон собирается, когда у Олимпа одновременно есть '+(PVIEW==='ЭА'?'3 ставки из разных матчей с перевесом от 5%':'2 ставки из разных матчей с перевесом от 8%')+' и свежей ценой</div>';
- for(const c of (v.coupons||[]).slice(0,15))h+=cpnHtml(c);
+ if((v.coupons||[]).length)h+='<div class="st" style="margin-top:10px">последние купоны:</div>'+cpnTable(v.coupons.slice(0,15));
  el.innerHTML=h+'</div>';fitTable(el);
  const pe=document.getElementById('pop');if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL.startsWith('E|'))popExpr(POPSEL.slice(2));
 }
-// -131: один купон — время сборки, кф, шанс купона, итог, держались ли цены; ниже — его ставки
+// -133 (владелец 26.11: «для экспрессов такой же формат записи, просто в экспресс объединить»; «итог по каждому событию
+// отдельно»): купоны — таблица как в окне «что там было»: шапка купона (кф, шанс, итог купона в ₽, держались ли цены) и строки
+// его событий с итогом каждого события; купон обведён рамкой
+const BETHEAD='<tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
+function cpnRows(c){const now=Date.now()/1000;
+ const res=c.status==='open'?(c.cat==='live'?'<span class="lvc">идёт</span>':'<span class="mu">ждёт матчей</span>'):(c.profit_rub>0?'<span class="pos">✓ купон выиграл +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ купон проиграл '+c.profit_rub+' ₽</span>':'↩ возврат 0 ₽'));
+ let h='<tr class="exh"><td colspan="8"><span class="exb">ЭКСПРЕСС · '+c.legs.length+' '+(c.legs.length<5?'события':'событий')+'</span> собран '+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b>'+(c.chance?' · шанс ~'+Math.round(100*c.chance)+'%':'')+' · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</td></tr>';
+ c.legs.forEach((l,i)=>{h+=betRow(l,now,'exl'+(i===c.legs.length-1?' exlast':''))});
+ return h+'<tr class="exsp"><td colspan="8"></td></tr>'}
+function cpnTable(L){return '<table class="mt ext">'+BETHEAD+L.map(cpnRows).join('')+'</table>'}
+// -131: один купон — время сборки, кф, шанс купона, итог, держались ли цены; ниже — его ставки (до -133)
 function cpnHtml(c){
  const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  const res=c.status==='open'?(c.cat==='live'?'<span class="lvc">идёт</span>':'<span class="mu">ждёт</span>'):(c.profit_rub>0?'<span class="pos">✓ +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ '+c.profit_rub+' ₽</span>':'↩ возврат'));
@@ -3494,8 +3514,7 @@ function popExpr(cat){
  const L=(v.coupons||[]).filter(c=>cat==='all'||c.cat===cat||(cat==='done'&&['выигрыш','проигрыш','возврат'].includes(c.cat)));
  const nm=(VTABS.find(t=>t[0]===PVIEW)||['',''])[1];
  let h='<div class="mbox"><div class="mhd"><b>'+nm+' — '+ECAT[cat]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
- for(const c of L)h+=cpnHtml(c);
- if(!L.length)h+='<div class="mu">нет купонов</div>';
+ h+=L.length?cpnTable(L):'<div class="mu">нет купонов</div>';
  document.getElementById('pop').innerHTML=h+'</div></div>';document.getElementById('pop').style.display='flex'}
 function renderPaper(p){
  const p0=p;
@@ -4490,6 +4509,31 @@ class Collector:
                                  (st, round(max(mult, 0), 4), now, json.dumps(legs, ensure_ascii=False), eid))
             elif now - max(l['start_ts'] for l in legs) > 2 * 86400:
                 self.con.execute("UPDATE expr SET status='нет данных', settled=? WHERE id=?", (now, eid))
+            elif known:
+                # -133 (владелец 26.11: «итог по каждому событию отдельно пиши»): счёт сыгранных ног — сразу, не дожидаясь купона
+                self.con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps(legs, ensure_ascii=False), eid))
+        # -133: у купона, проигранного досрочно (одна нога проиграла), остальные ноги ещё играются — их счёт дописывается
+        # до 2 дней после последнего матча (только для показа и CLV ног; деньги купона уже посчитаны)
+        for eid, legs_s in self.con.execute(
+                "SELECT id, legs FROM expr WHERE kind IS NOT NULL AND status IN ('выигрыш','проигрыш','возврат')"
+                " AND settled > ? AND legs LIKE '%start_ts%'", (now - 3 * 86400,)).fetchall():
+            legs = json.loads(legs_s)
+            ch = False
+            for l in legs:
+                if l.get('res') or l['start_ts'] > now:
+                    continue
+                sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
+                if not sc:
+                    continue
+                l['res'] = [sc[0], sc[1]]
+                if 'clv' not in l:
+                    try:
+                        l['clv'] = self.closing_fair(l['mid'], l['fam'], l['outcome'], l['line'], l['start_ts'], l['odds'])[1]
+                    except Exception:
+                        l['clv'] = None
+                ch = True
+            if ch:
+                self.con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps(legs, ensure_ascii=False), eid))
         self.con.commit()
 
     def olimp_legs(self, now):
@@ -5648,7 +5692,27 @@ def hold_stats(con, kind):
     return out
 
 
-def expr_view(con, kind, stake_rub, live=None):
+def leg_row(eid, i, l, live=None, links=None, lg_of=None):
+    """-133 (владелец 26.11: «для экспрессов такой же формат записи, просто в экспресс объединить»): нога купона в том же виде,
+    что ставка в окне «что там было» (матч, лига, ставка, контора, кф, перевес, шанс, начало, итог ноги, счёт, лайв)"""
+    pre, base = split_fam(l['fam'])
+    st = 'open'
+    if l.get('res'):
+        pr = settle_one(base, l['outcome'], l['line'], l['odds'], l['res'][0], l['res'][1])
+        st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
+    surl, murl = links or ({}, {})
+    return {'id': 900000000 + eid * 10 + i, 'mid': l['mid'], 'title': l.get('title', ''),
+            'league': (lg_of or {}).get(l['mid'], ''), 'start_ts': l['start_ts'], 'bk': 'Олимп', 'bk_url': l.get('url', ''),
+            'part': {'': 'МАТЧ', 'h1_': '1-Й ТАЙМ', 'c_': 'УГЛОВЫЕ'}.get(pre, ''), 'name': paper_kind_name(l['fam']),
+            'side': bet_view(l['fam'], l['outcome'])[1], 'oc': l['outcome'],
+            'bet': bet_info({'match': l.get('title', ''), 'market': l['fam'], 'outcome': l['outcome'], 'market_name': ''})[0],
+            'odds': l['odds'], 'ev': l.get('ev'), 'chance': (1.0 / l['fair']) if l.get('fair') else None,
+            'status': st, 'res': l.get('res'), 'base': base, 'leg': True,
+            'live': (live or {}).get(l['mid']) if st == 'open' else None,
+            'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': False}
+
+
+def expr_view(con, kind, stake_rub, live=None, links=None):
     """-130: таблица бумажных экспрессов Олимпа для окна (вид ЭА/ЭБ): итог купонов по 100 ₽, после налога 13% с выигрыша
     купона, держались ли цены всех ног через 90 с, CLV рассчитанных ног, последние купоны с ногами"""
     now = time.time()
@@ -5665,6 +5729,7 @@ def expr_view(con, kind, stake_rub, live=None):
             c[1] += 1
     hold_ok = hold_n = 0
     clv = []
+    lg_of = dict(con.execute('SELECT match_id, league FROM matches'))
     for eid, created, legs_s, odds, ev_prod, status, mult in con.execute(
             'SELECT id, created, legs, odds, ev_prod, status, mult FROM expr WHERE kind=? ORDER BY created DESC', (kind,)):
         legs = json.loads(legs_s)
@@ -5711,11 +5776,7 @@ def expr_view(con, kind, stake_rub, live=None):
             v['coupons'].append({'created': created, 'odds': odds, 'ev': ev_prod, 'status': status, 'held': held,
                                  'cat': cat, 'chance': round(chance, 4) if chance else None,
                                  'profit_rub': None if prof is None else round(prof),
-                                 'legs': [{'title': l.get('title', ''), 'start_ts': l['start_ts'], 'odds': l['odds'],
-                                           'bet': bet_info({'match': l.get('title', ''), 'market': l['fam'],
-                                                            'outcome': l['outcome'], 'market_name': ''})[0],
-                                           'kind': bet_kind(l['fam']),
-                                           'res': l.get('res'), 'url': l.get('url', '')} for l in legs]})
+                                 'id': eid, 'legs': [leg_row(eid, i, l, live, links, lg_of) for i, l in enumerate(legs)]})
     for k in ('won_rub', 'lost_rub', 'profit_rub'):
         v[k] = round(v[k])
     v['profit_tax_rub'] = round(v['profit_tax_rub'])
@@ -5803,7 +5864,7 @@ def paper_stats(con, stake_rub):
     for k in ('simple', 'simple_total', 'bets'):
         out[k] = out['views'][MAIN_CODE][k]
     # -130: экспрессы Олимпа «А» и «Б» и удержание цены у одиночных «В» (способ У)
-    out['expr_views'] = {kind: expr_view(con, kind, stake_rub) for kind, _n, _t in OLIMP_EXPR}
+    out['expr_views'] = {kind: expr_view(con, kind, stake_rub, live, (surl, murl)) for kind, _n, _t in OLIMP_EXPR}
     h = hold_stats(con, 'У')['o90']
     if 'У' in out['views']:
         out['views']['У']['hold'] = h
