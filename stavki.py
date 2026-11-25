@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-133"
+VERSION = "2026.11.26-134"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3486,7 +3486,8 @@ function renderExpr(p0,p){
  h+='<div class="st">цены всех ног держались через 90 с: '+(hd.n?hd.ok+' из '+hd.n+' купонов ('+Math.round(100*hd.ok/hd.n)+'%)':'пока не проверено')+
     ' · кф ног лучше закрытия Pinnacle: '+(cl.n?(cl.mean>0?'+':'')+cl.mean+'% по '+cl.n+' ног':'пока нет рассчитанных ног')+'</div>';
  if(!v.n)h+='<div class="st">пока ни одного купона — купон собирается, когда у Олимпа одновременно есть '+(PVIEW==='ЭА'?'3 ставки из разных матчей с перевесом от 5%':'2 ставки из разных матчей с перевесом от 8%')+' и свежей ценой</div>';
- if((v.coupons||[]).length)h+='<div class="st" style="margin-top:10px">последние купоны:</div>'+cpnTable(v.coupons.slice(0,15));
+ // -134 (владелец 26.11: «а это тогда не нужно ведь, я же открываю всё как раньше»): список купонов под таблицей убран —
+ // купоны открываются по цифре таблицы (окно popExpr)
  el.innerHTML=h+'</div>';fitTable(el);
  const pe=document.getElementById('pop');if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL.startsWith('E|'))popExpr(POPSEL.slice(2));
 }
