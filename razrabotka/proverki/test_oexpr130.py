@@ -81,6 +81,8 @@ v = S.expr_view(con, 'ЭБ', 100)
 print({k: v[k] for k in ('n', 'w', 'l', 'profit_rub', 'profit_tax_rub', 'hold', 'clv')})
 assert v['n'] == 1 and v['w'] == 1 and v['profit_rub'] == round((2.1 * 2.1 - 1) * 100)
 assert v['profit_tax_rub'] == round((2.1 * 2.1 - 1) * 100 * 0.87) and v['clv'] == {'mean': 5.0, 'n': 2}
+c0 = v['coupons'][0]
+assert c0['cat'] == 'выигрыш' and abs(c0['chance'] - (1.09 / 2.1) * (1.085 / 2.1)) < 1e-3, c0
 assert v['hold']['n'] == 1 and v['coupons'][0]['held'] is False and v['coupons'][0]['legs'][0]['kind'][0].startswith('МАТЧ')
 ps = S.paper_stats(con, 100)
 assert set(ps['expr_views']) == {'ЭА', 'ЭБ'} and 'У' in ps['views']
