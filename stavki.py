@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-130"
+VERSION = "2026.11.26-131"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3379,6 +3379,7 @@ function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){const pe=document.getElementById('pop');const was=pe.style.display==='flex';pe.style.display='none';if(was){ackPop(POPSEL);POPSEL=null;if(LASTP)renderPaper(LASTP)}}
 document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
+ const te=ev.target.closest('[data-epop]');if(te){popExpr(te.dataset.epop);return}
  if(ev.target.id==='pop')closePop()});
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // -109 (владелец 22.11, после -107: «а зачем пропало, если я не нажал?» — подсветка сбрасывалась, когда окно программы
@@ -3425,7 +3426,7 @@ function trackChg(p){
 }
 const dlt=k=>DELTA[k]||0;
 // закрыл окно ставок по цифре sel = «часть|вид|место»: показанные в нём ставки и ушедшие из этой клетки — увидены
-function ackPop(sel){if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
+function ackPop(sel){if(!sel||!LASTP||!PSEEN||sel.startsWith('E|'))return;const [part,name,st]=sel.split('|');
  for(const b of LASTP.bets||[]){if(!CHGB[b.id])continue;if(!((part==='*'||b.part===part)&&(name==='*'||b.name===name)))continue;
   const c=catOf(b),s=PSEEN[b.id];
   if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0}}
@@ -3449,24 +3450,38 @@ function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const
 // -130: таблица экспрессов Олимпа (А/Б): итог купонов по 100 ₽, держались ли цены, CLV ног, последние купоны
 function renderExpr(p0,p){
  const el=document.getElementById('paper');const v=(p.expr_views||{})[PVIEW]||{n:0,coupons:[]};
- const z=x=>x?x:'·',m=x=>x?sg(x,'<span class="lg"> ₽</span>'):'<span class="mu">·</span>';
+ // -131 (владелец 26.11: «а что я кнопки с цифрами нажать не могу?»): цифра открывает окно с купонами этой клетки
+ const z=(x,k)=>x?'<span class="num" data-epop="'+k+'">'+x+'</span>':'·',m=(x,k)=>x?'<span class="num" data-epop="'+k+'">'+sg(x,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>'+vtabs(p0);
  h+='<table class="ptab"><tr><th><span class="lg">Купоны</span><span class="sh">Купоны</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
- h+='<tr class="tot"><td>Экспрессы</td><td class="n">'+(v.n||0)+'</td><td class="w">'+z(v.w)+'</td><td class="l">'+z(v.l)+'</td><td class="p">'+z(v.push)+'</td><td>'+z(v.wait)+'</td><td class="lvc">'+z(v.live)+'</td><td class="mw">'+m(v.won_rub)+'</td><td class="ml">'+m(v.lost_rub)+'</td><td>'+m(v.profit_rub)+'</td></tr>';
+ h+='<tr class="tot"><td>Экспрессы</td><td class="n">'+(v.n?z(v.n,'all'):0)+'</td><td class="w">'+z(v.w,'выигрыш')+'</td><td class="l">'+z(v.l,'проигрыш')+'</td><td class="p">'+z(v.push,'возврат')+'</td><td>'+z(v.wait,'wait')+'</td><td class="lvc">'+z(v.live,'live')+'</td><td class="mw">'+m(v.won_rub,'выигрыш')+'</td><td class="ml">'+m(v.lost_rub,'проигрыш')+'</td><td>'+m(v.profit_rub,'done')+'</td></tr>';
  if(v.w||v.l||v.push)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="8" class="taxn"><span class="lg">13% с выигрыша купона, проигрыши не вычитаются</span><span class="sh">13% с выигрыша</span></td><td>'+m(v.profit_tax_rub)+'</td></tr>';
  h+='</table>';
  const hd=v.hold||{},cl=v.clv||{};
  h+='<div class="st">цены всех ног держались через 90 с: '+(hd.n?hd.ok+' из '+hd.n+' купонов ('+Math.round(100*hd.ok/hd.n)+'%)':'пока не проверено')+
     ' · кф ног лучше закрытия Pinnacle: '+(cl.n?(cl.mean>0?'+':'')+cl.mean+'% по '+cl.n+' ног':'пока нет рассчитанных ног')+'</div>';
  if(!v.n)h+='<div class="st">пока ни одного купона — купон собирается, когда у Олимпа одновременно есть '+(PVIEW==='ЭА'?'3 ставки из разных матчей с перевесом от 5%':'2 ставки из разных матчей с перевесом от 8%')+' и свежей ценой</div>';
- for(const c of v.coupons||[]){
-  const res=c.status==='open'?'<span class="mu">ждёт</span>':(c.profit_rub>0?'<span class="pos">✓ +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ '+c.profit_rub+' ₽</span>':'↩ возврат'));
-  h+='<div class="cpn"><div class="cph">'+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b> · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</div>';
-  for(const l of c.legs){const r=l.res?' · <span class="mu">'+l.res[0]+':'+l.res[1]+'</span>':'';
-   h+='<div class="cpl"><span class="kind ks '+(l.kind&&l.kind[1]||'m')+'">'+(l.kind&&l.kind[0]||'')+'</span> '+(l.url?'<a href="'+l.url+'" target="_blank">'+l.title+'</a>':l.title)+' · <b>'+l.bet+'</b> · кф '+l.odds.toFixed(2)+' · <span class="mu">'+when(l.start_ts).split(' · ')[0]+'</span>'+r+'</div>'}
-  h+='</div>'}
+ for(const c of (v.coupons||[]).slice(0,15))h+=cpnHtml(c);
  el.innerHTML=h+'</div>';fitTable(el);
+ const pe=document.getElementById('pop');if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL.startsWith('E|'))popExpr(POPSEL.slice(2));
 }
+// -131: один купон — время сборки, кф, шанс купона, итог, держались ли цены; ниже — его ставки
+function cpnHtml(c){
+ const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const res=c.status==='open'?(c.cat==='live'?'<span class="lvc">идёт</span>':'<span class="mu">ждёт</span>'):(c.profit_rub>0?'<span class="pos">✓ +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ '+c.profit_rub+' ₽</span>':'↩ возврат'));
+ let h='<div class="cpn"><div class="cph">'+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b>'+(c.chance?' · шанс ~'+Math.round(100*c.chance)+'%':'')+' · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</div>';
+ for(const l of c.legs){const r=l.res?' · <span class="mu">'+l.res[0]+':'+l.res[1]+'</span>':'';
+  h+='<div class="cpl"><span class="kind ks '+(l.kind&&l.kind[1]||'m')+'">'+e(l.kind&&l.kind[0]||'')+'</span> '+(l.url?'<a href="'+e(l.url)+'" target="_blank">'+e(l.title)+'</a>':e(l.title))+' · <b>'+e(l.bet)+'</b> · кф '+l.odds.toFixed(2)+' · <span class="mu">'+when(l.start_ts).split(' · ')[0]+'</span>'+r+'</div>'}
+ return h+'</div>'}
+const ECAT={all:'все купоны',выигрыш:'выиграли',проигрыш:'проиграли',возврат:'возврат',wait:'ждут матчей',live:'идут',done:'рассчитанные'};
+function popExpr(cat){
+ const p=LASTP,v=p&&(p.expr_views||{})[PVIEW];if(!v)return;POPSEL='E|'+cat;
+ const L=(v.coupons||[]).filter(c=>cat==='all'||c.cat===cat||(cat==='done'&&['выигрыш','проигрыш','возврат'].includes(c.cat)));
+ const nm=(VTABS.find(t=>t[0]===PVIEW)||['',''])[1];
+ let h='<div class="mbox"><div class="mhd"><b>'+nm+' — '+ECAT[cat]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
+ for(const c of L)h+=cpnHtml(c);
+ if(!L.length)h+='<div class="mu">нет купонов</div>';
+ document.getElementById('pop').innerHTML=h+'</div></div>';document.getElementById('pop').style.display='flex'}
 function renderPaper(p){
  const p0=p;
  // -130: вкладки экспрессов — своя таблица (купоны), без учёта «+N/−N»
@@ -3511,7 +3526,7 @@ function renderPaper(p){
  fitTable(el);
  const pe=document.getElementById('pop');
  const ae=document.activeElement;
- if(pe&&pe.style.display==='flex'&&POPSEL&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae))){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
+ if(pe&&pe.style.display==='flex'&&POPSEL&&!POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae))){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
  watchChg();
 }
 
@@ -5659,6 +5674,15 @@ def expr_view(con, kind, stake_rub, live=None):
             v['wait'] += 1
         else:
             v['live'] += 1
+        # -131 (владелец 26.11: «а что я кнопки с цифрами нажать не могу?»): клетка таблицы, куда попал купон, — для окна по цифре
+        cat = (('выигрыш' if prof > 0 else ('проигрыш' if prof < 0 else 'возврат')) if prof is not None
+               else ('wait' if min(l['start_ts'] for l in legs) > now else 'live'))
+        chance = 1.0                            # шанс купона — произведение шансов ног по честной цене на входе
+        for l in legs:
+            if not l.get('fair'):
+                chance = None
+                break
+            chance *= 1.0 / l['fair']
         for l in legs:
             if l.get('clv') is not None:
                 clv.append(l['clv'])
@@ -5668,8 +5692,9 @@ def expr_view(con, kind, stake_rub, live=None):
             hold_n += 1
             held = c[1] == 0
             hold_ok += 1 if held else 0
-        if len(v['coupons']) < 15:
+        if len(v['coupons']) < 200:
             v['coupons'].append({'created': created, 'odds': odds, 'ev': ev_prod, 'status': status, 'held': held,
+                                 'cat': cat, 'chance': round(chance, 4) if chance else None,
                                  'profit_rub': None if prof is None else round(prof),
                                  'legs': [{'title': l.get('title', ''), 'start_ts': l['start_ts'], 'odds': l['odds'],
                                            'bet': bet_info({'match': l.get('title', ''), 'market': l['fam'],
