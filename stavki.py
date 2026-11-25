@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-134"
+VERSION = "2026.11.26-135"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -454,6 +454,12 @@ STRATEGIES = [
     ('У', 'Олимп, одиночные с налоговым порогом: перевес ≥ 15%·(1−шанс)+4 п.п. и ≥5%, цена ≤15 с, кф до 4 — видимый «В»',
      lambda v: v['bookmaker'] == 'Олимп' and v['odds'] <= 4.0 and v.get('odds_age') is not None
      and v['odds_age'] <= 15 and half_line(v) and v['ev'] >= max(0.05, 0.15 * (1 - v['chance']) + 0.04), 'ev'),
+    # -135 (владелец 26.11: «а почему в одиночный с налоговым порогом мы не можем и другие бк включить?»): тот же порог у PARI и
+    # Винлайна — только запись (журнал 21–26.11: PARI 11 ставок / 4 матча −0.3%±5.1, половины −14.5/+4.4; Винлайн 8 / 5 матчей
+    # +6.6%±5.3, половины −12.1/+11.2 — данных нет); если на новых ставках порог держится — добавить их в «В»
+    ('Ф', 'PARI и Винлайн, одиночные с налоговым порогом (как «У», без требования свежести Олимпа) — проверка',
+     lambda v: v['bookmaker'] in ('PARI', 'Винлайн') and v['odds'] <= 4.0 and half_line(v)
+     and v['ev'] >= max(0.05, 0.15 * (1 - v['chance']) + 0.04), 'ev'),
 ]
 # -129 (владелец 25.11: «МАТЧ на аутсайдера вернуть в видимую таблицу, если примерно на 100 ставках CLV держится от +3% на
 # обеих половинах»; отчёт 26.11 00:58: МАТЧ-аутсайдер способа П — 154 ставки с CLV, +5.0%, половины +4.3% (71) / +5.5% (83),
@@ -463,6 +469,32 @@ VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матче
 # -130: бумажные экспрессы Олимпа против налога (Совет 26.11, варианты «А» и «Б»): (вид, ног, перевес ноги от)
 OLIMP_EXPR = (('ЭА', 3, 0.05), ('ЭБ', 2, 0.08))
 OLIMP_EXPR_AGE = 15      # цена ноги не старше 15 с
+
+
+def view_fits(v, now):
+    """-135 (владелец 26.11: «в этих списках ставок для каждого способа — только те ставки, которые они могут взять»): каким
+    вкладкам окна подходит ставка «Можно ставить сейчас» — по тем же правилам, по которым способ записывает ставку на бумагу
+    (П, Р, У — условия STRATEGIES; ЭА/ЭБ — условия ноги экспресса olimp_legs)"""
+    out = []
+    try:
+        fam = event_of(v)
+        pre, base = split_fam(fam)
+        if base not in SETTLEABLE or pre in JOURNAL_FAMS:
+            return out
+        w = dict(v, odds_age=v.get('age'))
+        conds = {c: f for c, _d, f, _k in STRATEGIES}
+        for code, _n in VIEW_CODES:
+            if code in conds and conds[code](w):
+                out.append(code)
+        if (v['bookmaker'] == 'Олимп' and v.get('source') == 'сайт' and v.get('odds_ts')
+                and now - v['odds_ts'] <= OLIMP_EXPR_AGE and v['odds'] <= 4.0 and half_line(v)
+                and (v.get('start_ts') or 0) >= now + 600):
+            for kind, _n, thr in OLIMP_EXPR:
+                if v['ev'] >= thr:
+                    out.append(kind)
+    except Exception:
+        pass
+    return out
 
 
 def half_line(v):
@@ -3129,7 +3161,8 @@ async function tick(){
   if(s.errors.length)st+=' · <span class="bad">ошибка: '+s.errors[s.errors.length-1]+'</span>';
   document.getElementById('st').innerHTML=st;
   const thr=parseFloat(document.getElementById('thr').value||0)/100, mx=parseFloat(document.getElementById('mx').value||99);
-  const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker));
+  // -135 (владелец 26.11: «в этих списках… только те ставки, которые способ может взять»): ставки способа открытой вкладки
+  const rows=d.values.filter(v=>v.ev>=thr&&v.odds<=mx&&d.mine.includes(v.bookmaker)&&(!v.fits||v.fits.includes(PVIEW)));
   let h='';
   const ORD=['Олимп','PARI','Винлайн'],oi=b=>{const i=ORD.indexOf(b);return i<0?9:i};   // -115: Олимп вместо Фонбета (владелец 24.11)   // Фонбет и PARI — рядом (владелец 21.11)
   const bkCols=ORD.filter(b=>d.mine.includes(b));   // -117 (владелец 24.11: «фон надо убрать»): только Олимп, PARI, Винлайн
@@ -3144,9 +3177,9 @@ async function tick(){
    const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
    const keys=srows.map(v=>v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome);
    if(!closed){                                     // раздел открыт: чего не было среди увиденных — «НОВАЯ» на 10 мин
-    if(SEEN[sk])for(const k of keys)if(!SEEN[sk].includes(k)&&!NEWK[k])NEWK[k]=Date.now();
-    SEEN[sk]=keys}
-   const fresh=closed&&keys.some(k=>!(SEEN[sk]||[]).includes(k));
+    if(SEEN[PVIEW+sk])for(const k of keys)if(!SEEN[PVIEW+sk].includes(k)&&!NEWK[k])NEWK[k]=Date.now();
+    SEEN[PVIEW+sk]=keys}
+   const fresh=closed&&!!SEEN[PVIEW+sk]&&keys.some(k=>!(SEEN[PVIEW+sk]||[]).includes(k));
    h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+(fresh?'<span class="newb">НОВОЕ</span>':'')+'</div>';
    if(closed)continue;
    const PH=isPhone();
@@ -3413,7 +3446,7 @@ let PSEEN=null,DELTA={},CHGB={};
 function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen3_'+PVIEW)||'null')}catch(e){}}
 loadSeen();
 function saveSeen(){try{localStorage.setItem('pseen3_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
-function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview3',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP)}
+function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview3',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP);tick()}
 function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
 const RES=['выигрыш','проигрыш','возврат'];
 function moneyCols(c,pr){const o={};if(!RES.includes(c))return o;pr=pr||0;o['итог']=pr;if(c==='выигрыш')o['выиграл']=pr;if(c==='проигрыш')o['проиграл']=pr;return o}
@@ -3789,6 +3822,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith('/api/state'):
             snap = STATE.snapshot()
+            now_ = time.time()
+            for v in snap.get('values') or []:
+                v['fits'] = view_fits(v, now_)
             try:
                 snap['paper'] = paper_stats(STATS_DB, STATS_STAKE)
             except Exception as e:

@@ -135,3 +135,17 @@ if isinstance(rep, bytes):
 assert 'ЭА' in rep['leg_check']['summary'] and 'ЭБ3' in rep['expr']['summary'] or 'ЭБ2' in rep['expr']['summary'], rep['expr'].get('summary')
 print('отчёт:', list(rep['expr']['summary']), rep['leg_check']['summary']['ЭА']['o90'])
 print('ВСЁ ОК 2')
+# -135: способ «Ф» (PARI/Винлайн с налоговым порогом) пишется в фоне; view_fits — вкладки окна
+def sv2(mid, ev, chance, bk):
+    v = val(mid, ev, start=7200, bk=bk); v.update(chance=chance, rel=0.1, league='Лига', pin_age=5); return v
+VALS[:] = [sv2(40, 0.13, 0.5, 'PARI'), sv2(41, 0.10, 0.5, 'PARI'), sv2(42, 0.13, 0.5, 'Олимп')]
+C.feeds = [F()]
+C.record_paper()
+f_ = con.execute("SELECT match_id FROM paper2 WHERE strategy='Ф'").fetchall()
+u_ = con.execute("SELECT match_id FROM paper2 WHERE strategy='У' AND match_id>=40").fetchall()
+assert f_ == [(40,)] and u_ == [(42,)], (f_, u_)
+w = dict(sv2(42, 0.13, 0.5, 'Олимп'), age=3)
+assert set(S.view_fits(w, T[0])) >= {'П', 'У', 'ЭА', 'ЭБ'} - {'П'} and 'Р' not in S.view_fits(w, T[0]), S.view_fits(w, T[0])
+w2 = dict(sv2(43, 0.06, 0.6, 'PARI'), age=3)
+assert S.view_fits(w2, T[0]) == [], S.view_fits(w2, T[0])           # шанс 60%, не угловые — П не берёт, У/Э — только Олимп
+print('ВСЁ ОК 3')
