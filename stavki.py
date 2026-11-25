@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-131"
+VERSION = "2026.11.26-132"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3036,6 +3036,7 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
 .pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
+.tdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ffd400;margin-left:7px;vertical-align:2px;box-shadow:0 0 0 1px #000}
 .cpn{border:1px solid #2a3442;border-radius:8px;padding:6px 10px;margin:8px 0;background:#161d26}.cph{font-size:13px;color:#cfd6e4;margin-bottom:4px}.cpl{font-size:13px;color:#cfd6e4;padding:2px 0}.cpl a{color:#cfd6e4}.cpl .kind.ks{font-size:10px}
 .pp .ptab th{font-size:12px;color:#8b98a5;font-weight:600;text-align:center;padding:6px 8px;border-bottom:1px solid #2a3542}
 .pp .ptab td{font-size:15px;padding:8px 8px;text-align:center}
@@ -3443,9 +3444,23 @@ function fitTable(el){if(!isPhone())return;const t=el.querySelector('.ptab');if(
 window.addEventListener('resize',()=>{const el=document.getElementById('paper');if(el)fitTable(el)});
 // -80: короткие названия видов в таблице на телефоне — чтобы таблица влезала целиком
 const SHN={'Тотал голов':'Тотал','Инд. тотал хозяев':'Инд. хоз.','Инд. тотал гостей':'Инд. гост.','1-Й ТАЙМ':'1 ТАЙМ'};
+// -132 (владелец 26.11: «когда в таблице что-то меняется — у неактивных вкладок пометка… просто жёлтая точка»):
+// у каждой вкладки — снимок «где была каждая ставка/купон», когда вкладку последний раз видели (localStorage tabseen_<вид>);
+// новая ставка/купон или переход в другую клетку (Ждут → Идут → Расчёт → ✓/✗/↩) — жёлтая точка; открыли вкладку — снимок обновился
+function tabSig(code,p){const o={};
+ if(isExpr(code)){for(const c of (((p.expr_views||{})[code]||{}).coupons||[]))o['c'+c.created]=c.cat}
+ else for(const b of (((p.views||{})[code]||{}).bets||[]))o[b.id]=catOf(b);
+ return o}
+function tabDot(code,p){const cur=tabSig(code,p),key='tabseen_'+code;let seen=null;
+ try{seen=JSON.parse(localStorage.getItem(key)||'null')}catch(e){}
+ const save=()=>{try{const s=JSON.stringify(cur);if(localStorage.getItem(key)!==s)localStorage.setItem(key,s)}catch(e){}};
+ if(code===PVIEW||!seen){save();return false}            // открытая вкладка (или первый раз) — всё увидено
+ for(const k in cur)if(seen[k]!==cur[k])return true;
+ return false}
 function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const v=isExpr(code)?(p.expr_views||{})[code]:(p.views||{})[code];
   const n=isExpr(code)?(v?v.n:0):(v&&v.simple_total?v.simple_total.n:0);
-  h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+'</button>'}
+  const dot=tabDot(code,p);
+  h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+(dot?'<span class="tdot" title="в этой таблице есть изменения"></span>':'')+'</button>'}
  return h+'</div>'}
 // -130: таблица экспрессов Олимпа (А/Б): итог купонов по 100 ₽, держались ли цены, CLV ног, последние купоны
 function renderExpr(p0,p){
