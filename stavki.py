@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-138"
+VERSION = "2026.11.26-139"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2775,6 +2775,12 @@ def db_open():
             con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} INT')
         except sqlite3.OperationalError:
             pass
+    # -139: досрочно закрытая ставка — на какой минуте (early_at) и при каком счёте (early_h/early_a); остаются и после итога
+    for col, typ in (('early_at', 'TEXT'), ('early_h', 'INT'), ('early_a', 'INT')):
+        try:
+            con.execute(f'ALTER TABLE paper2 ADD COLUMN {col} {typ}')
+        except sqlite3.OperationalError:
+            pass
     # счёт из лайва Фонбета/PARI (eventMiscs): матч, первый тайм, угловые — расчёт ставок любой лиги
     con.execute('CREATE TABLE IF NOT EXISTS bk_events (event_id INT PRIMARY KEY, match_id INT)')
     con.execute('CREATE TABLE IF NOT EXISTS bk_scores (match_id INT, part TEXT, s1 INT, s2 INT, comment TEXT,'
@@ -3061,7 +3067,7 @@ td.dch{background:#ffd4001f!important;box-shadow:inset 0 0 0 2px #ffd400!importa
 @media(max-width:700px){.dl{display:block;margin-left:0;font-size:10px;line-height:1.1}}
 .bet.nbet{border:2px solid #ffd400;box-shadow:0 0 12px #ffd40055}.newb2{font-size:11px;font-weight:800;color:#111;background:#ffd400;border-radius:4px;padding:1px 6px;animation:blink 1.2s ease-in-out infinite}
 .ptab .num{cursor:pointer;display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}.ptab .num:hover{background:#3a4a5e}
-.fact{font-size:12px;color:#aab4be;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
+.fact{font-size:12px;color:#aab4be;margin-top:2px}.ewhen{color:#ffd166;margin-top:2px}.livem{color:#ff6b6b;font-weight:700;font-size:13px}.fact b{color:#fff}
 #pop{display:none;position:fixed;inset:0;background:#000a;z-index:50;align-items:flex-start;justify-content:center;padding:40px 16px}
 .mbox{background:#131a22;border:1px solid #2e3744;border-radius:12px;max-width:1100px;width:100%;max-height:85vh;display:flex;flex-direction:column}
 .mhd{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #2a3542;font-size:16px}
@@ -3400,7 +3406,13 @@ function betRow(b,now,cls){const tm=(b.title||'').split(' — ');
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
-   res+='<div class="fact">'+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'+(b.early?'<div class="sm mu">досрочно — счёт на момент расчёта</div>':'')}
+   // -139 (владелец 26.11: «у досрочно закрытых — на какой минуте закрылся и итоговый результат в конце матча»)
+   let ex=b.early?'<div class="sm mu">досрочно — счёт на момент расчёта</div>':'';
+   if(b.early_at){const w=b.early_at.replace(/^[12]-й тайм · /,'').replace('-я минута',"'"),es=b.early_sc?' при '+b.early_sc[0]+':'+b.early_sc[1]:'';
+    const wt=/'$/.test(w)?'закрыта на '+w:'закрыта: '+w;
+    ex=b.early?'<div class="sm ewhen" title="закрыта досрочно: '+e(b.early_at)+'">'+wt+'</div><div class="sm mu">итог — после матча</div>'
+     :'<div class="sm ewhen" title="закрыта досрочно: '+e(b.early_at)+'">'+wt+es+'</div>'}
+   res+='<div class="fact">'+(b.early_at&&!b.early?'итог: ':'')+lab+' <span class="th">'+hh+'</span> : <span class="ta">'+aa+'</span>'+tot+'</div>'+ex}
   const isLive=b.status==='open'&&b.start_ts<=now&&(now-b.start_ts)<3*3600;
   const nm='<span class="th">'+e(tm[0])+'</span> — <span class="ta">'+e(tm[tm.length-1])+'</span>';
   h+='<tr class="'+(CHGB[b.id]?'chg ':'')+(cls||'')+'"><td>'+(b.url?'<a class="mlink" href="'+e(b.url)+'" target="_blank" title="'+(b.sofa?'статистика матча на '+(b.url.indexOf('fotmob')>0?'FotMob':'Sofascore'):'страница матча на odds.ru (на FotMob и Sofascore матч ещё не найден)')+'">'+nm+'</a>':nm)
@@ -4562,6 +4574,9 @@ class Collector:
                 l['res'] = [sc[0], sc[1]]
                 if early:
                     l['early'] = True
+                    if not l.get('early_at'):            # -139: на какой минуте и при каком счёте нога решилась
+                        l['early_at'] = self.clock_at(l['mid'], l['start_ts'], now)
+                        l['early_sc'] = [sc[0], sc[1]]
                 else:
                     l.pop('early', None)
                 if 'clv' not in l:                      # -130: CLV ноги против последней цены Pinnacle до начала
@@ -4973,6 +4988,32 @@ class Collector:
             return None
         return h, a, pr
 
+    def clock_at(self, mid, start_ts, now):
+        """-139: минута матча сейчас — как часы в окне (`matchClock`): по таймеру конторы (свежее 3 мин), иначе примерно
+        по времени начала со «≈» (перерыв ~15 мин и добавленное к 1-му тайму ~2 мин)"""
+        r = self.con.execute("SELECT tsec, tdir, tupd, comment FROM bk_scores WHERE match_id=? AND part='ft' AND ts>?",
+                             (mid, now - 180)).fetchone()
+        mins = int((now - (start_ts or now)) // 60)
+        if not r or r[0] is None:
+            if mins <= 47:
+                return f'1-й тайм · ≈{max(1, mins)}-я минута'
+            if mins <= 62:
+                return '≈ перерыв'
+            m2 = mins - 17
+            return f"2-й тайм · ≈{('90+' + str(m2 - 90)) if m2 > 90 else m2}-я минута" if m2 <= 97 else f'≈ {mins} мин от начала'
+        tsec, tdir, tupd, cm = r
+        ht = bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))
+        if not tdir:
+            if tsec >= 5400:
+                return 'матч окончен'
+            if tsec >= 2700 and ht:
+                return 'перерыв'
+            return f'{int(tsec // 60)}-я минута'
+        m = int((tsec + ((now * 1000 - tupd) / 1000 if tupd else 0)) // 60)
+        half = '2-й тайм' if (ht or m >= 60) else '1-й тайм'
+        mm = f'45+{m - 45}' if (half == '1-й тайм' and m > 45) else (f'90+{m - 90}' if m > 90 else str(m))
+        return f'{half} · {mm}-я минута'
+
     def settle_early(self):
         """-101 (владелец 22.11: «проигранная ставка рассчитывается сразу, не дожидаясь конца матча, так же как и точно
         выигранная»): тотал / инд. тотал матча и угловых, исход которого уже не изменится (счёт только растёт: итог при
@@ -4991,7 +5032,8 @@ class Collector:
             stt = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
             cf, clv = self.closing_fair(mid, fam, outcome, line, st, odds)
             self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?,'
-                             ' close_ts=?, early=1 WHERE id=?', (stt, pr, cf, clv, now, h, a, self.close_ts if cf else None, pid))
+                             ' close_ts=?, early=1, early_at=?, early_h=?, early_a=? WHERE id=?',
+                             (stt, pr, cf, clv, now, h, a, self.close_ts if cf else None, self.clock_at(mid, st, now), h, a, pid))
             n += 1
         # итог пришёл — записать окончательный счёт; если вдруг расходится с досрочным расчётом — пересчитать
         for pid, fam, outcome, line, odds, mid, st, prof in self.con.execute(
@@ -5806,7 +5848,8 @@ def leg_row(eid, i, l, live=None, links=None, lg_of=None):
             'odds': l['odds'], 'ev': l.get('ev'), 'chance': (1.0 / l['fair']) if l.get('fair') else None,
             'status': st, 'res': l.get('res'), 'base': base, 'leg': True,
             'live': (live or {}).get(l['mid']) if st == 'open' else None,
-            'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': bool(l.get('early'))}
+            'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': bool(l.get('early')),
+            'early_at': l.get('early_at', ''), 'early_sc': l.get('early_sc')}
 
 
 def expr_view(con, kind, stake_rub, live=None, links=None):
@@ -5941,9 +5984,10 @@ def paper_stats(con, stake_rub):
         out['simple'].sort(key=lambda r: r['order'])
         out['simple_total'] = agg("strategy=? AND src='сайт'", (code,))
         out['bets'] = []
-        for pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early in con.execute(
+        for (pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early, e_at, e_h,
+             e_a) in con.execute(
                 "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-                " profit, res_h, res_a, bk_url, fair, early"
+                " profit, res_h, res_a, bk_url, fair, early, early_at, early_h, early_a"
                 " FROM paper2 WHERE strategy=? AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC", (code,)):
             pre = split_fam(fam or '')[0]
             out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
@@ -5955,7 +5999,8 @@ def paper_stats(con, stake_rub):
                                 'chance': (ev / (odds - fair)) if (ev and odds and fair and odds > fair) else None,
                                 'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
                                 'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub),
-                                'early': bool(early)})
+                                'early': bool(early), 'early_at': e_at or '',
+                                'early_sc': [e_h, e_a] if e_h is not None else None})
         main_out['views'][code] = out
     out = main_out
     for k in ('simple', 'simple_total', 'bets'):
