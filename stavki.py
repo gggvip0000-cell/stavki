@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-136"
+VERSION = "2026.11.26-137"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2701,8 +2701,24 @@ STATS_STAKE = 100
 
 # ---------------------------------------------------------------- база для учёта (CLV потом)
 
+DB_TIMEOUT = 30          # -137: сколько секунд ждать, пока база занята другой частью программы (было 5 — «database is locked»)
+
+
+def db_connect(**kw):
+    """-137 (владелец 26.11, снимок: «ошибка: database is locked»): база открывается тремя частями программы — цикл,
+    окно (/api/state раз в 3 с с каждого открытого окна и телефона), статистика football-data. Журнал WAL: чтение окна не
+    мешает записи цикла и наоборот; если всё же занято — ждать до 30 с, а не 5."""
+    con = sqlite3.connect(str(HERE / 'stavki.sqlite3'), timeout=DB_TIMEOUT, **kw)
+    try:
+        con.execute('PRAGMA journal_mode=WAL')
+        con.execute('PRAGMA synchronous=NORMAL')   # с WAL надёжно и быстрее: база цела и при падении программы
+    except sqlite3.OperationalError as e:
+        log('база: журнал WAL не включён — ' + str(e)[:80])
+    return con
+
+
 def db_open():
-    con = sqlite3.connect(str(HERE / 'stavki.sqlite3'), check_same_thread=False)
+    con = db_connect(check_same_thread=False)
     con.execute('CREATE TABLE IF NOT EXISTS pin (ts REAL, match_id INT, market TEXT, raw TEXT)')
     con.execute('CREATE TABLE IF NOT EXISTS value_seen (match_id INT, market TEXT, outcome TEXT, bookmaker TEXT,'
                 ' first_seen REAL, last_seen REAL, best_ev REAL, odds_at_best REAL, fair_at_best REAL,'
@@ -5706,6 +5722,10 @@ class Collector:
             except Exception as e:
                 fails += 1
                 add_error(str(e).splitlines()[0][:200], 'цикл')
+                with STATE.lock:                    # -137: где именно упал цикл — в отчёт (последние 10)
+                    le = STATE.status.setdefault('loop_errs', [])
+                    le.append({'ts': now_str(), 'err': str(e)[:200], 'where': traceback.format_exc()[-1500:]})
+                    del le[:-10]
                 if fails >= 3:                      # подряд — значит, беда не в одном матче
                     time.sleep(min(60, 5 * (fails - 2)))
                 if fails >= 3 and not self.ever_ok and self.cfg['headless']:
@@ -7504,7 +7524,7 @@ def stats_loop():
     while True:
         con = None
         try:
-            con = sqlite3.connect(str(HERE / 'stavki.sqlite3'), timeout=30)
+            con = db_connect()
             season = fd_season(datetime.datetime.now(MSK))
             n, errs = 0, []
             for div in FD_DIVS:
@@ -7621,8 +7641,6 @@ def main():
     MY_BOOKMAKERS = list(cfg.get('my_bookmakers_list') or [])
     if 'Олимп' not in MY_BOOKMAKERS:                # -115: Олимп вместо Фонбета (владелец 24.11)
         MY_BOOKMAKERS.append('Олимп')
-    con = db_open()
-    STATS_DB = sqlite3.connect(str(HERE / 'stavki.sqlite3'), check_same_thread=False)
     STATS_STAKE = cfg.get('paper_stake_rub', 100)
     global TG
     TG = Telegram(cfg)
@@ -7641,6 +7659,10 @@ def main():
         except Exception:
             pass
         return
+    # -137: база — только после того, как ясно, что программа не запущена второй раз (раньше второй запуск успевал
+    # открыть базу, чистить старые цены Pinnacle и дописывать способы — и держал её, пока первая программа ждала)
+    con = db_open()
+    STATS_DB = db_connect(check_same_thread=False)
     threading.Thread(target=autostart_apply, args=(cfg.get('autostart', True),), daemon=True).start()
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log(f'«Ставки», версия {VERSION}. Окно программы: {url}')
