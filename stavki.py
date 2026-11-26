@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-137"
+VERSION = "2026.11.26-138"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -4539,7 +4539,7 @@ class Collector:
             self.con.execute('INSERT INTO expr (created, size, bookmaker, legs, status, legs_now) VALUES'
                              " (?, 0, '', '[]', 'замер', ?)", (now, n_legs))      # поток ног по часам, даже если экспресса нет
             self.con.commit()
-        if now - getattr(self, 'expr_set_ts', 0) < 120:
+        if now - getattr(self, 'expr_set_ts', 0) < 30:        # -138: было 120 с — досрочный расчёт по лайву
             return
         self.expr_set_ts = now
         for eid, legs_s, created in self.con.execute(
@@ -4550,10 +4550,20 @@ class Collector:
                 if l['start_ts'] > now:
                     continue
                 sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
+                early = False
                 if not sc:
-                    continue
+                    # -138 (владелец 26.11: «если заранее проиграл, можно рассчитывать»): исход ноги уже не изменится
+                    # по счёту лайва (как -101 у одиночных) — нога считается сразу, проигравшая сразу проигрывает купон
+                    d = self.live_decided(l['fam'], l['outcome'], l['line'], l['odds'], l['mid'], now)
+                    if not d:
+                        continue
+                    sc, early = d[:2], True
                 f = 1 + settle_one(split_fam(l['fam'])[1], l['outcome'], l['line'], l['odds'], sc[0], sc[1])
                 l['res'] = [sc[0], sc[1]]
+                if early:
+                    l['early'] = True
+                else:
+                    l.pop('early', None)
                 if 'clv' not in l:                      # -130: CLV ноги против последней цены Pinnacle до начала
                     try:
                         l['clv'] = self.closing_fair(l['mid'], l['fam'], l['outcome'], l['line'], l['start_ts'], l['odds'])[1]
@@ -4574,17 +4584,27 @@ class Collector:
                 self.con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps(legs, ensure_ascii=False), eid))
         # -133: у купона, проигранного досрочно (одна нога проиграла), остальные ноги ещё играются — их счёт дописывается
         # до 2 дней после последнего матча (только для показа и CLV ног; деньги купона уже посчитаны)
+        # -138: у ноги, посчитанной досрочно по лайву, счёт заменяется итогом; если итог другой — купон снова открыт и
+        # пересчитывается по итогам (лайв мог ошибиться)
         for eid, legs_s in self.con.execute(
-                "SELECT id, legs FROM expr WHERE kind IS NOT NULL AND status IN ('выигрыш','проигрыш','возврат')"
+                "SELECT id, legs FROM expr WHERE (kind IS NOT NULL OR legs LIKE '%\"early\"%')"
+                " AND status IN ('выигрыш','проигрыш','возврат')"
                 " AND settled > ? AND legs LIKE '%start_ts%'", (now - 3 * 86400,)).fetchall():
             legs = json.loads(legs_s)
-            ch = False
+            ch = reopen = False
             for l in legs:
-                if l.get('res') or l['start_ts'] > now:
+                if (l.get('res') and not l.get('early')) or l['start_ts'] > now:
                     continue
                 sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
                 if not sc:
                     continue
+                if l.get('early'):
+                    b = split_fam(l['fam'])[1]
+                    if (settle_one(b, l['outcome'], l['line'], l['odds'], *l['res'])
+                            != settle_one(b, l['outcome'], l['line'], l['odds'], sc[0], sc[1])):
+                        reopen = True
+                        log(f"экспресс {eid}: досрочный расчёт ноги {l.get('title', '')} исправлен по итогу {l['res']} → {list(sc)}")
+                    l.pop('early', None)
                 l['res'] = [sc[0], sc[1]]
                 if 'clv' not in l:
                     try:
@@ -4592,7 +4612,10 @@ class Collector:
                     except Exception:
                         l['clv'] = None
                 ch = True
-            if ch:
+            if reopen:
+                self.con.execute("UPDATE expr SET status='open', mult=NULL, settled=NULL, legs=? WHERE id=?",
+                                 (json.dumps(legs, ensure_ascii=False), eid))
+            elif ch:
                 self.con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps(legs, ensure_ascii=False), eid))
         self.con.commit()
 
@@ -4929,6 +4952,27 @@ class Collector:
         if wrote:
             self.con.commit()
 
+    def live_decided(self, fam, outcome, line, odds, mid, now):
+        """-101/-138: (хозяева, гости, доход) по свежему счёту лайва (конторы ≤3 мин, иначе FotMob ≤5 мин), если исход тотала /
+        инд. тотала матча или угловых уже не изменится (итог при нынешнем счёте = итогу при счёте +50); иначе None.
+        1-й тайм не трогаем (рассчитывается в перерыв), угловых 1-го тайма в лайве нет."""
+        pre, base = split_fam(fam)
+        if pre not in ('', 'c_') or base not in ('total', 'tt1', 'tt2') or line is None:
+            return None
+        part = 'c' if pre == 'c_' else 'ft'
+        r = self.con.execute('SELECT s1, s2 FROM bk_scores WHERE match_id=? AND part=? AND ts>?',
+                             (mid, part, now - 180)).fetchone()
+        if not r:
+            r = self.con.execute(f"SELECT {'c1, c2' if part == 'c' else 'ft1, ft2'} FROM ext_live"
+                                 ' WHERE match_id=? AND ts>?', (mid, now - 300)).fetchone()
+        if not r or r[0] is None or r[1] is None:
+            return None
+        h, a = r
+        pr = settle_one(base, outcome, line, odds, h, a)
+        if pr != settle_one(base, outcome, line, odds, h + 50, a + 50):
+            return None
+        return h, a, pr
+
     def settle_early(self):
         """-101 (владелец 22.11: «проигранная ставка рассчитывается сразу, не дожидаясь конца матча, так же как и точно
         выигранная»): тотал / инд. тотал матча и угловых, исход которого уже не изменится (счёт только растёт: итог при
@@ -4940,21 +4984,10 @@ class Collector:
             " AND start_ts < ? AND COALESCE(fam, event) NOT LIKE 'h1!_%' ESCAPE '!'", (now,)).fetchall()
         n = 0
         for pid, fam, outcome, line, odds, mid, st in rows:
-            pre, base = split_fam(fam)
-            if base not in ('total', 'tt1', 'tt2') or line is None:
+            d = self.live_decided(fam, outcome, line, odds, mid, now)
+            if not d:
                 continue
-            part = 'c' if pre == 'c_' else 'ft'
-            r = self.con.execute('SELECT s1, s2 FROM bk_scores WHERE match_id=? AND part=? AND ts>?',
-                                 (mid, part, now - 180)).fetchone()
-            if not r:
-                r = self.con.execute(f"SELECT {'c1, c2' if part == 'c' else 'ft1, ft2'} FROM ext_live"
-                                     ' WHERE match_id=? AND ts>?', (mid, now - 300)).fetchone()
-            if not r or r[0] is None or r[1] is None:
-                continue
-            h, a = r
-            pr = settle_one(base, outcome, line, odds, h, a)
-            if pr != settle_one(base, outcome, line, odds, h + 50, a + 50):
-                continue
+            h, a, pr = d
             stt = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
             cf, clv = self.closing_fair(mid, fam, outcome, line, st, odds)
             self.con.execute('UPDATE paper2 SET status=?, profit=?, closing_fair=?, clv=?, settled=?, res_h=?, res_a=?,'
@@ -5773,7 +5806,7 @@ def leg_row(eid, i, l, live=None, links=None, lg_of=None):
             'odds': l['odds'], 'ev': l.get('ev'), 'chance': (1.0 / l['fair']) if l.get('fair') else None,
             'status': st, 'res': l.get('res'), 'base': base, 'leg': True,
             'live': (live or {}).get(l['mid']) if st == 'open' else None,
-            'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': False}
+            'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': bool(l.get('early'))}
 
 
 def expr_view(con, kind, stake_rub, live=None, links=None):
