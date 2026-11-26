@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-139"
+VERSION = "2026.11.26-140"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3498,12 +3498,34 @@ function trackChg(p){
 }
 const dlt=k=>DELTA[k]||0;
 // закрыл окно ставок по цифре sel = «часть|вид|место»: показанные в нём ставки и ушедшие из этой клетки — увидены
-function ackPop(sel){if(!sel||!LASTP||!PSEEN||sel.startsWith('E|'))return;const [part,name,st]=sel.split('|');
+function ackPop(sel){if(sel&&sel.startsWith('E|')){ackExpr(sel.slice(2));return}if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
  for(const b of LASTP.bets||[]){if(!CHGB[b.id])continue;if(!((part==='*'||b.part===part)&&(name==='*'||b.name===name)))continue;
   const c=catOf(b),s=PSEEN[b.id];
   if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0}}
  saveSeen()}
 function watchChg(){}
+// -140 (владелец 26.11: «у вкладок с экспрессами кружок появляется, я нажимаю на вкладку, а изменения не показываются»):
+// у таблиц экспрессов — тот же учёт «+N/−N», что у ставок (-109): ESEEN[id купона] = {c: клетка, p: ₽}, когда купон «увидели»
+// (localStorage eseen_<вид>); первый раз — всё, что есть, считается увиденным. Сбрасывается только закрытием окна по цифре.
+let ESEEN={},EDELTA={},ECHG={};
+function saveE(){try{localStorage.setItem('eseen_'+PVIEW,JSON.stringify(ESEEN))}catch(e){}}
+const emon=(c,p)=>{const o={};if(!RES.includes(c))return o;o.done=p;if(c==='выигрыш')o.mw=p;if(c==='проигрыш')o.ml=p;return o};
+function trackExpr(v){let S=null;try{S=JSON.parse(localStorage.getItem('eseen_'+PVIEW)||'null')}catch(e){}
+ const cur={};for(const c of v.coupons||[])cur[c.id]={c:c.cat,p:c.profit_rub||0};
+ if(!S)S=JSON.parse(JSON.stringify(cur));
+ for(const id in S)if(!(id in cur))delete S[id];
+ ESEEN=S;EDELTA={};ECHG={};
+ const add=(k,x)=>{EDELTA[k]=(EDELTA[k]||0)+x};
+ for(const id in cur){const s=S[id],c=cur[id];if(s&&s.c===c.c&&s.p===c.p)continue;ECHG[id]=1;
+  if(!s)add('all',1);else add(s.c,-1);add(c.c,1);
+  const mn=emon(c.c,c.p),mo=s?emon(s.c,s.p):{};for(const k in mn)add(k,mn[k]);for(const k in mo)add(k,-mo[k])}
+ saveE()}
+// закрыл окно купонов по цифре cat: показанные в нём купоны и ушедшие из этой клетки — увидены
+function ackExpr(cat){const v=LASTP&&(LASTP.expr_views||{})[PVIEW];if(!v)return;
+ const inC=c=>cat==='all'||c===cat||(cat==='done'&&RES.includes(c));
+ for(const c of v.coupons||[]){if(!ECHG[c.id])continue;const s=ESEEN[c.id];
+  if(cat==='all'||inC(c.cat)||(s&&inC(s.c)))ESEEN[c.id]={c:c.cat,p:c.profit_rub||0}}
+ saveE()}
 // -81 (владелец 22.11, снимок с телефона: «не влезла таблица» — у него крупнее шрифт и двузначные числа): на телефоне
 // таблица, если шире места, уменьшается целиком (zoom), пока не влезет — при любом размере шрифта в браузере
 function fitTable(el){if(!isPhone())return;const t=el.querySelector('.ptab');if(!t)return;
@@ -3545,9 +3567,14 @@ function renderExpr(p0,p){
  const el=document.getElementById('paper');const v=(p.expr_views||{})[PVIEW]||{n:0,coupons:[]};
  // -131 (владелец 26.11: «а что я кнопки с цифрами нажать не могу?»): цифра открывает окно с купонами этой клетки
  const z=(x,k)=>x?'<span class="num" data-epop="'+k+'">'+x+'</span>':'·',m=(x,k)=>x?'<span class="num" data-epop="'+k+'">'+sg(x,'<span class="lg"> ₽</span>')+'</span>':'<span class="mu">·</span>';
+ // -140: «+N/−N» с прошлого раза, как у ставок: рамка — изменилось, пунктир — убыло
+ trackExpr(v);
+ const ed=k=>Math.round(EDELTA[k]||0),eck=k=>{const d=ed(k);return d?' dch'+(d<0?' dneg':''):''},
+       edl=k=>{const d=ed(k);return d?'<span class="dl">'+(d>0?'+':'−')+Math.abs(d)+'</span>':''},
+       td=(cl,inner,k)=>'<td class="'+cl+eck(k)+'">'+inner+edl(k)+'</td>';
  let h='<div class="pp"><h2>Ставки на бумаге · по '+p.stake_rub+' ₽, одна ставка на событие</h2>'+vtabs(p0);
  h+='<table class="ptab"><tr><th><span class="lg">Купоны</span><span class="sh">Купоны</span></th><th><span class="lg">Сделано</span><span class="sh">Всего</span></th><th><span class="lg">✓ Выиграно</span><span class="sh">✓</span></th><th><span class="lg">✗ Проиграно</span><span class="sh">✗</span></th><th><span class="lg">↩ Возврат</span><span class="sh">↩</span></th><th>Ждут</th><th>Идут</th><th><span class="lg">Выиграл</span><span class="sh">+₽</span></th><th><span class="lg">Проиграл</span><span class="sh">−₽</span></th><th><span class="lg">Итог</span><span class="sh">₽</span></th></tr>';
- h+='<tr class="tot"><td>Экспрессы</td><td class="n">'+(v.n?z(v.n,'all'):0)+'</td><td class="w">'+z(v.w,'выигрыш')+'</td><td class="l">'+z(v.l,'проигрыш')+'</td><td class="p">'+z(v.push,'возврат')+'</td><td>'+z(v.wait,'wait')+'</td><td class="lvc">'+z(v.live,'live')+'</td><td class="mw">'+m(v.won_rub,'выигрыш')+'</td><td class="ml">'+m(v.lost_rub,'проигрыш')+'</td><td>'+m(v.profit_rub,'done')+'</td></tr>';
+ h+='<tr class="tot"><td>Экспрессы</td>'+td('n',v.n?z(v.n,'all'):0,'all')+td('w',z(v.w,'выигрыш'),'выигрыш')+td('l',z(v.l,'проигрыш'),'проигрыш')+td('p',z(v.push,'возврат'),'возврат')+td('',z(v.wait,'wait'),'wait')+td('lvc',z(v.live,'live'),'live')+td('mw',m(v.won_rub,'выигрыш'),'mw')+td('ml',m(v.lost_rub,'проигрыш'),'ml')+td('',m(v.profit_rub,'done'),'done')+'</tr>';
  if(v.w||v.l||v.push)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="8" class="taxn"><span class="lg">13% с выигрыша купона, проигрыши не вычитаются</span><span class="sh">13% с выигрыша</span></td><td>'+m(v.profit_tax_rub)+'</td></tr>';
  h+='</table>';
  const hd=v.hold||{},cl=v.clv||{};
@@ -3566,8 +3593,9 @@ function renderExpr(p0,p){
 const BETHEAD='<tr><th>Матч</th><th>Ставка</th><th>Контора</th><th>Кф</th><th>Перевес</th><th>Шанс</th><th>Начало</th><th>Итог</th></tr>';
 function cpnRows(c){const now=Date.now()/1000;
  const res=c.status==='open'?(c.cat==='live'?'<span class="lvc">идёт</span>':'<span class="mu">ждёт матчей</span>'):(c.profit_rub>0?'<span class="pos">✓ купон выиграл +'+c.profit_rub+' ₽</span>':(c.profit_rub<0?'<span class="neg">✗ купон проиграл '+c.profit_rub+' ₽</span>':'↩ возврат 0 ₽'));
- let h='<tr class="exh"><td colspan="8"><span class="exb">ЭКСПРЕСС · '+c.legs.length+' '+(c.legs.length<5?'события':'событий')+'</span> собран '+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b>'+(c.chance?' · шанс ~'+Math.round(100*c.chance)+'%':'')+' · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</td></tr>';
- c.legs.forEach((l,i)=>{h+=betRow(l,now,'exl'+(i===c.legs.length-1?' exlast':''))});
+ const ch=ECHG[c.id]?'chg ':'';   // -140: изменившийся с прошлого раза купон выделен, пока окно не закрыто
+ let h='<tr class="'+ch+'exh"><td colspan="8"><span class="exb">ЭКСПРЕСС · '+c.legs.length+' '+(c.legs.length<5?'события':'событий')+'</span> собран '+when(c.created).split(' · ')[0]+' · кф купона <b>'+c.odds.toFixed(2)+'</b>'+(c.chance?' · шанс ~'+Math.round(100*c.chance)+'%':'')+' · '+res+(c.held===false?' · <span class="neg">цена ушла за 90 с</span>':(c.held?' · <span class="pos">цены держались</span>':''))+'</td></tr>';
+ c.legs.forEach((l,i)=>{h+=betRow(l,now,ch+'exl'+(i===c.legs.length-1?' exlast':''))});
  return h+'<tr class="exsp"><td colspan="8"></td></tr>'}
 function cpnTable(L){return '<table class="mt ext">'+BETHEAD+L.map(cpnRows).join('')+'</table>'}
 // -131: один купон — время сборки, кф, шанс купона, итог, держались ли цены; ниже — его ставки (до -133)
