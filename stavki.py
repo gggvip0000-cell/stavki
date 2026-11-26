@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-135"
+VERSION = "2026.11.26-136"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3405,7 +3405,7 @@ function popBets(sel){
   if(b.part!==gp){gp=b.part;const n=L.filter(x=>x.part===gp).length;h+='<tr class="mg"><td colspan="8"><span class="kind ks '+({'МАТЧ':'m','1-Й ТАЙМ':'h1','УГЛОВЫЕ':'c'}[gp]||'m')+'">'+e(gp)+'</span> <span class="mu">'+n+'</span></td></tr>'}
   h+=betRow(b,now)}
  if(!L.length)h+='<tr><td colspan="8" class="mu">нет ставок</td></tr>';
- document.getElementById('pop').innerHTML=h+'</table></div></div>';document.getElementById('pop').style.display='flex';watchChg()}
+ setHTML(document.getElementById('pop'),h+'</table></div></div>','B|'+sel);document.getElementById('pop').style.display='flex';watchChg()}
 // минута матча по таймеру Фонбета (проверено 21.11 по 6 матчам: идущий таймер — секунды с «нулевой» точки
 // timerUpdateTimestamp; стоящий на 45:00 — перерыв); нет таймера — минуты от начала по расписанию
 function matchClock(t,mins){
@@ -3422,8 +3422,8 @@ function matchClock(t,mins){
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
 function closePop(){const pe=document.getElementById('pop');const was=pe.style.display==='flex';pe.style.display='none';if(was){ackPop(POPSEL);POPSEL=null;if(LASTP)renderPaper(LASTP)}}
-document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){popBets(t.dataset.pop);return}
- const te=ev.target.closest('[data-epop]');if(te){popExpr(te.dataset.epop);return}
+document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){document.getElementById('pop')._k=null;popBets(t.dataset.pop);return}
+ const te=ev.target.closest('[data-epop]');if(te){document.getElementById('pop')._k=null;popExpr(te.dataset.epop);return}
  if(ev.target.id==='pop')closePop()});
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // -109 (владелец 22.11, после -107: «а зачем пропало, если я не нажал?» — подсветка сбрасывалась, когда окно программы
@@ -3500,6 +3500,13 @@ function tabDot(code,p){const cur=tabSig(code,p),key='tabseen_'+code;let seen=nu
  if(code===PVIEW||!seen){save();return false}            // открытая вкладка (или первый раз) — всё увидено
  for(const k in cur)if(seen[k]!==cur[k])return true;
  return false}
+// -136 (владелец 26.11: «во всплывающих окнах, где экспрессы, страница обновляется и поднимает окно вверх, когда я его
+// прокручиваю»; «можно же сделать удобнее»): окно и таблица перерисовываются, ТОЛЬКО если содержимое изменилось; при перерисовке
+// того же окна (тот же key) прокрутка списка сохраняется — ничего не прыгает и не мигает без причины
+function setHTML(el,html,key){if(!el)return false;if(el._h===html&&el._k===key)return false;
+ const mb=el.querySelector('.mbody'),sc=(mb&&el._k===key)?mb.scrollTop:0;
+ el.innerHTML=html;el._h=html;el._k=key;
+ const mb2=el.querySelector('.mbody');if(mb2&&sc)mb2.scrollTop=sc;return true}
 function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const v=isExpr(code)?(p.expr_views||{})[code]:(p.views||{})[code];
   const n=isExpr(code)?(v?v.n:0):(v&&v.simple_total?v.simple_total.n:0);
   const dot=tabDot(code,p);
@@ -3521,8 +3528,9 @@ function renderExpr(p0,p){
  if(!v.n)h+='<div class="st">пока ни одного купона — купон собирается, когда у Олимпа одновременно есть '+(PVIEW==='ЭА'?'3 ставки из разных матчей с перевесом от 5%':'2 ставки из разных матчей с перевесом от 8%')+' и свежей ценой</div>';
  // -134 (владелец 26.11: «а это тогда не нужно ведь, я же открываю всё как раньше»): список купонов под таблицей убран —
  // купоны открываются по цифре таблицы (окно popExpr)
- el.innerHTML=h+'</div>';fitTable(el);
- const pe=document.getElementById('pop');if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL.startsWith('E|'))popExpr(POPSEL.slice(2));
+ if(setHTML(el,h+'</div>','paperE'))fitTable(el);
+ const pe=document.getElementById('pop'),ae=document.activeElement;
+ if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae)))popExpr(POPSEL.slice(2));
 }
 // -133 (владелец 26.11: «для экспрессов такой же формат записи, просто в экспресс объединить»; «итог по каждому событию
 // отдельно»): купоны — таблица как в окне «что там было»: шапка купона (кф, шанс, итог купона в ₽, держались ли цены) и строки
@@ -3549,7 +3557,7 @@ function popExpr(cat){
  const nm=(VTABS.find(t=>t[0]===PVIEW)||['',''])[1];
  let h='<div class="mbox"><div class="mhd"><b>'+nm+' — '+ECAT[cat]+' ('+L.length+')</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
  h+=L.length?cpnTable(L):'<div class="mu">нет купонов</div>';
- document.getElementById('pop').innerHTML=h+'</div></div>';document.getElementById('pop').style.display='flex'}
+ setHTML(document.getElementById('pop'),h+'</div></div>','E|'+PVIEW+'|'+cat);document.getElementById('pop').style.display='flex'}
 function renderPaper(p){
  const p0=p;
  // -130: вкладки экспрессов — своя таблица (купоны), без учёта «+N/−N»
@@ -3560,7 +3568,7 @@ function renderPaper(p){
  // в 518 из 521 одинаковых ставок журнала): старые ставки Фонбета показываются как PARI, ссылка — на тот же матч на pari.ru
  for(const b of (p&&p.bets)||[])if(b.bk==='Фонбет'){b.bk='PARI';if(b.bk_url)b.bk_url=b.bk_url.replace('https://fon.bet/','https://pari.ru/')}
  LASTP=p;
- const el=document.getElementById('paper');if(!p||p.error){el.innerHTML=p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'';return}
+ const el=document.getElementById('paper');if(!p||p.error){setHTML(el,p&&p.error?'<div class="pp st">бумага: '+p.error+'</div>':'','err');return}
  trackChg(p);
  const z=x=>x?x:'·';
  const ck=(sel,k)=>{const d=dlt(sel+'|'+k);return d?' dch'+(d<0?' dneg':''):''};
@@ -3590,11 +3598,10 @@ function renderPaper(p){
  if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW===VPRE?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':(PVIEW==='У'?' — ставка записывается, когда у Олимпа свежая цена с перевесом выше налогового порога':''))+'</div>';
  if(PVIEW==='У'){const hv=((p0.views||{})['У']||{}).hold;if(hv&&hv.n)h+='<div class="st">цена держалась через 90 с: '+hv.ok+' из '+hv.n+' ('+Math.round(100*hv.ok/hv.n)+'%)</div>'}
  if(p.nodata&&PVIEW===VMAIN)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
- el.innerHTML=h+'</div>';
- fitTable(el);
+ if(setHTML(el,h+'</div>','paper'))fitTable(el);
  const pe=document.getElementById('pop');
  const ae=document.activeElement;
- if(pe&&pe.style.display==='flex'&&POPSEL&&!POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae))){const mb=pe.querySelector('.mbody'),sc=mb?mb.scrollTop:0;popBets(POPSEL);const mb2=pe.querySelector('.mbody');if(mb2)mb2.scrollTop=sc}
+ if(pe&&pe.style.display==='flex'&&POPSEL&&!POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae)))popBets(POPSEL)
  watchChg();
 }
 
