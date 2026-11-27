@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.27-144"
+VERSION = "2026.11.28-145"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3095,6 +3095,12 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
 .pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
+.gbtn{background:#162538;border-color:#338ced;color:#cfe3fb}
+.gcard{background:#0f151c;border:1px solid #273140;border-radius:10px;padding:10px 12px 6px;margin:0 0 12px;position:relative}
+.gcard h3{margin:0;font-size:16px;color:#efefef}.gcard .gd{color:#9c9c9c;font-size:12px;margin:2px 0 6px}
+.gcard .gs{font-size:13px;color:#cfd6e4;margin-bottom:4px}.gsec{color:#9c9c9c;font-size:13px;font-weight:700;margin:14px 0 8px;text-transform:uppercase;letter-spacing:.04em}
+.gleg{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#cfd6e4;margin:2px 0 2px}.gleg i{display:inline-block;width:18px;height:3px;border-radius:2px;vertical-align:4px;margin-right:6px}
+.gtip{position:absolute;pointer-events:none;background:#1d2433;border:1px solid #39465e;border-radius:6px;padding:5px 8px;font-size:12px;color:#e6e6e6;display:none;z-index:5;max-width:320px;white-space:normal}
 .tdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ffd400;margin-left:7px;vertical-align:2px;box-shadow:0 0 0 1px #000}
 .mt.ext tr.exh td{background:#1b2533;border:1px solid #3a4a60;border-bottom:none;border-radius:8px 8px 0 0;font-size:13px;color:#cfd6e4;padding:7px 10px}
 .mt.ext tr.exl td{border-left:0;border-right:0}.mt.ext tr.exl td:first-child{border-left:3px solid #ffd400}.mt.ext tr.exl td:last-child{border-right:1px solid #3a4a60}
@@ -3172,6 +3178,7 @@ async function tick(){
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
   if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
   syncStep(d);
+  if(POPSEL==='G'&&Date.now()-GTS>30000)loadCharts();     // -145: открытое окно графиков обновляется само
   const u=document.getElementById('upd');
   let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
   if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено</span>';
@@ -3481,6 +3488,66 @@ function matchClock(t,mins){
  return half+' · '+(half==='1-й тайм'&&m>45?'45+'+(m-45):(m>90?'90+'+(m-90):m))+'-я минута'}
 function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x%1440/60),m=x%60;
  return (d?d+' д ':'')+(d||h?h+' ч ':'')+m+' мин'}
+// -145 (владелец 28.11: «графики добавить в программу… 2 графика по одному способу в 1, 2 полоски разными цветами»; «графики
+// только для способов, которые я вижу в программе» — испытываемые присылаются в чат): окно «Графики» — по вкладке карточка: итог (синяя линия) и после налога
+// 13% (оранжевая) после каждой ставки по порядку расчёта; номер ставки по оси — цветом её итога; наведение — подсказка о ставке.
+let GDATA=null,GTS=0,GBUSY=false;
+const GC={tot:'#338ced',tax:'#e76624',w:'#0aac23',l:'#eb6263',p:'#9c9c9c',grid:'#2a323d',axis:'#474747',ink:'#efefef',ink2:'#9c9c9c'};
+function gfmt(v){return (v>0?'+':(v<0?'−':''))+Math.abs(Math.round(v)).toLocaleString('ru-RU')+' ₽'}
+function gticks(lo,hi){const span=Math.max(hi-lo,1),raw=span/5,mag=Math.pow(10,Math.floor(Math.log10(raw)));
+ let st=mag*10;for(const m of [1,2,2.5,5,10])if(m*mag>=raw){st=m*mag;break}
+ const a=Math.floor(lo/st)*st,b=Math.ceil(hi/st)*st,o=[];for(let v=a;v<=b+st/2;v+=st)o.push(Math.round(v));return o}
+function gsvg(it,W){const s=it.s,n=s.length,tot=[0],tax=[0];let a=0,b=0;
+ for(const x of s){a+=x[1];b+=x[1]>0?x[1]*0.87:x[1];tot.push(a);tax.push(b)}
+ const H=W<600?210:250,pl=W<600?46:58,pr=W<600?12:20,pt=8,pb=34,pw=W-pl-pr,ph=H-pt-pb;
+ const yt=gticks(Math.min(0,...tot,...tax),Math.max(0,...tot,...tax)),lo=yt[0],hi=yt[yt.length-1];
+ const X=i=>pl+pw*i/Math.max(n,1),Y=v=>pt+ph*(1-(v-lo)/((hi-lo)||1));
+ let h='<svg width="'+W+'" height="'+H+'" style="display:block" data-n="'+n+'">';
+ for(const t of yt)h+='<line x1="'+pl+'" x2="'+(pl+pw)+'" y1="'+Y(t).toFixed(1)+'" y2="'+Y(t).toFixed(1)+'" stroke="'+(t===0?GC.axis:GC.grid)+'" stroke-width="1"/><text x="'+(pl-6)+'" y="'+(Y(t)+4).toFixed(1)+'" fill="'+GC.ink2+'" font-size="11" text-anchor="end">'+(t>0?'+':(t<0?'−':''))+Math.abs(t).toLocaleString('ru-RU')+'</text>';
+ const pts=arr=>arr.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ');
+ h+='<polyline points="'+pts(tax)+'" fill="none" stroke="'+GC.tax+'" stroke-width="2" stroke-linejoin="round"/>';
+ h+='<polyline points="'+pts(tot)+'" fill="none" stroke="'+GC.tot+'" stroke-width="2" stroke-linejoin="round"/>';
+ // ось X: у каждой ставки цветная метка; номера — у всех, если влезают, иначе через шаг (номер — цветом своей ставки)
+ const by=pt+ph+3,bw=Math.max(1.5,pw/Math.max(n,1)*0.8),every=Math.max(1,Math.ceil(n/Math.max(1,Math.floor(pw/26))));
+ const step=every<=1?1:[2,5,10,20,25,50,100].find(v=>v>=every)||100;
+ for(let i=1;i<=n;i++){const c=GC[s[i-1][0]];h+='<rect x="'+(X(i)-bw/2).toFixed(1)+'" y="'+by+'" width="'+bw.toFixed(1)+'" height="6" fill="'+c+'"/>';
+  if(step===1||i%step===0||i===1)h+='<text x="'+X(i).toFixed(1)+'" y="'+(by+19)+'" fill="'+c+'" font-size="11" font-weight="700" text-anchor="middle">'+i+'</text>'}
+ h+='<line class="gx" x1="0" x2="0" y1="'+pt+'" y2="'+(pt+ph)+'" stroke="#cfd6e4" stroke-width="1" stroke-dasharray="3 3" style="display:none"/>';
+ h+='<rect x="'+pl+'" y="'+pt+'" width="'+pw+'" height="'+(ph+30)+'" fill="transparent" class="ghit" data-pl="'+pl+'" data-pw="'+pw+'"/></svg>';
+ return h}
+function gcard(it,W){const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ const st='Рассчитано <b>'+it.n+'</b>: <span style="color:'+GC.w+'">✓ '+it.w+'</span> · <span style="color:'+GC.l+'">✗ '+it.l+'</span> · ↩ '+it.p+(it.open?' · ещё ждут расчёта '+it.open:'')+(it.clv!=null?' · CLV '+(it.clv>0?'+':'')+it.clv+'% по '+it.clv_n:'');
+ const leg='<div class="gleg"><span><i style="background:'+GC.tot+'"></i>Итог <b>'+gfmt(it.tot)+'</b></span><span><i style="background:'+GC.tax+'"></i>После налога 13% <b>'+gfmt(it.tax)+'</b></span></div>';
+ return '<div class="gcard" data-code="'+e(it.code)+'"><h3>'+e(it.title)+'</h3><div class="gd">'+e(it.desc)+'</div><div class="gs">'+st+'</div>'+leg+(it.n?gsvg(it,W):'<div class="mu sm">пока нет рассчитанных ставок</div>')+'<div class="gtip"></div></div>'}
+function renderCharts(){const pe=document.getElementById('pop');if(POPSEL!=='G')return;
+ const mb=pe.querySelector('.mbody'),W=Math.max(300,Math.min(1060,((mb&&mb.clientWidth)||Math.min(window.innerWidth,1100))-30));
+ let h='<div class="mbox"><div class="mhd"><b>📈 Графики способов</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
+ if(!GDATA)h+='<div class="mu">загружаю…</div>';
+ else if(GDATA.error)h+='<div class="neg">графики не собрались: '+GDATA.error+'</div>';
+ else{const its=GDATA.items||[];
+  h+='<div class="mu sm">Ставки по порядку расчёта, по 100 ₽. Цвет номера ставки: <span style="color:'+GC.w+'">зелёный — выигрыш</span>, <span style="color:'+GC.l+'">красный — проигрыш</span>, серый — возврат. Наведите на график — подсказка о ставке. Обновлено '+(GDATA.made||'')+'.</div>';
+  h+=its.filter(x=>x.visible).map(x=>gcard(x,W)).join('')}
+ setHTML(pe,h+'</div></div>','G');pe.style.display='flex'}
+async function loadCharts(){if(GBUSY)return;GBUSY=true;
+ try{const r=await fetch('/api/charts',{cache:'no-store'});GDATA=await r.json();GTS=Date.now()}catch(e){if(!GDATA)GDATA={error:'нет связи с программой'}}
+ GBUSY=false;renderCharts()}
+function popCharts(){POPSEL='G';const pe=document.getElementById('pop');pe._k=null;renderCharts();if(!GDATA||Date.now()-GTS>30000)loadCharts()}
+// подсказка: ближайшая ставка под курсором (или пальцем)
+function gHover(ev){const r=ev.target.closest('.ghit');const card=ev.target.closest('.gcard');if(!card)return;
+ const tip=card.querySelector('.gtip'),svg=card.querySelector('svg');
+ if(!r||!GDATA){if(tip)tip.style.display='none';if(svg){const gx=svg.querySelector('.gx');if(gx)gx.style.display='none'}return}
+ const it=(GDATA.items||[]).find(x=>x.code===card.dataset.code);if(!it)return;
+ const bb=svg.getBoundingClientRect(),pl=+r.dataset.pl,pw=+r.dataset.pw,n=it.s.length;
+ const i=Math.max(1,Math.min(n,Math.round((ev.clientX-bb.left-pl)/pw*n)));
+ let a=0,b=0;for(let k=0;k<i;k++){const v=it.s[k][1];a+=v;b+=v>0?v*0.87:v}
+ const x=it.s[i-1],nm={w:'✓ выигрыш',l:'✗ проигрыш',p:'↩ возврат'}[x[0]];
+ const gx=svg.querySelector('.gx'),px=pl+pw*i/n;gx.setAttribute('x1',px);gx.setAttribute('x2',px);gx.style.display='';
+ tip.innerHTML='<b>Ставка '+i+'</b> · <span style="color:'+GC[x[0]]+'">'+nm+' '+gfmt(x[1])+'</span><br>'+String(x[2]||'').replace(/</g,'&lt;')+'<br>итог '+gfmt(a)+' · после налога '+gfmt(b);
+ const cb=card.getBoundingClientRect();tip.style.display='block';
+ tip.style.left=Math.max(4,Math.min(cb.width-tip.offsetWidth-4,ev.clientX-cb.left+12))+'px';tip.style.top=(ev.clientY-cb.top+14)+'px'}
+document.addEventListener('mousemove',ev=>{if(POPSEL==='G')gHover(ev)});
+document.addEventListener('click',ev=>{if(POPSEL==='G'&&ev.target.closest('.ghit'))gHover(ev)});
+window.addEventListener('resize',()=>{if(POPSEL==='G'){document.getElementById('pop')._h=null;renderCharts()}});
 function closePop(){const pe=document.getElementById('pop');const was=pe.style.display==='flex';pe.style.display='none';if(was){ackPop(POPSEL);POPSEL=null;if(LASTP)renderPaper(LASTP)}}
 document.addEventListener('click',ev=>{const t=ev.target.closest('[data-pop]');if(t){document.getElementById('pop')._k=null;popBets(t.dataset.pop);return}
  const te=ev.target.closest('[data-epop]');if(te){document.getElementById('pop')._k=null;popExpr(te.dataset.epop);return}
@@ -3532,7 +3599,7 @@ function trackChg(p){
 }
 const dlt=k=>DELTA[k]||0;
 // закрыл окно ставок по цифре sel = «часть|вид|место»: показанные в нём ставки и ушедшие из этой клетки — увидены
-function ackPop(sel){if(sel&&sel.startsWith('E|')){ackExpr(sel.slice(2));return}if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
+function ackPop(sel){if(sel==='G')return;if(sel&&sel.startsWith('E|')){ackExpr(sel.slice(2));return}if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
  for(const b of LASTP.bets||[]){if(!CHGB[b.id])continue;if(!((part==='*'||b.part===part)&&(name==='*'||b.name===name)))continue;
   const c=catOf(b),s=PSEEN[b.id];
   if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0,t:Date.now()}}
@@ -3597,7 +3664,7 @@ function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const
   const n=isExpr(code)?(v?v.n:0):(v&&v.simple_total?v.simple_total.n:0);
   const dot=tabDot(code,p);
   h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+(dot?'<span class="tdot" title="в этой таблице есть изменения"></span>':'')+'</button>'}
- return h+'</div>'}
+ return h+'<button class="pvb gbtn" onclick="popCharts()" title="как менялись итог и итог после налога после каждой ставки — по каждой вкладке">📈 Графики</button></div>'}
 // -130: таблица экспрессов Олимпа (А/Б): итог купонов по 100 ₽, держались ли цены, CLV ног, последние купоны
 function renderExpr(p0,p){
  const el=document.getElementById('paper');const v=(p.expr_views||{})[PVIEW]||{n:0,coupons:[]};
@@ -3693,7 +3760,7 @@ function renderPaper(p){
  if(setHTML(el,h+'</div>','paper'))fitTable(el);
  const pe=document.getElementById('pop');
  const ae=document.activeElement;
- if(pe&&pe.style.display==='flex'&&POPSEL&&!POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae)))popBets(POPSEL)
+ if(pe&&pe.style.display==='flex'&&POPSEL&&POPSEL!=='G'&&!POPSEL.startsWith('E|')&&!(ae&&ae.tagName==='INPUT'&&pe.contains(ae)))popBets(POPSEL)
  watchChg();
 }
 
@@ -4036,6 +4103,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/seen'):
             return self.send_body(200, json.dumps(seen_get(), ensure_ascii=False).encode('utf-8'),
                                   'application/json; charset=utf-8')
+        if self.path.startswith('/api/charts'):          # -145: графики способов (считаются не чаще раза в 30 с)
+            try:
+                with STATS_LOCK:
+                    if CHARTS_CACHE['v'] is None or time.time() - CHARTS_CACHE['ts'] >= 30:
+                        # владелец 28.11: в программе — только вкладки окна; испытываемые способы — графиками в чат
+                        CHARTS_CACHE['v'] = {'items': [x for x in charts_data(STATS_DB, STATS_STAKE) if x['visible']],
+                                             'made': now_str()}
+                        CHARTS_CACHE['ts'] = time.time()
+                    res = CHARTS_CACHE['v']
+            except Exception as e:
+                res = {'error': str(e)[:150]}
+            return self.send_body(200, json.dumps(res, ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8')
         if self.path.startswith('/api/state'):
             snap = STATE.snapshot()
             now_ = time.time()
@@ -6077,6 +6156,87 @@ def hold_stats(con, kind):
                         f' AND {col} >= 0', (kind,)).fetchone()
         out[col] = {'ok': r[0] or 0, 'n': r[1] or 0}
     return out
+
+
+# -145 (владелец 28.11: «графики добавить в программу… 2 графика по одному способу в 1, 2 полоски разными цветами»; «графики
+# только для способов, которые я вижу в программе», испытываемые — в чат, razrabotka/grafiki.py): по каждому способу — рассчитанные ставки по порядку
+# расчёта (по 100 ₽, как таблица окна): итог и после налога 13% с каждого выигрыша. Сначала видимые вкладки, потом проверочные.
+CHART_TITLES = {
+    'П': 'Как появилась', 'Р': 'Перед матчем', 'ЭА': 'А. Экспресс из 3 ног', 'ЭБ': 'Б. Экспресс из 2 ног',
+    'У': 'В. Одиночные с налоговым порогом',
+    'Б': 'Прежний основной: перевес от 5%, лучший по надёжности', 'А': 'Перевес от 5%, лучший по перевесу',
+    'В': 'Перевес от 3% и шанс от 55%', 'Г': 'Перевес от 8%', 'Д': 'Только угловые, перевес от 3%',
+    'Е': 'Перевес от 5% и шанс от 45%', 'И': 'Только Олимп, перевес от 8%', 'Ж': 'Надёжность от 0.05',
+    'З': 'Надёжность от 0.08', 'К': 'Без фаворитов (шанс до 50%)', 'Л': 'Прежний основной за 5–15 мин до матча',
+    'Н': 'Одна ставка на матч', 'С': 'Угловые + 1-й тайм на аутсайдера, без МАТЧА', 'Т': 'То же без МАТЧА, за 5–15 мин до матча',
+    'Ф': 'PARI и Винлайн с налоговым порогом',
+    'X4': 'Экспресс из 4 ног: «Меньше» инд. тоталов угловых', 'X5': 'Экспресс из 5 ног: «Меньше» инд. тоталов угловых',
+    'X6': 'Экспресс из 6 ног: «Меньше» инд. тоталов угловых',
+}
+CHART_VISIBLE = ('П', 'Р', 'ЭА', 'ЭБ', 'У')
+
+
+def charts_data(con, stake_rub):
+    """-145: ряды для графиков окна: [{code, title, desc, visible, n, w, l, p, open, tot, tax, clv, clv_n, s: [[итог w/l/p, ₽, подпись]]}]"""
+    descs = {c: d for c, d, _f, _k in STRATEGIES}
+    descs.update({k: f'экспресс Олимпа из {n} ног, каждая с перевесом от {round(t * 100)}%, цена не старше 15 с'
+                  for k, n, t in OLIMP_EXPR})
+    descs.update({f'X{n}': f'экспресс из {n} ног «Меньше» инд. тоталов угловых, перевес ноги от 3% (замер с 22.11)' for n in (4, 5, 6)})
+    descs.update({   # для окна — понятным языком, без служебных пометок
+        'П': 'угловые при любом шансе + МАТЧ и 1-й тайм только на аутсайдера (шанс до 50%); перевес от 5%, кф до 4; ставка — как только появилась',
+        'Р': 'то же, что «Как появилась», но ставка за 5–15 мин до начала матча',
+        'У': 'только Олимп: перевес не меньше 15%·(1 − шанс) + 4 п.п. и не меньше 5%; цена не старше 15 с; кф до 4'})
+    out = []
+
+    def item(code, rows, opened, clv):
+        tot = tax = 0
+        ser = []
+        for st, rub, lab in rows:
+            tot += rub
+            tax += rub * (1 - NDFL_RATE) if rub > 0 else rub
+            ser.append([{'выигрыш': 'w', 'проигрыш': 'l'}.get(st, 'p'), rub, lab])
+        return {'code': code, 'title': CHART_TITLES.get(code, code), 'desc': descs.get(code, ''), 'visible': code in CHART_VISIBLE,
+                'n': len(ser), 'w': sum(1 for x in ser if x[0] == 'w'), 'l': sum(1 for x in ser if x[0] == 'l'),
+                'p': sum(1 for x in ser if x[0] == 'p'), 'open': opened, 'tot': round(tot), 'tax': round(tax),
+                'clv': round(100 * sum(clv) / len(clv), 1) if clv else None, 'clv_n': len(clv), 's': ser}
+
+    codes = [c for c, _d, _f, _k in STRATEGIES]
+    for code in codes:
+        rows, clv, opened = [], [], 0
+        for st, prof, title, oc, c in con.execute(
+                "SELECT status, profit, title, outcome, clv FROM paper2 WHERE strategy=? AND src='сайт' AND status != 'нет данных'"
+                " ORDER BY CASE WHEN status='open' THEN 1 ELSE 0 END, settled, id", (code,)):
+            if c is not None:
+                clv.append(c)
+            if st == 'open':
+                opened += 1
+                continue
+            rows.append((st, round((prof or 0) * stake_rub), f'{title or ""} · {oc or ""}'))
+        out.append(item(code, rows, opened, clv))
+    for key, size in [(k, None) for k, _n, _t in OLIMP_EXPR] + [(f'X{n}', n) for n in (4, 5, 6)]:
+        q = ("SELECT status, mult, odds, legs FROM expr WHERE kind=? ORDER BY settled, id", (key,)) if size is None else \
+            ("SELECT status, mult, odds, legs FROM expr WHERE kind IS NULL AND size=? ORDER BY settled, id", (size,))
+        rows, clv, opened = [], [], 0
+        for st, mult, odds, legs_s in con.execute(*q):
+            try:
+                legs = json.loads(legs_s or '[]')
+            except Exception:
+                legs = []
+            clv += [l['clv'] for l in legs if l.get('clv') is not None]
+            if st == 'open':
+                opened += 1
+                continue
+            if st not in ('выигрыш', 'проигрыш', 'возврат') or mult is None:
+                continue
+            rows.append((st, round((mult - 1) * stake_rub),
+                         f"экспресс кф {odds}: " + '; '.join(str(l.get('title', '')) for l in legs)[:160]))
+        out.append(item(key, rows, opened, clv))
+    order = {c: i for i, c in enumerate(CHART_VISIBLE)}
+    out.sort(key=lambda x: (0, order[x['code']]) if x['visible'] else (1, -x['n']))
+    return out
+
+
+CHARTS_CACHE = {'ts': 0.0, 'v': None}
 
 
 def fm_void_note(st):
