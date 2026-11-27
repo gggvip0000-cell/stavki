@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.27-141"
+VERSION = "2026.11.27-142"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3167,6 +3167,7 @@ async function tick(){
  try{
   const r=await fetch('/api/state',{cache:'no-store'});const d=await r.json();const s=d.status;
   if(s.version!==PAGE_VERSION){try{if(UPDT)localStorage.setItem('updok',s.version);localStorage.removeItem('updt')}catch(e){}location.reload();return}
+  syncStep(d);
   const u=document.getElementById('upd');
   let okv=null;try{okv=localStorage.getItem('updok')}catch(e){}
   if(okv&&okv===s.version){u.innerHTML='<span class="updok">✓ Обновлено</span>';
@@ -3199,9 +3200,10 @@ async function tick(){
    const srows=rows.filter(v=>vw(v)[0]===sk);const closed=!!SCOL[sk];
    const keys=srows.map(v=>v.bookmaker+'|'+v.match_id+'|'+v.market_name+'|'+v.outcome);
    if(!closed){                                     // раздел открыт: чего не было среди увиденных — «НОВАЯ» на 10 мин
-    if(SEEN[PVIEW+sk])for(const k of keys)if(!SEEN[PVIEW+sk].includes(k)&&!NEWK[k])NEWK[k]=Date.now();
-    SEEN[PVIEW+sk]=keys}
-   const fresh=closed&&!!SEEN[PVIEW+sk]&&keys.some(k=>!(SEEN[PVIEW+sk]||[]).includes(k));
+    const sv=skeys(SEEN[PVIEW+sk]);
+    if(sv)for(const k of keys)if(!sv.includes(k)&&!NEWK[k])NEWK[k]=Date.now();
+    if((!sv||sv.join('\u0001')!==keys.join('\u0001'))&&(!sv||document.visibilityState==='visible'))SEEN[PVIEW+sk]={k:keys,t:Date.now()}}   // -142: с временем — для сверки устройств
+   const sv2=skeys(SEEN[PVIEW+sk]),fresh=closed&&!!sv2&&keys.some(k=>!sv2.includes(k));
    h+='<div class="sec" onclick="scol(\''+sk+'\')"><span class="ar">'+(closed?'▸':'▾')+'</span><span class="kind '+sk+'">'+sn+'</span><span class="sn">доступно ставок:</span>'+bkCols.map(b=>'<span class="bkn" style="--c:'+(COLORS[b]||'#7fb6ff')+'" title="'+b+'">'+srows.filter(v=>v.bookmaker===b).length+'</span>').join('')+(closed?'<span class="sn">свёрнуто</span>':'')+(fresh?'<span class="newb">НОВОЕ</span>':'')+'</div>';
    if(closed)continue;
    const PH=isPhone();
@@ -3243,7 +3245,7 @@ async function tick(){
    h+='</div>'}
   for(const k in NEWK)if(Date.now()-NEWK[k]>600000||(NEWV[k]&&Date.now()-NEWV[k]>3000))delete NEWK[k];
   for(const k in NEWV)if(!NEWK[k]&&Date.now()-NEWV[k]>600000)delete NEWV[k];
-  try{localStorage.setItem('seen',JSON.stringify(SEEN));localStorage.setItem('newk',JSON.stringify(NEWK));localStorage.setItem('newv',JSON.stringify(NEWV))}catch(e){}
+  lsSave('seen',SEEN);lsSave('newv',NEWV);try{localStorage.setItem('newk',JSON.stringify(NEWK))}catch(e){}
   document.getElementById('cols').innerHTML=h;watchNew();
   // ставка — одной строкой: длинная уменьшается, пока не поместится
   for(const b of document.querySelectorAll('.bl,.btn .nm,.mcol .mbt,.mcol .mtm span')){let f=parseFloat(getComputedStyle(b).fontSize);while(b.scrollWidth>b.clientWidth+1&&f>11){f-=0.5;b.style.fontSize=f+'px'}}
@@ -3302,6 +3304,27 @@ function phoneCol(b,c,rs,byM,best,f){
   h+='</div>'}
  return h+'</div>'}
 function sg(x,suf){if(x==null)return '—';return '<span class="'+(x>0?'pos':(x<0?'neg':''))+'">'+(x>0?'+':'')+x+(suf||'')+'</span>'}
+// -142 (владелец 27.11: «если я событие на одном устройстве посмотрю, второе этого никак не понимает»): отметки «увидено»
+// (pseen3_/eseen_/tabseen_<вид>, seen, newv) хранятся и в браузере, и в программе (/api/seen) — общие для ноутбука и телефона.
+// Запись — {…, t: когда увидено} или время числом; при слиянии по каждому ключу берётся увиденное позже. Изменилось у себя —
+// отправить (syncPush); программа сообщает номер версии отметок (seen_ver) — изменился с другого устройства — забрать (syncPull).
+let SYNCV=-1,SYNCPULL=false,SYNCBUSY=false;const SYNCD=new Set();
+const SYNCN=n=>/^(?:(?:pseen3|eseen|tabseen)_.{1,6}|seen|newv)$/.test(n);
+const tOf=v=>typeof v==='number'?v:((v&&typeof v==='object'&&typeof v.t==='number')?v.t:0);
+function mergeM(a,b){let ch=false;for(const k in b){if(!(k in a)||tOf(b[k])>tOf(a[k])){a[k]=b[k];ch=true}}return ch}
+function lsGet(n){try{return JSON.parse(localStorage.getItem(n)||'null')}catch(e){return null}}
+function lsSave(n,v){try{const s=JSON.stringify(v);if(localStorage.getItem(n)!==s){localStorage.setItem(n,s);SYNCD.add(n)}}catch(e){}}
+function syncIn(maps){let ch=false;
+ for(const n in maps||{}){if(!SYNCN(n))continue;const loc=lsGet(n)||{};if(mergeM(loc,maps[n])){try{localStorage.setItem(n,JSON.stringify(loc))}catch(e){}ch=true}}
+ if(ch){loadSeen();SEEN=lsGet('seen')||{};NEWV=lsGet('newv')||{};if(LASTP)renderPaper(LASTP)}
+ return ch}
+async function syncPull(){SYNCPULL=true;try{const r=await fetch('/api/seen',{cache:'no-store'});const d=await r.json();syncIn(d.maps);SYNCV=d.ver}catch(e){}SYNCPULL=false}
+async function syncPush(){if(SYNCBUSY||!SYNCD.size)return;SYNCBUSY=true;const maps={};for(const n of SYNCD){const v=lsGet(n);if(v)maps[n]=v}SYNCD.clear();
+ try{const r=await fetch('/api/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({maps})});const d=await r.json();
+  if(d.error||d.ver==null)throw 0;if(d.prev===SYNCV)SYNCV=d.ver;syncIn(d.maps)}catch(e){for(const n in maps)SYNCD.add(n)}
+ SYNCBUSY=false}
+function syncStep(d){if(d&&d.seen_ver!=null&&d.seen_ver!==SYNCV&&!SYNCPULL&&!SYNCBUSY)syncPull();else syncPush()}
+const skeys=v=>!v?null:(Array.isArray(v)?v:(v.k||null));
 let SEEN={};try{SEEN=JSON.parse(localStorage.getItem('seen')||'{}')}catch(e){}
 let NEWK={};try{NEWK=JSON.parse(localStorage.getItem('newk')||'{}')}catch(e){}
 // -61 (владелец 22.11: «я её увидел — пусть через 3 секунды пропадает»): NEWV — когда «НОВАЯ» впервые была на экране
@@ -3316,7 +3339,7 @@ function watchNew(){
  if(NOBS)NOBS.disconnect();if(!('IntersectionObserver' in window))return;
  NOBS=new IntersectionObserver(es=>{for(const e of es){if(!e.isIntersecting||document.visibilityState!=='visible')continue;
   const k=e.target.dataset.nk;if(!k)continue;
-  if(!NEWV[k]){NEWV[k]=Date.now();try{localStorage.setItem('newv',JSON.stringify(NEWV))}catch(x){}}
+  if(!NEWV[k]){NEWV[k]=Date.now();lsSave('newv',NEWV)}
   setTimeout(()=>dropNew(k),Math.max(0,3000-(Date.now()-NEWV[k])));NOBS.unobserve(e.target)}},{threshold:0.5});
  for(const el of document.querySelectorAll('.bet.nbet'))NOBS.observe(el)}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')watchNew()});
@@ -3473,7 +3496,7 @@ let PSEEN=null,DELTA={},CHGB={};
 // -124: новый отсчёт «+N/−N» (у таблицы П в первые минуты после обновления все ставки, записанные задним числом, считались новыми)
 function loadSeen(){PSEEN=null;try{PSEEN=JSON.parse(localStorage.getItem('pseen3_'+PVIEW)||'null')}catch(e){}}
 loadSeen();
-function saveSeen(){try{localStorage.setItem('pseen3_'+PVIEW,JSON.stringify(PSEEN))}catch(e){}}
+function saveSeen(){lsSave('pseen3_'+PVIEW,PSEEN)}
 function setView(v){if(v===PVIEW)return;closePop();PVIEW=v;try{localStorage.setItem('pview3',v)}catch(e){}loadSeen();if(LASTP)renderPaper(LASTP);tick()}
 function catOf(b){if(b.status!=='open')return b.status;if(b.start_ts>Date.now()/1000)return 'open';return isLiveBet(b)?'live':'settle'}
 const RES=['выигрыш','проигрыш','возврат'];
@@ -3483,9 +3506,11 @@ function trackChg(p){
  // -125: первые 10 мин после начала отсчёта «увидено» — всё, что меняется (ставки, записанные задним числом при обновлении,
  // рассчитываются в первые минуты), сразу считается увиденным, чтобы не было «+N» на всю таблицу
  let t0=0;try{t0=+localStorage.getItem('pseen3t_'+PVIEW)||0}catch(e){}
- if(PSEEN===null||!t0){PSEEN=cur;if(!t0){t0=Date.now();try{localStorage.setItem('pseen3t_'+PVIEW,t0)}catch(e){}}saveSeen()}
- else if(Date.now()-t0<600000){PSEEN=cur;saveSeen()}
- for(const id in PSEEN)if(!(id in cur))delete PSEEN[id];
+ if(PSEEN===null)PSEEN=Object.assign({},cur);
+ if(!t0){t0=Date.now();try{localStorage.setItem('pseen3t_'+PVIEW,t0)}catch(e){}}
+ // -142: «всё увидено» в первые 10 мин — только для ставок, которые ещё ни на одном устройстве не смотрели (t нет)
+ if(Date.now()-t0<600000)for(const id in cur)if(!PSEEN[id]||!PSEEN[id].t)PSEEN[id]=cur[id];
+ // (ушедшие ставки из учёта не удаляются: их вернула бы сверка с другим устройством; программа держит до 5000 записей)
  DELTA={};CHGB={};
  const add=(rows,col,v)=>{for(const r of rows){const k=r+'|'+col;DELTA[k]=(DELTA[k]||0)+v}};
  for(const b of bets){const s=PSEEN[b.id],c=cur[b.id];if(s&&s.c===c.c&&s.p===c.p)continue;
@@ -3501,19 +3526,18 @@ const dlt=k=>DELTA[k]||0;
 function ackPop(sel){if(sel&&sel.startsWith('E|')){ackExpr(sel.slice(2));return}if(!sel||!LASTP||!PSEEN)return;const [part,name,st]=sel.split('|');
  for(const b of LASTP.bets||[]){if(!CHGB[b.id])continue;if(!((part==='*'||b.part===part)&&(name==='*'||b.name===name)))continue;
   const c=catOf(b),s=PSEEN[b.id];
-  if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0}}
+  if(st==='all'||c===st||(s&&s.c===st))PSEEN[b.id]={c:c,p:b.profit_rub||0,t:Date.now()}}
  saveSeen()}
 function watchChg(){}
 // -140 (владелец 26.11: «у вкладок с экспрессами кружок появляется, я нажимаю на вкладку, а изменения не показываются»):
 // у таблиц экспрессов — тот же учёт «+N/−N», что у ставок (-109): ESEEN[id купона] = {c: клетка, p: ₽}, когда купон «увидели»
 // (localStorage eseen_<вид>); первый раз — всё, что есть, считается увиденным. Сбрасывается только закрытием окна по цифре.
 let ESEEN={},EDELTA={},ECHG={};
-function saveE(){try{localStorage.setItem('eseen_'+PVIEW,JSON.stringify(ESEEN))}catch(e){}}
+function saveE(){lsSave('eseen_'+PVIEW,ESEEN)}
 const emon=(c,p)=>{const o={};if(!RES.includes(c))return o;o.done=p;if(c==='выигрыш')o.mw=p;if(c==='проигрыш')o.ml=p;return o};
 function trackExpr(v){let S=null;try{S=JSON.parse(localStorage.getItem('eseen_'+PVIEW)||'null')}catch(e){}
  const cur={};for(const c of v.coupons||[])cur[c.id]={c:c.cat,p:c.profit_rub||0};
  if(!S)S=JSON.parse(JSON.stringify(cur));
- for(const id in S)if(!(id in cur))delete S[id];
  ESEEN=S;EDELTA={};ECHG={};
  const add=(k,x)=>{EDELTA[k]=(EDELTA[k]||0)+x};
  for(const id in cur){const s=S[id],c=cur[id];if(s&&s.c===c.c&&s.p===c.p)continue;ECHG[id]=1;
@@ -3524,7 +3548,7 @@ function trackExpr(v){let S=null;try{S=JSON.parse(localStorage.getItem('eseen_'+
 function ackExpr(cat){const v=LASTP&&(LASTP.expr_views||{})[PVIEW];if(!v)return;
  const inC=c=>cat==='all'||c===cat||(cat==='done'&&RES.includes(c));
  for(const c of v.coupons||[]){if(!ECHG[c.id])continue;const s=ESEEN[c.id];
-  if(cat==='all'||inC(c.cat)||(s&&inC(s.c)))ESEEN[c.id]={c:c.cat,p:c.profit_rub||0}}
+  if(cat==='all'||inC(c.cat)||(s&&inC(s.c)))ESEEN[c.id]={c:c.cat,p:c.profit_rub||0,t:Date.now()}}
  saveE()}
 // -81 (владелец 22.11, снимок с телефона: «не влезла таблица» — у него крупнее шрифт и двузначные числа): на телефоне
 // таблица, если шире места, уменьшается целиком (zoom), пока не влезет — при любом размере шрифта в браузере
@@ -3544,11 +3568,14 @@ function tabSig(code,p){const o={};
  if(isExpr(code)){for(const c of (((p.expr_views||{})[code]||{}).coupons||[]))o['c'+c.created]=c.cat}
  else for(const b of (((p.views||{})[code]||{}).bets||[]))o[b.id]=catOf(b);
  return o}
-function tabDot(code,p){const cur=tabSig(code,p),key='tabseen_'+code;let seen=null;
- try{seen=JSON.parse(localStorage.getItem(key)||'null')}catch(e){}
- const save=()=>{try{const s=JSON.stringify(cur);if(localStorage.getItem(key)!==s)localStorage.setItem(key,s)}catch(e){}};
- if(code===PVIEW||!seen){save();return false}            // открытая вкладка (или первый раз) — всё увидено
- for(const k in cur)if(seen[k]!==cur[k])return true;
+// -142: запись — {c: клетка, t: когда увидели} (раньше — просто клетка), чтобы вкладку, открытую на телефоне, ноутбук считал увиденной
+const tcOf=v=>(v&&typeof v==='object')?v.c:v;
+function tabDot(code,p){const cur=tabSig(code,p),key='tabseen_'+code;const seen=lsGet(key);
+ if(code===PVIEW&&seen&&document.visibilityState!=='visible')return false;   // окно не на экране — не «увидено»
+ if(code===PVIEW||!seen){                                // открытая вкладка (или первый раз) — всё увидено
+  const s=seen||{},now=Date.now();for(const k in cur)if(tcOf(s[k])!==cur[k])s[k]={c:cur[k],t:seen?now:0};
+  lsSave(key,s);return false}
+ for(const k in cur)if(tcOf(seen[k])!==cur[k])return true;
  return false}
 // -136 (владелец 26.11: «во всплывающих окнах, где экспрессы, страница обновляется и поднимает окно вверх, когда я его
 // прокручиваю»; «можно же сделать удобнее»): окно и таблица перерисовываются, ТОЛЬКО если содержимое изменилось; при перерисовке
@@ -3845,6 +3872,92 @@ def paper_cached():
         return PAPER_CACHE['v']
 
 
+# -142 (владелец 27.11: «если я событие на одном устройстве посмотрю, второе этого никак не понимает… утром посмотрел на ноуте,
+# весь день — на телефоне, вечером открываю ноут, а там все + и −»): отметки «увидено» жили только в браузере каждого
+# устройства. Теперь программа хранит их у себя (seen_sync.json) и раздаёт всем окнам: «+N/−N» таблиц (pseen3_<вид>, eseen_<вид>),
+# жёлтые точки вкладок (tabseen_<вид>), «НОВОЕ»/«НОВАЯ» разделов (seen, newv). Запись — {ключ: {…, t: когда увидено}} или число-время;
+# при слиянии по каждому ключу берётся более позднее увиденное (t), так что посмотренное на любом устройстве не теряется.
+SEEN_SYNC = {'ver': 0, 'maps': {}, 'loaded': False}
+SEEN_LOCK = threading.Lock()
+SEEN_NAME = re.compile(r'^(?:(?:pseen3|eseen|tabseen)_[\wА-Яа-яЁё]{1,6}|seen|newv)$')
+SEEN_MAX = 5000                     # записей в одной таблице отметок (старые — по времени — отбрасываются)
+
+
+def seen_t(v):
+    if isinstance(v, bool):
+        return 0
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, dict):
+        t = v.get('t')
+        return t if isinstance(t, (int, float)) and not isinstance(t, bool) else 0
+    return 0
+
+
+def seen_merge(dst, src):
+    """по каждому ключу — запись, увиденная позже; возвращает, изменилось ли что-то"""
+    ch = False
+    for k, v in src.items():
+        if not isinstance(k, str) or len(k) > 300 or len(json.dumps(v, ensure_ascii=False)) > 20000:
+            continue
+        if k not in dst or seen_t(v) > seen_t(dst[k]):
+            dst[k] = v
+            ch = True
+    if len(dst) > SEEN_MAX:
+        for k in sorted(dst, key=lambda x: seen_t(dst[x]))[:len(dst) - SEEN_MAX]:
+            del dst[k]
+    return ch
+
+
+def seen_load():
+    if SEEN_SYNC['loaded']:
+        return
+    SEEN_SYNC['loaded'] = True
+    try:
+        d = json.loads((HERE / 'seen_sync.json').read_text(encoding='utf-8'))
+        SEEN_SYNC['maps'] = {n: m for n, m in (d.get('maps') or {}).items() if SEEN_NAME.match(n) and isinstance(m, dict)}
+        SEEN_SYNC['ver'] = int(d.get('ver') or 0)
+    except Exception:
+        pass
+
+
+def seen_save():
+    try:
+        tmp = HERE / 'seen_sync.json.tmp'
+        tmp.write_text(json.dumps({'ver': SEEN_SYNC['ver'], 'maps': SEEN_SYNC['maps']}, ensure_ascii=False), encoding='utf-8')
+        os.replace(tmp, HERE / 'seen_sync.json')
+    except Exception as e:
+        log('отметки «увидено»: не сохранились — ' + str(e)[:100])
+
+
+def seen_post(maps):
+    """окно прислало свои отметки: слить с общими, вернуть общие по тем же таблицам"""
+    with SEEN_LOCK:
+        seen_load()
+        prev = SEEN_SYNC['ver']
+        ch = False
+        for n, m in (maps or {}).items():
+            if isinstance(n, str) and SEEN_NAME.match(n) and isinstance(m, dict):
+                ch = seen_merge(SEEN_SYNC['maps'].setdefault(n, {}), m) or ch
+        if ch:
+            SEEN_SYNC['ver'] += 1
+            seen_save()
+        return {'ver': SEEN_SYNC['ver'], 'prev': prev,
+                'maps': {n: SEEN_SYNC['maps'][n] for n in (maps or {}) if n in SEEN_SYNC['maps']}}
+
+
+def seen_get():
+    with SEEN_LOCK:
+        seen_load()
+        return {'ver': SEEN_SYNC['ver'], 'maps': SEEN_SYNC['maps']}
+
+
+def seen_ver():
+    with SEEN_LOCK:
+        seen_load()
+        return SEEN_SYNC['ver']
+
+
 class QuietServer(ThreadingHTTPServer):
     """-141: окно закрыли или обновили, пока программа отвечала (ConnectionAbortedError 10053, BrokenPipe), — это не ошибка
     программы; раньше на каждый такой случай в чёрное окно печатался длинный текст ошибки"""
@@ -3911,6 +4024,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path.startswith('/api/seen'):
+            return self.send_body(200, json.dumps(seen_get(), ensure_ascii=False).encode('utf-8'),
+                                  'application/json; charset=utf-8')
         if self.path.startswith('/api/state'):
             snap = STATE.snapshot()
             now_ = time.time()
@@ -3920,6 +4036,7 @@ class Handler(BaseHTTPRequestHandler):
                 snap['paper'] = paper_cached()
             except Exception as e:
                 snap['paper'] = {'error': str(e)[:120]}
+            snap['seen_ver'] = seen_ver()
             body = json.dumps(snap, ensure_ascii=False).encode('utf-8')
             ctype = 'application/json; charset=utf-8'
         else:
@@ -3982,6 +4099,14 @@ class Handler(BaseHTTPRequestHandler):
             if token and TG:
                 threading.Thread(target=TG.connect, args=(token,), daemon=True).start()
             body = b'{"ok": true}'
+        elif self.path.startswith('/api/seen'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                q = json.loads(self.rfile.read(min(n, 3_000_000)).decode('utf-8') or '{}') if n <= 3_000_000 else {}
+                res = seen_post(q.get('maps') if isinstance(q, dict) else {})
+            except Exception as e:
+                res = {'error': str(e)[:100]}
+            body = json.dumps(res, ensure_ascii=False).encode('utf-8')
         elif self.path.startswith('/api/manual_score'):
             try:
                 n = int(self.headers.get('Content-Length') or 0)
