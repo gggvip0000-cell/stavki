@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.26-140"
+VERSION = "2026.11.27-141"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -3827,6 +3827,33 @@ background:#2f7d4f;color:#fff}.e{color:#ff6b6b}</style></head><body><form method
 <b>Ставки</b><div>Пароль для входа с телефона</div><input type="password" name="p" autofocus>__ERR__<button>Войти</button></form></body></html>"""
 
 
+# -141 (владелец 27.11, снимок: «бумага: cannot unpack non-iterable NoneType object» на ноутбуке, а на телефоне в ту же минуту
+# таблица в порядке): окно ноутбука и телефона спрашивают /api/state раз в 3 с каждое, сервер отвечает каждому в своём потоке,
+# а связь с базой STATS_DB у всех потоков одна — два одновременных paper_stats мешают друг другу (запрос одного сбрасывает запрос
+# другого, fetchone() отдаёт None). Теперь к STATS_DB — по очереди (STATS_LOCK), а таблица бумаги считается не чаще раза в 2 с
+# и отдаётся всем окнам одна и та же (меньше работы, когда открыто несколько окон).
+STATS_LOCK = threading.Lock()
+PAPER_CACHE = {'ts': 0.0, 'v': None}
+PAPER_TTL = 2.0
+
+
+def paper_cached():
+    with STATS_LOCK:
+        if PAPER_CACHE['v'] is None or time.time() - PAPER_CACHE['ts'] >= PAPER_TTL:
+            PAPER_CACHE['v'] = paper_stats(STATS_DB, STATS_STAKE)
+            PAPER_CACHE['ts'] = time.time()
+        return PAPER_CACHE['v']
+
+
+class QuietServer(ThreadingHTTPServer):
+    """-141: окно закрыли или обновили, пока программа отвечала (ConnectionAbortedError 10053, BrokenPipe), — это не ошибка
+    программы; раньше на каждый такой случай в чёрное окно печатался длинный текст ошибки"""
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     def remote(self):
         """пришёл через проход Cloudflare (с телефона), а не с этого ноутбука"""
@@ -3867,7 +3894,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.login_page()
         if self.path.startswith('/api/report'):
             try:
-                body = build_report(STATS_DB)
+                with STATS_LOCK:
+                    body = build_report(STATS_DB)
             except Exception as e:
                 body = ('отчёт не собрался: ' + str(e)[:300]).encode('utf-8')
                 self.send_response(500)
@@ -3889,7 +3917,7 @@ class Handler(BaseHTTPRequestHandler):
             for v in snap.get('values') or []:
                 v['fits'] = view_fits(v, now_)
             try:
-                snap['paper'] = paper_stats(STATS_DB, STATS_STAKE)
+                snap['paper'] = paper_cached()
             except Exception as e:
                 snap['paper'] = {'error': str(e)[:120]}
             body = json.dumps(snap, ensure_ascii=False).encode('utf-8')
@@ -7756,7 +7784,7 @@ def main():
     set_tg('подключён' if TG.ready() else 'не подключён', ok=True if TG.ready() else None)
     url = f'http://localhost:{cfg["port"]}'
     try:
-        srv = ThreadingHTTPServer(('127.0.0.1', cfg['port']), Handler)
+        srv = QuietServer(('127.0.0.1', cfg['port']), Handler)
     except OSError:
         # -94: с автозапуском программа может быть уже запущена — второй раз не запускаемся, открываем её окно
         print('Программа «Ставки» уже запущена — открываю её окно. Это чёрное окно можно закрыть.')
