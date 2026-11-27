@@ -5,7 +5,7 @@ S.HERE = pathlib.Path(tempfile.mkdtemp())
 con = S.db_open()
 now = time.time()
 ins = ("INSERT INTO paper2 (strategy, src, created, match_id, title, league, start_ts, bookmaker, fam, outcome, line, odds, ev, fair, status, profit, void, settled)"
-       " VALUES ('П','сайт',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+       " VALUES ('У','сайт',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 con.execute(ins, (now - 9000, 1, 'Усти-над-Лабем — Ганацка Славия Кромержиж', 'Чехия: Футбольная национальная лига', now - 3 * 3600, 'PARI', 'total', 'Меньше (3)', 3.0, 1.9, 0.05, 1.81, 'open', None, None, None))
 con.execute(ins, (now - 9000, 2, 'Дордрехт — Витесс', 'Голландия: 1-й дивизион', now - 2 * 3600, 'Олимп', '1x2', 'П1', None, 3.27, 0.057, 3.09, 'open', None, None, None))
 con.execute(ins, (now - 9000, 3, 'Матч — Отменённый', 'Лига', now - 4 * 3600, 'PARI', 'c_tt1', 'Меньше (4.5)', 4.5, 1.9, 0.05, 1.81, 'возврат', 0, 1, now))
@@ -19,7 +19,7 @@ with sync_playwright() as p:
     br = p.chromium.launch(executable_path='/opt/pw-browsers/chromium')
     pg = br.new_page(viewport={'width': 1280, 'height': 700})
     posted = []
-    pg.add_init_script("try{localStorage.setItem('pview3','П')}catch(e){}")
+    pg.add_init_script("try{localStorage.setItem('pview3','У')}catch(e){}")
     pg.route('**/api/**', lambda rt: (posted.append(rt.request.post_data) if 'manual_score' in rt.request.url else None, rt.fulfill(status=200, content_type='application/json', body='{"ok":true}'))[1])
     pg.route('**/api/state*', lambda rt: rt.fulfill(status=200, content_type='application/json', body=ST))
     pg.route('http://x/', lambda rt: rt.fulfill(status=200, content_type='text/html; charset=utf-8', body=page_html))

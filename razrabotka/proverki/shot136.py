@@ -3,7 +3,7 @@ sys.path.insert(0, '/home/user/stavki')
 import stavki as S
 S.HERE = pathlib.Path(tempfile.mkdtemp())
 con = S.db_open()
-r = json.load(open('/home/claude/bet/r0058/report.json', encoding='utf-8'))
+r = json.load(open('/home/claude/bet/r0019/report.json', encoding='utf-8'))
 cols = [c[1] for c in con.execute('PRAGMA table_info(paper2)')]
 for x in r['paper2']:
     ks = [k for k in x if k in cols]

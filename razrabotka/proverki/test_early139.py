@@ -17,18 +17,18 @@ assert C.clock_at(2, T[0] - 80 * 60, T[0]) == '2-й тайм · ≈63-я мин�
 # одиночная: М 2.5 при 2:1 — закрыта досрочно на 57-й минуте
 cols = [c[1] for c in con.execute('PRAGMA table_info(paper2)')]
 con.execute("INSERT INTO paper2 (strategy, src, created, match_id, title, start_ts, bookmaker, fam, outcome, line, odds, ev, status)"
-            " VALUES ('П','сайт',?,1,'Ювентус — Омония',?,'Олимп','total','Меньше (2.5)',2.5,3.04,0.115,'open')", (st - 600, st))
+            " VALUES ('У','сайт',?,1,'Ювентус — Омония',?,'Олимп','total','Меньше (2.5)',2.5,3.04,0.115,'open')", (st - 600, st))
 con.commit(); C.settle_early()
 r = con.execute('SELECT status, early, res_h, res_a, early_at, early_h, early_a FROM paper2').fetchone(); print(r)
 assert r == ('проигрыш', 1, 2, 1, '2-й тайм · 57-я минута', 2, 1)
-b = [x for x in S.paper_stats(con, 100)['views']['П']['bets']][0]
+b = [x for x in S.paper_stats(con, 100)['views']['У']['bets']][0]
 assert b['early'] and b['early_at'] == '2-й тайм · 57-я минута' and b['early_sc'] == [2, 1]
 # итог 3:1 — счёт итоговый, минута и счёт закрытия остаются
 con.execute("INSERT INTO ext_scores (match_id, src, ext_id, ft1, ft2, done, tries, last_try) VALUES (1,'fotmob','z',3,1,1,1,0)")
 con.commit(); C.settle_early()
 r = con.execute('SELECT status, early, res_h, res_a, early_at, early_h, early_a FROM paper2').fetchone(); print(r)
 assert r == ('проигрыш', 0, 3, 1, '2-й тайм · 57-я минута', 2, 1)
-b = S.paper_stats(con, 100)['views']['П']['bets'][0]
+b = S.paper_stats(con, 100)['views']['У']['bets'][0]
 assert not b['early'] and b['res'] == [3, 1] and b['early_sc'] == [2, 1]
 # нога экспресса: минута и счёт закрытия пишутся один раз, после итога остаются
 legs = [{'mid': 1, 'fam': 'total', 'outcome': 'Меньше (2.5)', 'line': 2.5, 'odds': 3.04, 'fair': 2.7, 'ev': 0.115,

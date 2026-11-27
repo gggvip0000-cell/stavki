@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.28-145"
+VERSION = "2026.11.28-146"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -464,8 +464,11 @@ STRATEGIES = [
 # -129 (владелец 25.11: «МАТЧ на аутсайдера вернуть в видимую таблицу, если примерно на 100 ставках CLV держится от +3% на
 # обеих половинах»; отчёт 26.11 00:58: МАТЧ-аутсайдер способа П — 154 ставки с CLV, +5.0%, половины +4.3% (71) / +5.5% (83),
 # цена закрытия = цене входа лишь у 11%): видимые снова П и Р. С и Т пишутся дальше (способы на ходу не меняем).
-VIEW_CODES = (('П', 'как появилась'), ('Р', 'перед матчем'),
-              ('У', 'одиночные с налоговым порогом'))   # -123/-125/-129/-130: способы, которые видит владелец (переключатель)
+# -146 (владелец 28.11: «в программе я хочу видеть только плюсовые, без тех, которым везёт»; отчёт 28.11 00:19, ожидание после
+# налога по CLV: ЭБ +9.1%, Ф +6.6%, У +5.9%, ЭА +4.3%; П −3.3%, Р — не мерило): видимые — У и Ф (одиночные), ЭБ и ЭА — экспрессы
+# (OLIMP_EXPR). П, Р и остальные пишутся дальше как проверочные (способы на ходу не меняем — только показ).
+VIEW_CODES = (('У', 'одиночные · Олимп · налоговый порог'),
+              ('Ф', 'одиночные · PARI и Винлайн · налоговый порог'))   # способы, которые видит владелец (переключатель)
 # -130: бумажные экспрессы Олимпа против налога (Совет 26.11, варианты «А» и «Б»): (вид, ног, перевес ноги от)
 OLIMP_EXPR = (('ЭА', 3, 0.05), ('ЭБ', 2, 0.08))
 OLIMP_EXPR_AGE = 15      # цена ноги не старше 15 с
@@ -504,7 +507,8 @@ def half_line(v):
         ln = line_of(v.get('outcome') or '') if not event_of(v).endswith('1x2') else None
     return ln is None or abs((ln * 2) % 2 - 1) < 1e-9
 BK_PAGE_RECON = False              # -129: разведка страницы матча PARI выключена (см. отчёт 26.11 00:58)
-MAIN_CODE = 'П'                    # основной: его ставки — в Telegram и в сводке
+MAIN_CODE = 'У'                    # основной: сводка Telegram (-146: был П — его владелец больше не видит)
+TG_CODES = ('У', 'Ф')              # -146: новые ставки видимых одиночных способов — в Telegram
 CAND_MIN_EV = 0.03          # журнал CLV: все ставки моих контор с перевесом от 3% и кф до 4
 
 
@@ -3095,7 +3099,7 @@ a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border
 .pos{color:#5fd38d}.neg{color:#ff6b6b}.mu{color:#6b7785}
 .ptab{width:100%;border-collapse:collapse;font-size:15px;margin-top:6px}
 .pvsw{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0 2px}.pvb{background:#1d2433;color:#cfd6e4;border:1px solid #39465e;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer}.pvb.on{background:#2b5fd9;color:#fff;border-color:#2b5fd9}.pvh{color:#8a94a8;font-size:13px}
-.gbtn{background:#162538;border-color:#338ced;color:#cfe3fb}
+.gico{display:inline-block;margin-left:8px;padding:0 5px;border-radius:5px;background:#0f151c;border:1px solid #39465e;font-size:13px;line-height:20px;cursor:pointer}.gico:hover{border-color:#338ced;background:#162538}
 .gcard{background:#0f151c;border:1px solid #273140;border-radius:10px;padding:10px 12px 6px;margin:0 0 12px;position:relative}
 .gcard h3{margin:0;font-size:16px;color:#efefef}.gcard .gd{color:#9c9c9c;font-size:12px;margin:2px 0 6px}
 .gcard .gs{font-size:13px;color:#cfd6e4;margin-bottom:4px}.gsec{color:#9c9c9c;font-size:13px;font-weight:700;margin:14px 0 8px;text-transform:uppercase;letter-spacing:.04em}
@@ -3491,7 +3495,7 @@ function fmtLeft(x){x=Math.round(x/60);const d=Math.floor(x/1440),h=Math.floor(x
 // -145 (владелец 28.11: «графики добавить в программу… 2 графика по одному способу в 1, 2 полоски разными цветами»; «графики
 // только для способов, которые я вижу в программе» — испытываемые присылаются в чат): окно «Графики» — по вкладке карточка: итог (синяя линия) и после налога
 // 13% (оранжевая) после каждой ставки по порядку расчёта; номер ставки по оси — цветом её итога; наведение — подсказка о ставке.
-let GDATA=null,GTS=0,GBUSY=false;
+let GDATA=null,GTS=0,GBUSY=false,GCODE=null;
 const GC={tot:'#338ced',tax:'#e76624',w:'#0aac23',l:'#eb6263',p:'#9c9c9c',grid:'#2a323d',axis:'#474747',ink:'#efefef',ink2:'#9c9c9c'};
 function gfmt(v){return (v>0?'+':(v<0?'−':''))+Math.abs(Math.round(v)).toLocaleString('ru-RU')+' ₽'}
 function gticks(lo,hi){const span=Math.max(hi-lo,1),raw=span/5,mag=Math.pow(10,Math.floor(Math.log10(raw)));
@@ -3521,17 +3525,18 @@ function gcard(it,W){const e=t=>String(t==null?'':t).replace(/&/g,'&amp;').repla
  return '<div class="gcard" data-code="'+e(it.code)+'"><h3>'+e(it.title)+'</h3><div class="gd">'+e(it.desc)+'</div><div class="gs">'+st+'</div>'+leg+(it.n?gsvg(it,W):'<div class="mu sm">пока нет рассчитанных ставок</div>')+'<div class="gtip"></div></div>'}
 function renderCharts(){const pe=document.getElementById('pop');if(POPSEL!=='G')return;
  const mb=pe.querySelector('.mbody'),W=Math.max(300,Math.min(1060,((mb&&mb.clientWidth)||Math.min(window.innerWidth,1100))-30));
- let h='<div class="mbox"><div class="mhd"><b>📈 Графики способов</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
+ const its=(GDATA&&GDATA.items||[]).filter(x=>x.code===GCODE);
+ const nm=((VTABS.find(t=>t[0]===GCODE)||[])[1])||(its[0]&&its[0].title)||'';
+ let h='<div class="mbox"><div class="mhd"><b>📈 '+nm+'</b><span class="mx" onclick="closePop()">✕</span></div><div class="mbody">';
  if(!GDATA)h+='<div class="mu">загружаю…</div>';
  else if(GDATA.error)h+='<div class="neg">графики не собрались: '+GDATA.error+'</div>';
- else{const its=GDATA.items||[];
-  h+='<div class="mu sm">Ставки по порядку расчёта, по 100 ₽. Цвет номера ставки: <span style="color:'+GC.w+'">зелёный — выигрыш</span>, <span style="color:'+GC.l+'">красный — проигрыш</span>, серый — возврат. Наведите на график — подсказка о ставке. Обновлено '+(GDATA.made||'')+'.</div>';
-  h+=its.filter(x=>x.visible).map(x=>gcard(x,W)).join('')}
- setHTML(pe,h+'</div></div>','G');pe.style.display='flex'}
+ else{h+='<div class="mu sm">Ставки по порядку расчёта, по 100 ₽. Цвет номера ставки: <span style="color:'+GC.w+'">зелёный — выигрыш</span>, <span style="color:'+GC.l+'">красный — проигрыш</span>, серый — возврат. Наведите на график — подсказка о ставке. Обновлено '+(GDATA.made||'')+'.</div>';
+  h+=its.length?its.map(x=>gcard(x,W)).join(''):'<div class="mu">пока нет ни одной ставки этого способа</div>'}
+ setHTML(pe,h+'</div></div>','G|'+GCODE);pe.style.display='flex'}
 async function loadCharts(){if(GBUSY)return;GBUSY=true;
  try{const r=await fetch('/api/charts',{cache:'no-store'});GDATA=await r.json();GTS=Date.now()}catch(e){if(!GDATA)GDATA={error:'нет связи с программой'}}
  GBUSY=false;renderCharts()}
-function popCharts(){POPSEL='G';const pe=document.getElementById('pop');pe._k=null;renderCharts();if(!GDATA||Date.now()-GTS>30000)loadCharts()}
+function popCharts(code){GCODE=code||PVIEW;POPSEL='G';const pe=document.getElementById('pop');pe._k=null;renderCharts();if(!GDATA||Date.now()-GTS>30000)loadCharts()}
 // подсказка: ближайшая ставка под курсором (или пальцем)
 function gHover(ev){const r=ev.target.closest('.ghit');const card=ev.target.closest('.gcard');if(!card)return;
  const tip=card.querySelector('.gtip'),svg=card.querySelector('svg');
@@ -3561,10 +3566,10 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closePop()});
 // -123 (владелец 24.11: «две таблицы… одна принимает ставки, как было, а вторая именно перед матчем… переключаться»):
 // PVIEW — какой способ показан (П «как появилась» / Р «перед матчем»), у каждого свой учёт увиденного
 // -129: видимые снова П/Р (с МАТЧЕМ на аутсайдера); новые ключи — свой отсчёт «увидено», старый учёт П от 24.11 не мешает
-const VMAIN='П',VPRE='Р';
+const VMAIN='У',VPRE='Р';   // -146: видимые — У, ЭБ, ЭА, Ф (П и Р скрыты как невыгодные после налога)
 // -130 (владелец 26.11: «с этими вариантами добавь таблички, чтобы я за ними следил; после „Перед матчем“»):
 // А — экспресс из 3 ног, Б — экспресс из 2 ног (ЭА/ЭБ, купоны), В — одиночные с налоговым порогом (способ У)
-const VTABS=[[VMAIN,'Как появилась'],[VPRE,'Перед матчем'],['ЭА','А. Экспресс из 3 ног'],['ЭБ','Б. Экспресс из 2 ног'],['У','В. Одиночные с налоговым порогом']];
+const VTABS=[['У','Одиночные · Олимп'],['ЭБ','Экспресс 2 ноги · Олимп'],['ЭА','Экспресс 3 ноги · Олимп'],['Ф','Одиночные · PARI и Винлайн']];
 const isExpr=v=>v==='ЭА'||v==='ЭБ';
 let PVIEW=VMAIN;try{PVIEW=localStorage.getItem('pview3')||VMAIN}catch(e){}
 if(!VTABS.some(t=>t[0]===PVIEW))PVIEW=VMAIN;
@@ -3663,8 +3668,10 @@ function setHTML(el,html,key){if(!el)return false;if(el._h===html&&el._k===key)r
 function vtabs(p){let h='<div class="pvsw">';for(const [code,nm] of VTABS){const v=isExpr(code)?(p.expr_views||{})[code]:(p.views||{})[code];
   const n=isExpr(code)?(v?v.n:0):(v&&v.simple_total?v.simple_total.n:0);
   const dot=tabDot(code,p);
-  h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+(dot?'<span class="tdot" title="в этой таблице есть изменения"></span>':'')+'</button>'}
- return h+'<button class="pvb gbtn" onclick="popCharts()" title="как менялись итог и итог после налога после каждой ставки — по каждой вкладке">📈 Графики</button></div>'}
+  // -146 (владелец 28.11: «для каждой вкладки правее цифры кнопку со значком графика; во всплывающем окне — график только этого способа»)
+  h+='<button class="pvb'+(PVIEW===code?' on':'')+'" onclick="setView(\''+code+'\')">'+nm+' · '+n+(dot?'<span class="tdot" title="в этой таблице есть изменения"></span>':'')
+   +'<span class="gico" onclick="event.stopPropagation();popCharts(\''+code+'\')" title="график: итог и после налога после каждой ставки">📈</span></button>'}
+ return h+'</div>'}
 // -130: таблица экспрессов Олимпа (А/Б): итог купонов по 100 ₽, держались ли цены, CLV ног, последние купоны
 function renderExpr(p0,p){
  const el=document.getElementById('paper');const v=(p.expr_views||{})[PVIEW]||{n:0,coupons:[]};
@@ -3754,7 +3761,7 @@ function renderPaper(p){
  h+='<tr class="tot"><td>Всего</td>'+cells(p.simple_total||Z,'*|*')+'</tr>';
  const T=p.simple_total;if(T&&T.done)h+='<tr class="taxr"><td><span class="lg">после налога 13%</span><span class="sh">после налога</span></td><td colspan="9" class="taxn"><span class="lg">13% с каждого выигрыша, проигрыши не вычитаются</span><span class="sh">13% с выигрышей</span></td><td>'+sg(T.profit_tax_rub,'<span class="lg"> ₽</span>')+'</td></tr>';
  h+='</table>';
- if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW===VPRE?' — они записываются за 5–15 мин до начала матча, первые появятся к ближайшим матчам':(PVIEW==='У'?' — ставка записывается, когда у Олимпа свежая цена с перевесом выше налогового порога':''))+'</div>';
+ if(EMPTY)h+='<div class="st">пока ни одной ставки'+(PVIEW==='У'?' — ставка записывается, когда у Олимпа свежая цена с перевесом выше налогового порога':(PVIEW==='Ф'?' — ставка записывается, когда у PARI или Винлайна цена с перевесом выше налогового порога':''))+'</div>';
  if(PVIEW==='У'){const hv=((p0.views||{})['У']||{}).hold;if(hv&&hv.n)h+='<div class="st">цена держалась через 90 с: '+hv.ok+' из '+hv.n+' ('+Math.round(100*hv.ok/hv.n)+'%)</div>'}
  if(p.nodata&&PVIEW===VMAIN)h+='<div class="st">ещё '+p.nodata+' не рассчитать: нигде не нашёлся счёт — в итог не входят</div>';
  if(setHTML(el,h+'</div>','paper'))fitTable(el);
@@ -4730,7 +4737,7 @@ class Collector:
                     cur.execute('INSERT INTO leg_check (kind, ref, match_id, fam, outcome, line, odds0, t0) VALUES'
                                 ' (?,?,?,?,?,?,?,?)', ('У', cur.lastrowid, v['match_id'], event_of(v), v['outcome'],
                                                        v['line'], v['odds'], now))
-                if cur.rowcount and code == MAIN_CODE and v['src'] == 'сайт' and TG:
+                if cur.rowcount and code in TG_CODES and v['src'] == 'сайт' and TG:
                     TG.send(tg_text(v, code))
             for v in rows:
                 if v['ev'] >= CAND_MIN_EV and v['odds'] <= 4.0:
@@ -6161,19 +6168,24 @@ def hold_stats(con, kind):
 # -145 (владелец 28.11: «графики добавить в программу… 2 графика по одному способу в 1, 2 полоски разными цветами»; «графики
 # только для способов, которые я вижу в программе», испытываемые — в чат, razrabotka/grafiki.py): по каждому способу — рассчитанные ставки по порядку
 # расчёта (по 100 ₽, как таблица окна): итог и после налога 13% с каждого выигрыша. Сначала видимые вкладки, потом проверочные.
+# -146 (владелец 28.11: «все способы в одном понятном стиле назвать»): «вид · где (конторы/рынки) · условие отбора».
+# Это же — названия вкладок окна (JS VTABS) и графиков в чате (razrabotka/grafiki.py).
 CHART_TITLES = {
-    'П': 'Как появилась', 'Р': 'Перед матчем', 'ЭА': 'А. Экспресс из 3 ног', 'ЭБ': 'Б. Экспресс из 2 ног',
-    'У': 'В. Одиночные с налоговым порогом',
-    'Б': 'Прежний основной: перевес от 5%, лучший по надёжности', 'А': 'Перевес от 5%, лучший по перевесу',
-    'В': 'Перевес от 3% и шанс от 55%', 'Г': 'Перевес от 8%', 'Д': 'Только угловые, перевес от 3%',
-    'Е': 'Перевес от 5% и шанс от 45%', 'И': 'Только Олимп, перевес от 8%', 'Ж': 'Надёжность от 0.05',
-    'З': 'Надёжность от 0.08', 'К': 'Без фаворитов (шанс до 50%)', 'Л': 'Прежний основной за 5–15 мин до матча',
-    'Н': 'Одна ставка на матч', 'С': 'Угловые + 1-й тайм на аутсайдера, без МАТЧА', 'Т': 'То же без МАТЧА, за 5–15 мин до матча',
-    'Ф': 'PARI и Винлайн с налоговым порогом',
-    'X4': 'Экспресс из 4 ног: «Меньше» инд. тоталов угловых', 'X5': 'Экспресс из 5 ног: «Меньше» инд. тоталов угловых',
-    'X6': 'Экспресс из 6 ног: «Меньше» инд. тоталов угловых',
+    'У': 'Одиночные · Олимп · налоговый порог', 'Ф': 'Одиночные · PARI и Винлайн · налоговый порог',
+    'ЭБ': 'Экспресс 2 ноги · Олимп · перевес от 8%', 'ЭА': 'Экспресс 3 ноги · Олимп · перевес от 5%',
+    'П': 'Одиночные · угловые + аутсайдер · сразу', 'Р': 'Одиночные · угловые + аутсайдер · за 5–15 мин',
+    'С': 'Одиночные · угловые + аутсайдер 1-го тайма · сразу', 'Т': 'Одиночные · угловые + аутсайдер 1-го тайма · за 5–15 мин',
+    'Б': 'Одиночные · все рынки · перевес от 5%', 'А': 'Одиночные · все рынки · перевес от 5%, выбор по перевесу',
+    'В': 'Одиночные · все рынки · перевес от 3% и шанс от 55%', 'Г': 'Одиночные · все рынки · перевес от 8%',
+    'Д': 'Одиночные · угловые · перевес от 3%', 'Е': 'Одиночные · все рынки · перевес от 5% и шанс от 45%',
+    'Ж': 'Одиночные · все рынки · надёжность от 0.05', 'З': 'Одиночные · все рынки · надёжность от 0.08',
+    'И': 'Одиночные · Олимп · перевес от 8%', 'К': 'Одиночные · все рынки · только аутсайдеры',
+    'Л': 'Одиночные · все рынки · за 5–15 мин', 'Н': 'Одиночные · все рынки · одна ставка на матч',
+    'X4': 'Экспресс 4 ноги · PARI и Олимп · «меньше» угловых команд',
+    'X5': 'Экспресс 5 ног · PARI и Олимп · «меньше» угловых команд',
+    'X6': 'Экспресс 6 ног · PARI и Олимп · «меньше» угловых команд',
 }
-CHART_VISIBLE = ('П', 'Р', 'ЭА', 'ЭБ', 'У')
+CHART_VISIBLE = ('У', 'ЭБ', 'ЭА', 'Ф')
 
 
 def charts_data(con, stake_rub):
@@ -6185,7 +6197,8 @@ def charts_data(con, stake_rub):
     descs.update({   # для окна — понятным языком, без служебных пометок
         'П': 'угловые при любом шансе + МАТЧ и 1-й тайм только на аутсайдера (шанс до 50%); перевес от 5%, кф до 4; ставка — как только появилась',
         'Р': 'то же, что «Как появилась», но ставка за 5–15 мин до начала матча',
-        'У': 'только Олимп: перевес не меньше 15%·(1 − шанс) + 4 п.п. и не меньше 5%; цена не старше 15 с; кф до 4'})
+        'У': 'только Олимп: перевес не меньше 15%·(1 − шанс) + 4 п.п. и не меньше 5%; цена не старше 15 с; кф до 4',
+        'Ф': 'PARI и Винлайн: тот же налоговый порог (перевес не меньше 15%·(1 − шанс) + 4 п.п. и не меньше 5%); кф до 4'})
     out = []
 
     def item(code, rows, opened, clv):
@@ -7971,13 +7984,20 @@ def set_tg(text, ok):
         STATE.status['telegram'] = {'text': text, 'ok': ok}
 
 
+def strat_min_ev(code, v):
+    """-146: перевес, от которого способ берёт ставку (для «брать, если кф не ниже» в Telegram)"""
+    if code in ('У', 'Ф'):
+        return max(0.05, 0.15 * (1 - (v.get('chance') or 0.5)) + 0.04)
+    return 0.05
+
+
 def tg_text(v, code):
     bet, where = bet_info(v)
     bet = f'{bet_kind(event_of(v))[0]}: {bet}'
     start = datetime.datetime.fromtimestamp(v['start_ts'], MSK).strftime('%d.%m %H:%M')
     return (f"{v['bookmaker']}: {bet} — кф {v['odds']}\n{v.get('match', '')}, {start} МСК\n"
             f"шанс ~{round(100 * v['chance'])}% · перевес +{100 * v['ev']:.1f}%\n"
-            f"брать, если кф не ниже {((1.05 - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * 1.05):.2f}"
+            f"брать, если кф не ниже {((1 + strat_min_ev(code, v) - (v.get('p_push') or 0)) / v['p_win'] if v.get('p_win') else v['fair'] * (1 + strat_min_ev(code, v))):.2f}"
             + (f"\n{v['bk_url']}" if v.get('bk_url') else ''))
 
 

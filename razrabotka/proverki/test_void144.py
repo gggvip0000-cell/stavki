@@ -10,7 +10,7 @@ S.time.time = lambda: T[0]
 C = S.Collector.__new__(S.Collector); C.con = con; C.close_ts = None
 st = T[0] - 3 * 3600
 ins = ("INSERT INTO paper2 (strategy, src, created, match_id, title, start_ts, bookmaker, fam, outcome, line, odds, ev, fair, status)"
-       " VALUES ('П','сайт',?,?,?,?,'PARI',?,?,?,1.9,0.05,1.81,?)")
+       " VALUES ('У','сайт',?,?,?,?,'PARI',?,?,?,1.9,0.05,1.81,?)")
 con.execute(ins, (st - 600, 1, 'Усти-над-Лабем — Кромержиж', st, 'total', 'Меньше (3)', 3.0, 'open'))
 con.execute(ins, (st - 600, 1, 'Усти-над-Лабем — Кромержиж', st, 'c_tt1', 'Меньше (4.5)', 4.5, 'open'))
 con.execute(ins, (st - 600, 2, 'Дордрехт — Витесс', st - 3 * 86400, '1x2', 'П1', None, 'нет данных'))
@@ -32,7 +32,7 @@ C.expr_set_ts = 0; C.expr_ts = T[0]; C.expr_step()
 s_, mult, lg = con.execute('SELECT status, mult, legs FROM expr').fetchone(); lg = json.loads(lg); print(s_, mult, lg[0].get('void'))
 assert s_ == 'выигрыш' and abs(mult - 1.8) < 1e-9 and lg[0]['void']       # нога 1 — кф 1, купон = 1.8
 r0 = S.leg_row(1, 0, lg[0]); assert r0['status'] == 'возврат' and r0['void']
-ps = S.paper_stats(con, 100)['views']['П']
+ps = S.paper_stats(con, 100)['views']['У']
 b = [x for x in ps['bets'] if x['mid'] == 1][0]; assert b['void'] and b['status'] == 'возврат' and b['profit_rub'] == 0
 print('итог П:', {k: ps['simple_total'][k] for k in ('n', 'w', 'l', 'push', 'done')})
 # FotMob: перенесён — пометка, без 0:0
@@ -50,11 +50,11 @@ con.execute("INSERT INTO sofa_link (match_id, url, tries, last_try) VALUES (5,'h
 con.commit(); C.fml_last = 0; C.fotmob_live_step()
 print('ext_live:', con.execute('SELECT ft1, ft2, note FROM ext_live WHERE match_id=5').fetchone(), C.fml_stat.get('not_started'))
 assert con.execute('SELECT ft1, ft2, note FROM ext_live WHERE match_id=5').fetchone() == (None, None, 'перенесён')
-b5 = [x for x in S.paper_stats(con, 100)['views']['П']['bets'] if x['mid'] == 5][0]
+b5 = [x for x in S.paper_stats(con, 100)['views']['У']['bets'] if x['mid'] == 5][0]
 print('в окне:', b5['live']); assert b5['live'] == {'note': 'перенесён'}
 # обычный лайв FotMob у идущего матча — как раньше (счёт, угловые, «окончен»)
 con.execute("INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin, note) VALUES (3,1,0,2,3,?,1,'')", (T[0] - 10,))
 con.commit()
-b3 = [x for x in S.paper_stats(con, 100)['views']['П']['bets'] if x['mid'] == 3][0]
+b3 = [x for x in S.paper_stats(con, 100)['views']['У']['bets'] if x['mid'] == 3][0]
 print('лайв матча 3:', b3['live']); assert b3['live'] == {'fin': 1, 'c': [2, 3], 'ft': [1, 0]}, b3['live']
 print('ВСЁ ОК')
