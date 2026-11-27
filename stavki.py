@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.27-143"
+VERSION = "2026.11.27-144"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -2813,6 +2813,10 @@ def db_open():
     con.execute('CREATE TABLE IF NOT EXISTS ext_live (match_id INT PRIMARY KEY, ft1 INT, ft2 INT, c1 INT, c2 INT, ts REAL)')
     if 'fin' not in [r[1] for r in con.execute('PRAGMA table_info(ext_live)')]:
         con.execute('ALTER TABLE ext_live ADD COLUMN fin INT')     # -63: FotMob считает матч оконченным
+    if 'note' not in [r[1] for r in con.execute('PRAGMA table_info(ext_live)')]:
+        con.execute('ALTER TABLE ext_live ADD COLUMN note TEXT')   # -144: FotMob пишет «перенесён / отменён / прерван»
+    if 'void' not in [r[1] for r in con.execute('PRAGMA table_info(paper2)')]:
+        con.execute('ALTER TABLE paper2 ADD COLUMN void INT')      # -144: матч не состоялся — возврат
     con.execute('CREATE INDEX IF NOT EXISTS pin_idx ON pin (match_id, market, ts)')
     con.execute('DELETE FROM pin WHERE ts < ?', (time.time() - 4 * 86400,))   # цены старше 4 дней не нужны
     con.commit()
@@ -3076,7 +3080,7 @@ td.dch{background:#ffd4001f!important;box-shadow:inset 0 0 0 2px #ffd400!importa
 .mt td{padding:7px 8px;border-bottom:1px solid #1e2732;vertical-align:top}.mt .th{color:#9be15d;font-weight:600}.mt .ta{color:#c69cff;font-weight:600}
 .mt tr.mg td{background:#1b2430;padding:6px 8px;border-bottom:none}.lft{color:#ffd400;font-weight:700;font-size:13px}
 .bt{font-weight:700}.mlink{text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:3px}
-.mt td.bcell{white-space:nowrap}.mform{margin-top:4px}.mform span{white-space:nowrap}.mform input{width:38px;padding:2px 4px;background:#0f141b;color:#e8eef5;border:1px solid #3a4656;border-radius:4px}.mform button{padding:2px 8px;cursor:pointer}.mt td.rcell{width:120px;max-width:140px;font-size:13px}.mt .bkbtn{margin-left:0}
+.mt td.bcell{white-space:nowrap}.mform{margin-top:4px}.mform span{white-space:nowrap}.mform input{width:38px;padding:2px 4px;background:#0f141b;color:#e8eef5;border:1px solid #3a4656;border-radius:4px}.mform button{padding:2px 8px;cursor:pointer}.mform .voidb{margin-top:5px;font-size:12px}.mt td.rcell{width:120px;max-width:140px;font-size:13px}.mt .bkbtn{margin-left:0}
 a.bkbtn,span.bkbtn{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:#fff;background:var(--c);border-radius:5px;padding:1px 7px;text-decoration:none;vertical-align:1px}.bt.h{color:#9be15d}.bt.a{color:#c69cff}
 a.rbtn{display:inline-block;background:#2b6cb0;color:#fff;font-weight:700;border-radius:8px;padding:8px 14px;text-decoration:none}a.rbtn:hover{background:#3182ce}
 .info .hich{background:#ffd400;color:#111;border-radius:5px;padding:0 6px;font-weight:700}.info .hich b{color:#111}
@@ -3387,6 +3391,11 @@ function decided(b){
 }
 let POPSEL=null;const MANSENT={},MANVAL={};
 // -92: счёт угловых/1-го тайма вручную → программа записывает и сразу рассчитывает ставки этого матча
+// -144 (владелец 27.11: Усти-над-Лабем — Кромержиж отменён, Дордрехт — Витесс перенесён): матч не состоялся — возврат всех ставок
+async function manVoid(mid){
+ if(!confirm('Отметить матч как несостоявшийся (отменён или перенесён)?\nВсе ставки на него, и ноги экспрессов, станут «возврат 0 ₽».'))return;
+ try{const r=await fetch('/api/manual_score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mid:mid,part:'x',h:0,a:0})});
+  const j=await r.json();if(j.ok){for(const k of ['ft','h1','c'])MANSENT[mid+k]=1;if(POPSEL&&POPSEL.startsWith('E|'))popExpr(POPSEL.slice(2));else if(POPSEL)popBets(POPSEL)}}catch(e){}}
 async function manSc(id,mid,part){const h=document.getElementById('mh'+id),a=document.getElementById('ma'+id);
  const hv=parseInt(h&&h.value,10),av=parseInt(a&&a.value,10);
  if(!(hv>=0&&hv<=40&&av>=0&&av<=40)){if(h)h.style.outline='2px solid #e55';if(a)a.style.outline='2px solid #e55';return}
@@ -3394,7 +3403,7 @@ async function manSc(id,mid,part){const h=document.getElementById('mh'+id),a=doc
   const j=await r.json();if(j.ok){MANSENT[mid+part]=1;if(POPSEL)popBets(POPSEL)}}catch(e){}}
 // -71 (владелец 22.11: «над „Сделано“ — цифра, по ней окно только со ставками, где матчи идут сейчас»)
 function isLiveBet(b){const now=Date.now()/1000;if(b.status!=='open'||b.start_ts>now)return false;
- const lv=b.live||{},t=lv.timer;if(lv.fin)return false;
+ const lv=b.live||{},t=lv.timer;if(lv.fin||lv.note)return false;
  if(t&&t.tsec!=null)return !(!t.tdir&&t.tsec>=5400);
  return now-b.start_ts<115*60}   // -102: как «≈ матч окончен» в matchClock (2-й тайм до 90+7 = 114 мин от начала)
 // -87 (владелец 22.11: «после „Ждут“ — колонка „Расчёт“, туда все ставки, которые ждут расчёт»): матч уже окончен
@@ -3415,8 +3424,8 @@ function betRow(b,now,cls){const tm=(b.title||'').split(' — ');
   if(b.start_ts>now)left='<div class="lft">через '+fmtLeft(b.start_ts-now)+'</div>';
   else if(b.status==='open'){const mins=Math.floor((now-b.start_ts)/60);
    if(mins<135||(b.live&&b.live.timer)){const lv=b.live||{},k=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'&&lv.h1?'h1':'ft'),sc=lv[k];
-    left='<div class="livem">● '+(lv.fin?'матч окончен':matchClock(lv.timer,mins))+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
-   else left='<div class="mu sm">закончился, ждём результат</div>'}
+    left=lv.note?'<div class="neg">на FotMob: матч '+lv.note+'</div>':'<div class="livem">● '+(lv.fin?'матч окончен':matchClock(lv.timer,mins))+'</div>'+(sc?'<div class="fact">'+({'c':'угловые','h1':'1-й тайм','ft':'счёт'}[k])+' <span class="th">'+sc[0]+'</span> : <span class="ta">'+sc[1]+'</span> сейчас</div>':'')}
+   else left=(b.live&&b.live.note)?'<div class="neg">на FotMob: матч '+b.live.note+'</div>':'<div class="mu sm">закончился, ждём результат</div>'}
   else left='<div class="mu sm">сыгран</div>';
   // -92 (владелец 22.11: угловые Чоннам — Ансан «всё ждёт и ждёт»): тайм/угловые через 2.5 ч после начала так и не пришли
   // ни из одного источника — можно ввести счёт с сайта (PARI, Flashscore) вручную, ставки матча рассчитаются сразу
@@ -3425,7 +3434,7 @@ function betRow(b,now,cls){const tm=(b.title||'').split(' — ');
   // появилась?»): форма — сразу, как матч окончен (как колонка «Расчёт», isSettleBet); источники всё равно главнее ручного
   const needMan=isSettleBet(b)&&b.mid;
   const mk=b.part==='УГЛОВЫЕ'?'c':(b.part==='1-Й ТАЙМ'?'h1':'ft');
-  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.leg?(b.status==='выигрыш'?'<span class="pos">✓ сыграла</span>':(b.status==='проигрыш'?'<span class="neg">✗ не сыграла</span>':'<span>↩ возврат</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>')));
+  let res=b.status==='open'?(needMan?(MANSENT[b.mid+mk]?'<span class="mu">✓ счёт принят, считаю…</span>':'<span class="mu">'+(mk==='c'?'угловых':(mk==='h1'?'счёта 1-го тайма':'счёта матча'))+' нет ни в одном источнике</span><div class="mform">введите с сайта:<br><span><input type="number" min="0" max="40" id="mh'+b.id+'" value="'+(MANVAL['mh'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> : <input type="number" min="0" max="40" id="ma'+b.id+'" value="'+(MANVAL['ma'+b.id]||'')+'" oninput="MANVAL[this.id]=this.value"> <button onclick="manSc('+b.id+','+b.mid+',\''+mk+'\')">ОК</button></span><br><button class="voidb" onclick="manVoid('+b.mid+')" title="матч отменён или перенесён — ставки на него вернутся (возврат 0 ₽)">Матч не состоялся</button></div>'):(decided(b)||'<span class="mu">'+(b.start_ts>now?'ждём матч':'ждём результат')+'</span>')):(b.void?'<span>↩ матч не состоялся'+(b.leg?'':' — возврат 0 ₽')+'</span>':b.leg?(b.status==='выигрыш'?'<span class="pos">✓ сыграла</span>':(b.status==='проигрыш'?'<span class="neg">✗ не сыграла</span>':'<span>↩ возврат</span>')):(b.status==='выигрыш'?'<span class="pos">✓ выигрыш '+(b.profit_rub>0?'+':'')+b.profit_rub+' ₽</span>':(b.status==='проигрыш'?'<span class="neg">✗ проигрыш '+b.profit_rub+' ₽</span>':'<span>↩ возврат 0 ₽</span>')));
   if(b.res){const [rh,ra]=b.res,lab={'МАТЧ':'счёт','1-Й ТАЙМ':'1-й тайм','УГЛОВЫЕ':'угловые'}[b.part]||'счёт';
    const hh=b.base==='tt1'?'<b>'+rh+'</b>':rh,aa=b.base==='tt2'?'<b>'+ra+'</b>':ra;
    const tot=(b.base==='total')?' · всего <b>'+(rh+ra)+'</b>':'';
@@ -4112,7 +4121,7 @@ class Handler(BaseHTTPRequestHandler):
                 n = int(self.headers.get('Content-Length') or 0)
                 q = json.loads(self.rfile.read(min(n, 2000)).decode('utf-8') or '{}')
                 mid, part, h, a = int(q['mid']), str(q['part']), int(q['h']), int(q['a'])
-                ok = part in ('c', 'h1', 'ft') and 0 <= h <= 40 and 0 <= a <= 40
+                ok = part in ('c', 'h1', 'ft', 'x') and 0 <= h <= 40 and 0 <= a <= 40   # x — -144: матч не состоялся
             except Exception:
                 ok = False
             if ok:
@@ -4763,11 +4772,18 @@ class Collector:
         if now - getattr(self, 'expr_set_ts', 0) < 30:        # -138: было 120 с — досрочный расчёт по лайву
             return
         self.expr_set_ts = now
+        void = {m for (m,) in self.con.execute("SELECT match_id FROM manual_scores WHERE part='x'")}
         for eid, legs_s, created in self.con.execute(
                 "SELECT id, legs, created FROM expr WHERE status='open' AND size>0").fetchall():
             legs = json.loads(legs_s)
             mult, known, lost = 1.0, 0, False
             for l in legs:
+                if l['mid'] in void:             # -144: матч не состоялся — нога с кф 1 (возврат), купон по остальным
+                    l['void'] = True
+                    l.pop('res', None)
+                    l.pop('early', None)
+                    known += 1
+                    continue
                 if l['start_ts'] > now:
                     continue
                 sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
@@ -4817,7 +4833,7 @@ class Collector:
             legs = json.loads(legs_s)
             ch = reopen = False
             for l in legs:
-                if (l.get('res') and not l.get('early')) or l['start_ts'] > now:
+                if (l.get('res') and not l.get('early')) or l.get('void') or l['start_ts'] > now:
                     continue
                 sc = self.score_for(l['fam'], l['mid'], l['start_ts'])
                 if not sc:
@@ -4925,10 +4941,18 @@ class Collector:
         self.con.commit()
 
     def settle_paper(self):
+        # -144 (владелец 27.11: Усти-над-Лабем — Кромержиж «отменён», Дордрехт — Витесс «перенесён» — а программа ждала счёт):
+        # матч, отмеченный владельцем как несостоявшийся (кнопка в окне ставок, manual_scores part 'x'), — все его ставки
+        # «возврат» (0 ₽), как у конторы при несостоявшемся матче
+        nv = self.con.execute("UPDATE paper2 SET status='возврат', profit=0, settled=?, void=1, clv=NULL"
+                              " WHERE status IN ('open','нет данных') AND match_id IN"
+                              " (SELECT match_id FROM manual_scores WHERE part='x')", (time.time(),)).rowcount
+        if nv:
+            log(f'возврат по несостоявшимся матчам: {nv} ставок')
         # у уже рассчитанных ставок без записанного счёта — дописать (для окна «что там было»)
         for pid, fam, mid, st in self.con.execute(
                 "SELECT id, COALESCE(fam, event), match_id, start_ts FROM paper2 WHERE status IN"
-                " ('выигрыш','проигрыш','возврат') AND res_h IS NULL LIMIT 200").fetchall():
+                " ('выигрыш','проигрыш','возврат') AND res_h IS NULL AND void IS NULL LIMIT 200").fetchall():
             sc = self.score_for(fam, mid, st)
             if sc:
                 self.con.execute('UPDATE paper2 SET res_h=?, res_a=? WHERE id=?', (sc[0], sc[1], pid))
@@ -5296,6 +5320,14 @@ class Collector:
         # -63 (владелец 22.11: FotMob «Завершен», а у нас «идёт · 124 мин»): матч окончен — так и писать, а итог
         # с FotMob запросить сразу, не дожидаясь очередной 5-минутной попытки
         fin = 1 if (((j.get('header') or {}).get('status') or {}).get('finished')) else 0
+        note = fm_void_note((j.get('header') or {}).get('status') or {})
+        started = ((j.get('header') or {}).get('status') or {}).get('started')
+        if note or started is False:                # -144: образцы для сверки формата (в отчёте fml_stat.not_started)
+            ns = st.setdefault('not_started', [])
+            ns.append({'match_id': mid, 'fid': fid, 'note': note, 'ts': now,
+                       'status': {k: v for k, v in ((j.get('header') or {}).get('status') or {}).items()
+                                  if k in ('started', 'finished', 'cancelled', 'awarded', 'reason', 'utcTime')}})
+            del ns[:-10]
         if fin:
             self.con.execute('UPDATE ext_scores SET last_try=0 WHERE match_id=? AND done=0', (mid,))
             self.ext_last = 0
@@ -5303,11 +5335,13 @@ class Collector:
         if same is None:
             st['pair_none'] = st.get('pair_none', 0) + 1
             # хозяева неизвестны (нет английских названий) — не пишем: перевёрнутые угловые испортят инд. тотал
-            self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,NULL,NULL,NULL,NULL,?,?)',
-                             (mid, now, fin))
+            self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin, note)'
+                             ' VALUES (?,NULL,NULL,NULL,NULL,?,?,?)', (mid, now, fin, note))
             self.con.commit()
             return
         ft = [teams[0].get('score'), teams[1].get('score')]
+        if started is False or note:
+            ft = [None, None]            # -144: матч не начался (перенесён) — у FotMob в шапке 0:0, это не счёт
         c = None
         for g in ((((j.get('content') or {}).get('stats') or {}).get('Periods') or {}).get('All') or {}).get('stats') or []:
             for it in g.get('stats') or []:
@@ -5316,8 +5350,8 @@ class Collector:
         if same is False:
             ft, c = ft[::-1], (c[::-1] if c else None)
         st['ok_corners' if c else 'ok_no_corners'] = st.get('ok_corners' if c else 'ok_no_corners', 0) + 1
-        self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin) VALUES (?,?,?,?,?,?,?)',
-                         (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now, fin))
+        self.con.execute('INSERT OR REPLACE INTO ext_live (match_id, ft1, ft2, c1, c2, ts, fin, note) VALUES (?,?,?,?,?,?,?,?)',
+                         (mid, ft[0], ft[1], c[0] if c else None, c[1] if c else None, now, fin, note))
         self.con.commit()
 
     def sofa_link_step(self):
@@ -5845,7 +5879,8 @@ class Collector:
                 self.con.execute('INSERT OR REPLACE INTO manual_scores (match_id, part, h, a, ts) VALUES (?,?,?,?,?)',
                                  (mid_, part_, h_, a_, time.time()))
                 self.con.commit()
-                log(f'введён вручную счёт ({part_}) матча {mid_}: {h_}:{a_}')
+                log(f'матч {mid_} отмечен как несостоявшийся — ставки на него возвращаются' if part_ == 'x'
+                    else f'введён вручную счёт ({part_}) матча {mid_}: {h_}:{a_}')
                 self.settle_paper()
                 self.con.commit()
             if STATE.razvedka_requested:
@@ -6044,12 +6079,30 @@ def hold_stats(con, kind):
     return out
 
 
+def fm_void_note(st):
+    """-144: FotMob пишет, что матч не играется по расписанию: 'перенесён' / 'отменён' / 'прерван' или ''. Формат статуса
+    FotMob для таких матчей НЕ сверен по записям (есть только 'fulltime_short' -111) — смотрим и признак cancelled, и слова
+    в reason (shortKey/longKey/long); образцы пишутся в отчёт (fml_stat.not_started). Только подсказка в окне — сами ставки
+    возвращает владелец кнопкой «Матч не состоялся»."""
+    r = st.get('reason') or {}
+    words = ' '.join(str(r.get(k) or '') for k in ('shortKey', 'longKey', 'long', 'short')).lower()
+    if 'postpon' in words:
+        return 'перенесён'
+    if 'abandon' in words or 'interrupt' in words:
+        return 'прерван'
+    if 'cancel' in words or st.get('cancelled') is True:
+        return 'отменён'
+    return ''
+
+
 def leg_row(eid, i, l, live=None, links=None, lg_of=None):
     """-133 (владелец 26.11: «для экспрессов такой же формат записи, просто в экспресс объединить»): нога купона в том же виде,
     что ставка в окне «что там было» (матч, лига, ставка, контора, кф, перевес, шанс, начало, итог ноги, счёт, лайв)"""
     pre, base = split_fam(l['fam'])
     st = 'open'
-    if l.get('res'):
+    if l.get('void'):
+        st = 'возврат'
+    elif l.get('res'):
         pr = settle_one(base, l['outcome'], l['line'], l['odds'], l['res'][0], l['res'][1])
         st = 'выигрыш' if pr > 0 else ('проигрыш' if pr < 0 else 'возврат')
     surl, murl = links or ({}, {})
@@ -6062,7 +6115,7 @@ def leg_row(eid, i, l, live=None, links=None, lg_of=None):
             'status': st, 'res': l.get('res'), 'base': base, 'leg': True,
             'live': (live or {}).get(l['mid']) if st == 'open' else None,
             'url': surl.get(l['mid']) or murl.get(l['mid']) or '', 'sofa': l['mid'] in surl, 'profit_rub': None, 'early': bool(l.get('early')),
-            'early_at': l.get('early_at', ''), 'early_sc': l.get('early_sc')}
+            'early_at': l.get('early_at', ''), 'early_sc': l.get('early_sc'), 'void': bool(l.get('void'))}
 
 
 def expr_view(con, kind, stake_rub, live=None, links=None):
@@ -6163,17 +6216,23 @@ def paper_stats(con, stake_rub):
         live.setdefault(lmid, {})[part] = [a1, a2]
         if part == 'ft':
             live[lmid]['timer'] = {'tsec': tsec, 'tdir': tdir, 'tupd': tupd, 'ht': bool(re.match(r'\s*\(\d+-\d+\)', cm or ''))}
-    for lmid, f1, f2, c1, c2, fin in con.execute('SELECT match_id, ft1, ft2, c1, c2, fin FROM ext_live WHERE ts > ?',
-                                                  (time.time() - 300,)):
-        if f1 is None and c1 is None and not fin:
+    for lmid, f1, f2, c1, c2, fin, note in con.execute('SELECT match_id, ft1, ft2, c1, c2, fin, note FROM ext_live'
+                                                        ' WHERE ts > ?', (time.time() - 300,)):
+        if f1 is None and c1 is None and not fin and not note:
             continue
         d = live.setdefault(lmid, {})
+        if note:
+            d['note'] = note                   # -144: FotMob: «перенесён / отменён / прерван»
         if fin:
             d['fin'] = 1
         if 'c' not in d and c1 is not None and c2 is not None:
             d['c'] = [c1, c2]                  # угловых нет в лайве конторы — берём FotMob
         if 'ft' not in d and f1 is not None and f2 is not None:
             d['ft'] = [f1, f2]
+    # пометку «перенесён/отменён» держать и после окна опроса лайва (FotMob спрашивается только 150 мин от начала)
+    for lmid, note in con.execute("SELECT match_id, note FROM ext_live WHERE note IS NOT NULL AND note != ''"
+                                  " AND ts > ?", (time.time() - 3 * 86400,)):
+        live.setdefault(lmid, {})['note'] = note
     murl = dict(con.execute('SELECT match_id, url FROM matches'))
     surl = dict(con.execute("SELECT match_id, url FROM sofa_link WHERE url != ''"))
     # -123: то, что видит владелец — способы VIEW_CODES (П «как появилась», Р «перед матчем»), цены с сайта конторы;
@@ -6198,9 +6257,9 @@ def paper_stats(con, stake_rub):
         out['simple_total'] = agg("strategy=? AND src='сайт'", (code,))
         out['bets'] = []
         for (pid, mid, title, lg, st, bk, fam, oc, odds, ev, status, profit, rh, ra, bku, fair, early, e_at, e_h,
-             e_a) in con.execute(
+             e_a, vd) in con.execute(
                 "SELECT id, match_id, title, league, start_ts, bookmaker, COALESCE(fam, event), outcome, odds, ev, status,"
-                " profit, res_h, res_a, bk_url, fair, early, early_at, early_h, early_a"
+                " profit, res_h, res_a, bk_url, fair, early, early_at, early_h, early_a, void"
                 " FROM paper2 WHERE strategy=? AND src='сайт' AND status != 'нет данных' ORDER BY start_ts DESC", (code,)):
             pre = split_fam(fam or '')[0]
             out['bets'].append({'id': pid, 'mid': mid, 'title': title, 'league': lg, 'start_ts': st, 'bk': bk,
@@ -6213,7 +6272,7 @@ def paper_stats(con, stake_rub):
                                 'url': surl.get(mid) or murl.get(mid) or '', 'sofa': mid in surl, 'bk_url': bku or '',
                                 'profit_rub': None if status == 'open' else round((profit or 0) * stake_rub),
                                 'early': bool(early), 'early_at': e_at or '',
-                                'early_sc': [e_h, e_a] if e_h is not None else None})
+                                'early_sc': [e_h, e_a] if e_h is not None else None, 'void': bool(vd)})
         main_out['views'][code] = out
     out = main_out
     for k in ('simple', 'simple_total', 'bets'):
