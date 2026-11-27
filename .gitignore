@@ -11,3 +11,7 @@ vneshnie/
 pin_state.pkl
 pin_state.tmp
 stavki_hot.tmp
+seen_sync.json
+seen_sync.json.tmp
+stavki.sqlite3-wal
+stavki.sqlite3-shm
