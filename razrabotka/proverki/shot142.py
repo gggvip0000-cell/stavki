@@ -6,7 +6,7 @@ S.HERE = pathlib.Path(tempfile.mkdtemp())
 con = S.db_open()
 now = time.time()
 ins = ("INSERT INTO paper2 (strategy, src, created, match_id, title, league, start_ts, bookmaker, fam, outcome, line, odds, ev, fair, status)"
-       " VALUES ('П','сайт',?,?,?,'Лига',?,'Олимп','c_tt2','Меньше (4.5)',4.5,1.9,0.06,1.79,'open')")
+       " VALUES ('У','сайт',?,?,?,'Лига',?,'Олимп','c_tt2','Меньше (4.5)',4.5,1.9,0.06,1.79,'open')")
 for i in range(4):
     con.execute(ins, (now - 7200, 10 + i, f'Хозяева {i} — Гости {i}', now - 1800))
 legs = [{'mid': 50 + j, 'fam': 'total', 'outcome': 'Меньше (2.5)', 'line': 2.5, 'odds': 2.0, 'fair': 1.9, 'ev': 0.06,
@@ -32,7 +32,7 @@ with sync_playwright() as p:
     errs = []
     for pg in (lap, tel):
         pg.on('pageerror', lambda e: errs.append(str(e)))
-        pg.add_init_script("try{if(!localStorage.getItem('pseen3t_П'))localStorage.setItem('pseen3t_П',Date.now()-3600000)}catch(e){}")
+        pg.add_init_script("try{if(!localStorage.getItem('pseen3t_У'))localStorage.setItem('pseen3t_У',Date.now()-3600000)}catch(e){}")
         pg.goto(URL); pg.wait_for_timeout(2500)
     # обе ставки 1 и купон 1 рассчитались
     con.execute("UPDATE paper2 SET status='выигрыш', profit=0.9, res_h=1, res_a=2, settled=? WHERE match_id=10", (now,))
