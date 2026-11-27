@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.27-142"
+VERSION = "2026.11.27-143"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -1081,7 +1081,7 @@ class DirectFeed:
         self.miscs = {}            # id события -> счёт из лайва (score1, score2, comment)
         self.lei = {}              # -128: id события -> liveEventInfos (табло: счёт по таймам, угловые, карточки)
 
-    def start(self, browser):
+    def start(self, browser, timeout=90000):
         self.page = browser.new_page(locale='ru-RU')
         seen = []
 
@@ -1089,7 +1089,7 @@ class DirectFeed:
             if self.book['host_mark'] in r.url and '/events/' in r.url:
                 seen.append(r.url)
         self.page.on('request', on_req)
-        self.page.goto(self.book['site'], wait_until='domcontentloaded', timeout=90000)
+        self.page.goto(self.book['site'], wait_until='domcontentloaded', timeout=timeout)
         self.page.wait_for_timeout(6000)
         self.page_url = self.page.url
         if seen:
@@ -2240,7 +2240,7 @@ class WinlineFeed:
         self._evs = {}
         self.started = 0
 
-    def start(self, browser):
+    def start(self, browser, timeout=90000):
         self.page = browser.new_page(locale='ru-RU')
 
         def on_ws(ws):
@@ -2255,7 +2255,7 @@ class WinlineFeed:
         self.line = WinlineLine()
         self.queue = []
         self.started = time.time()
-        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=90000)
+        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=timeout)
         self.page.wait_for_timeout(5000)
         self.page_url = self.page.url
         log(f'Винлайн: сайт открыт, кадров получено {len(self.queue)}')
@@ -2425,9 +2425,9 @@ class OlimpFeed:
         self.hot = {}           # -120: id чемпионата / «УГЛ»-события → когда в нём нашлась ставка с перевесом
         self.stat = {'full_bytes': 0, 'full_events': 0, 'comp_fetches': 0, 'corner_details': 0}
 
-    def start(self, browser):
+    def start(self, browser, timeout=90000):
         self.page = browser.new_page(locale='ru-RU')
-        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=90000)
+        self.page.goto(self.SITE, wait_until='domcontentloaded', timeout=timeout)
         self.page.wait_for_timeout(4000)
         self.page_url = self.page.url
         if re.search(r'не робот|капч|captcha', self.page.inner_text('body')[:5000], re.I):
@@ -4264,11 +4264,39 @@ class Collector:
         self.page.wait_for_timeout(5000)
         log('браузер открыт, odds.ru загружен')
         for f in self.feeds:
-            try:
-                f.start(self.browser)
-            except Exception as e:
-                add_error(f'{f.name}: сайт не открылся: {str(e).splitlines()[0][:120]}', f.name)
+            self.feed_start(f)
         self.start_pin()
+
+    FEED_RETRY = 120        # -143: сайт конторы не открылся — следующая попытка через 2 мин
+
+    def feed_start(self, f):
+        """-143 (владелец 27.11, снимок: «Олимп: сайт не открылся: Page.goto: Timeout 90000ms exceeded»): раньше при неудаче
+        на запуске программа больше не пробовала — контора оставалась без цен до перезапуска, а недогруженная страница
+        опрашивалась впустую. Теперь страница закрывается, через 2 мин — новая попытка (пока не откроется). Капча — стоп."""
+        f.start_try = time.time()
+        try:
+            # повторная попытка ждёт сайт 30 с, а не 90: пока открывается страница, остальная программа стоит
+            f.start(self.browser, timeout=30000 if getattr(f, 'start_fails', 0) else 90000)
+            f.need_start = False
+            if getattr(f, 'start_fails', 0):
+                log(f'{f.name}: сайт открылся с {f.start_fails + 1}-й попытки')
+            f.start_fails = 0
+            clear_error(f.name)
+            return True
+        except Exception as e:
+            f.start_fails = getattr(f, 'start_fails', 0) + 1
+            f.need_start = not getattr(f, 'blocked', False)
+            try:
+                if f.page is not None:
+                    f.page.close()
+            except Exception:
+                pass
+            f.page = None
+            msg = str(e).splitlines()[0][:120]
+            add_error(f'{f.name}: сайт не открылся ({msg})' + (f' — попытка {f.start_fails}, следующая через '
+                                                              f'{min(2 * 2 ** (f.start_fails - 1), 10)} мин'
+                                                              if f.need_start else ''), f.name)
+            return False
 
     def start_pin(self):
         self.pin_start_try = time.time()
@@ -4958,6 +4986,10 @@ class Collector:
         self.poll_pin()
         now = time.time()
         for f in self.feeds:
+            if (getattr(f, 'need_start', False) and self.browser is not None
+                    and now - getattr(f, 'start_try', 0) >= min(self.FEED_RETRY * 2 ** max(0, f.start_fails - 1), 600)):
+                self.feed_start(f)
+                continue
             if f.page is None or now - f.last_poll < self.cfg.get('direct_poll_sec', 5):
                 continue
             try:
