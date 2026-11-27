@@ -32,7 +32,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2026.11.28-146"
+VERSION = "2026.11.28-147"
 REPO_RAW = "https://raw.githubusercontent.com/gggvip0000-cell/stavki/main/"
 HERE = Path(__file__).resolve().parent
 RESTART_EXIT_CODE = 3            # Stavki.bat на этот код скачивает свежую версию и запускает снова
@@ -472,6 +472,11 @@ VIEW_CODES = (('У', 'одиночные · Олимп · налоговый п�
 # -130: бумажные экспрессы Олимпа против налога (Совет 26.11, варианты «А» и «Б»): (вид, ног, перевес ноги от)
 OLIMP_EXPR = (('ЭА', 3, 0.05), ('ЭБ', 2, 0.08))
 OLIMP_EXPR_AGE = 15      # цена ноги не старше 15 с
+# -147 (владелец 28.11 «да» на «почему экспрессы только из Олимпа»): скрытые испытательные экспрессы PARI и Винлайна — 2 ноги,
+# каждая с перевесом от 8%, как «ЭБ» (отчёт 28.11 00:19, ноги без повторов: PARI CLV +5.4% ±2.4 на 30 матчах, половины +1.3 / +8.5;
+# Винлайн +9.2% ±6.2 на 13, половины +2.5 / +13.5 — мало и неустойчиво). Только запись: не в окне, не в Telegram; графики — в чат.
+# Цена ноги — пока поток конторы жив (опрос ≤60 с назад): у PARI и Винлайна odds_ts — время последнего ИЗМЕНЕНИЯ цены, не свежесть.
+TEST_EXPR = (('ЭП', 2, 0.08, 'PARI'), ('ЭВ', 2, 0.08, 'Винлайн'))
 
 
 def view_fits(v, now):
@@ -4945,14 +4950,21 @@ class Collector:
                 self.con.execute('UPDATE expr SET legs=? WHERE id=?', (json.dumps(legs, ensure_ascii=False), eid))
         self.con.commit()
 
-    def olimp_legs(self, now):
+    def olimp_legs(self, now, bk='Олимп'):
         """-130: ноги экспрессов Олимпа — цена с сайта не старше 15 с, кф до 4, линия без возврата, рынок рассчитывается
-        по счёту (матч, 1-й тайм, угловые), до матча ≥10 мин; по одной лучшей (по перевесу) на матч"""
+        по счёту (матч, 1-й тайм, угловые), до матча ≥10 мин; по одной лучшей (по перевесу) на матч.
+        -147: то же для PARI и Винлайна (bk) — вместо возраста цены поток конторы опрошен ≤60 с назад"""
         by = {}
+        if bk != 'Олимп':
+            lo = (STATE.status.get('feeds', {}).get(bk) or {}).get('last_ok')
+            if not lo or now - lo > 60:
+                return by
         for v in STATE.snapshot(journal=True)['values']:
-            if v['bookmaker'] != 'Олимп' or v.get('source') != 'сайт' or not v.get('odds_ts'):
+            if v['bookmaker'] != bk or v.get('source') != 'сайт':
                 continue
-            if now - v['odds_ts'] > OLIMP_EXPR_AGE or v['odds'] > 4.0 or v['ev'] < 0.03:
+            if bk == 'Олимп' and (not v.get('odds_ts') or now - v['odds_ts'] > OLIMP_EXPR_AGE):
+                continue
+            if v['odds'] > 4.0 or v['ev'] < 0.03:
                 continue
             fam = event_of(v)
             pre, base = split_fam(fam)
@@ -4975,8 +4987,11 @@ class Collector:
         now = time.time()
         if now - getattr(self, 'oexpr_ts', 0) >= 20:
             self.oexpr_ts = now
-            legs = self.olimp_legs(now)
-            for kind, n, thr in OLIMP_EXPR:
+            lby = {}
+            for kind, n, thr, bk in [(k, n, t, 'Олимп') for k, n, t in OLIMP_EXPR] + list(TEST_EXPR):
+                if bk not in lby:
+                    lby[bk] = self.olimp_legs(now, bk)
+                legs = lby[bk]
                 used = {m for (lg,) in self.con.execute('SELECT legs FROM expr WHERE kind=?', (kind,))
                         for m in (l['mid'] for l in json.loads(lg))}
                 pool = sorted([l for l in legs.values() if l['ev'] >= thr and l['mid'] not in used], key=lambda l: -l['ev'])
@@ -4987,9 +5002,9 @@ class Collector:
                         odds *= l['odds']
                         evp *= 1 + l['ev']
                     cur = self.con.execute('INSERT INTO expr (created, size, bookmaker, legs, odds, ev_prod, legs_now, kind)'
-                                           ' VALUES (?,?,?,?,?,?,?,?)', (now, n, 'Олимп', json.dumps(pick, ensure_ascii=False),
+                                           ' VALUES (?,?,?,?,?,?,?,?)', (now, n, bk, json.dumps(pick, ensure_ascii=False),
                                                                         round(odds, 3), round(evp - 1, 4), len(legs), kind))
-                    for l in pick:
+                    for l in (pick if bk == 'Олимп' else ()):     # проверка цены через 60/90/120 с — только у Олимпа
                         self.con.execute('INSERT INTO leg_check (kind, ref, match_id, fam, outcome, line, odds0, t0) VALUES'
                                          ' (?,?,?,?,?,?,?,?)', (kind, cur.lastrowid, l['mid'], l['fam'], l['outcome'],
                                                                 l['line'], l['odds'], now))
@@ -6183,6 +6198,7 @@ CHART_TITLES = {
     'Л': 'Одиночные · все рынки · за 5–15 мин', 'Н': 'Одиночные · все рынки · одна ставка на матч',
     'X4': 'Экспресс 4 ноги · PARI и Олимп · «меньше» угловых команд',
     'X5': 'Экспресс 5 ног · PARI и Олимп · «меньше» угловых команд',
+    'ЭП': 'Экспресс 2 ноги · PARI · перевес от 8%', 'ЭВ': 'Экспресс 2 ноги · Винлайн · перевес от 8%',
     'X6': 'Экспресс 6 ног · PARI и Олимп · «меньше» угловых команд',
 }
 CHART_VISIBLE = ('У', 'ЭБ', 'ЭА', 'Ф')
@@ -6193,6 +6209,7 @@ def charts_data(con, stake_rub):
     descs = {c: d for c, d, _f, _k in STRATEGIES}
     descs.update({k: f'экспресс Олимпа из {n} ног, каждая с перевесом от {round(t * 100)}%, цена не старше 15 с'
                   for k, n, t in OLIMP_EXPR})
+    descs.update({k: f'экспресс {bk} из {n} ног, каждая с перевесом от {round(t * 100)}% (испытание с 28.11)' for k, n, t, bk in TEST_EXPR})
     descs.update({f'X{n}': f'экспресс из {n} ног «Меньше» инд. тоталов угловых, перевес ноги от 3% (замер с 22.11)' for n in (4, 5, 6)})
     descs.update({   # для окна — понятным языком, без служебных пометок
         'П': 'угловые при любом шансе + МАТЧ и 1-й тайм только на аутсайдера (шанс до 50%); перевес от 5%, кф до 4; ставка — как только появилась',
@@ -6226,7 +6243,7 @@ def charts_data(con, stake_rub):
                 continue
             rows.append((st, round((prof or 0) * stake_rub), f'{title or ""} · {oc or ""}'))
         out.append(item(code, rows, opened, clv))
-    for key, size in [(k, None) for k, _n, _t in OLIMP_EXPR] + [(f'X{n}', n) for n in (4, 5, 6)]:
+    for key, size in [(k, None) for k, _n, _t in OLIMP_EXPR] + [(k, None) for k, _n, _t, _b in TEST_EXPR] + [(f'X{n}', n) for n in (4, 5, 6)]:
         q = ("SELECT status, mult, odds, legs FROM expr WHERE kind=? ORDER BY settled, id", (key,)) if size is None else \
             ("SELECT status, mult, odds, legs FROM expr WHERE kind IS NULL AND size=? ORDER BY settled, id", (size,))
         rows, clv, opened = [], [], 0
